@@ -151,6 +151,7 @@ cometx copy WORKSPACE/PROJECT/EXPERIMENT-NAME-OR-ID NEW-WORKSPACE/NEW-PROJECT
 * [cometx log](#cometx-log)
 * [cometx reproduce](#cometx-reproduce)
 * [cometx delete-assets](#cometx-delete-assets)
+* [cometx config](#cometx-config)
 
 
 For all subcommands, use the `--help` flag to get additional information.
@@ -360,6 +361,21 @@ Type can be valid asset tupe, including:
 * video
 
 For more information, `cometx delete-assets --help`
+
+## cometx config
+
+To enable auto-logging of your notebooks in Jupyter environments:
+
+```python
+cometx config --auto-log-notebook yes
+```
+
+To turn auto-logging of notebooks off, use:
+
+```python
+cometx config --auto-log-notebook no
+```
+If you keep the generated experiment URLs in the notebook, but later edit the notebook, the notebooks will be updated in all of the experiments created in the notebook.
 
 ## cometx reproduce
 
