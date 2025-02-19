@@ -723,14 +723,26 @@ class CopyManager:
         for log_filename in assets_metadata:
             asset_type = assets_metadata[log_filename].get("type", "asset") or "asset"
             if asset_type not in ["confusion-matrix", "embeddings", "datagrid"]:
-                self._log_asset(
-                    experiment,
-                    path,
-                    asset_type,
-                    log_filename,
-                    assets_metadata,
-                    asset_map,
-                )
+                if (
+                    "remote" in assets_metadata[log_filename]
+                    and assets_metadata[log_filename]["remote"]
+                ):
+                    asset = assets_metadata[log_filename]
+                    experiment.log_remote_asset(
+                        uri=asset["link"],
+                        remote_file_name=asset["fileName"],
+                        step=asset["step"],
+                        metadata=asset["metadata"],
+                    )
+                else:
+                    self._log_asset(
+                        experiment,
+                        path,
+                        asset_type,
+                        log_filename,
+                        assets_metadata,
+                        asset_map,
+                    )
         # Process all nested assets:
         for log_filename in assets_metadata:
             asset_type = assets_metadata[log_filename].get("type", "asset") or "asset"

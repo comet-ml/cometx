@@ -15,7 +15,7 @@
 import logging
 import shutil
 
-from comet_ml.config_class import Config
+from comet_ml.config.config_class import Config
 from comet_ml.exceptions import (
     ExperimentAlreadyUploaded,
     ExperimentNotFound,

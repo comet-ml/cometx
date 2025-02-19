@@ -46,7 +46,7 @@ setup_args = dict(
     long_description=long_description,
     long_description_content_type="text/markdown",
     install_requires=[
-        "comet_ml",
+        "comet_ml>=3.49.1",
     ],
     extras_require={
         "all": [
