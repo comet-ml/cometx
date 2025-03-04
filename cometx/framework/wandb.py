@@ -213,11 +213,13 @@ class DownloadManager:
         print("    downloading metadata...")
         metadata = {
             "experimentName": run.name,
-            "userName": info["username"],
+            "userName": info.get("username", "unknown"),
             "projectName": project,
             "workspaceName": workspace,
-            "filePath": info["program"],
-            "fileName": os.path.basename(info["program"]),
+            "filePath": info.get("program", "unknown"),
+            "fileName": (
+                os.path.basename(info["program"]) if info.get("program") else "unknown"
+            ),
             "cometDownloadVersion": comet_ml.__version__,
         }
         path = self.get_path(run, filename="metadata.json")
@@ -583,14 +585,14 @@ class DownloadManager:
                 else [system_and_os_info["program"]]
             ),
             "env": None,
-            "hostname": system_and_os_info["host"],
+            "hostname": system_and_os_info.get("host", "unknown"),
             "ip": "",
             "machine": "",
-            "os": system_and_os_info["os"],
+            "os": system_and_os_info.get("os", "unknown"),
             "pid": 0,
             "processor": "",
-            "executable": system_and_os_info["executable"],
-            "pythonVersion": system_and_os_info["python"],
+            "executable": system_and_os_info.get("executable", "unknown"),
+            "pythonVersion": system_and_os_info.get("python", "unknown"),
             "user": system_and_os_info.get("username", "unknown"),
         }
         # FIXME: add system details
