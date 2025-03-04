@@ -591,7 +591,7 @@ class DownloadManager:
             "processor": "",
             "executable": system_and_os_info["executable"],
             "pythonVersion": system_and_os_info["python"],
-            "user": system_and_os_info["username"],
+            "user": system_and_os_info.get("username", "unknown"),
         }
         # FIXME: add system details
         """
