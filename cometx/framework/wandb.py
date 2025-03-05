@@ -218,7 +218,9 @@ class DownloadManager:
             "workspaceName": workspace,
             "filePath": info.get("program", "unknown"),
             "fileName": (
-                os.path.basename(info["program"]) if info.get("program") else "unknown"
+                os.path.basename(info.get("program"))
+                if info.get("program")
+                else "unknown"
             ),
             "cometDownloadVersion": comet_ml.__version__,
         }
@@ -577,12 +579,12 @@ class DownloadManager:
         with tempfile.TemporaryDirectory() as tmpdirname:
             system_and_os_info = json.load(file.download(root=tmpdirname))
 
-        args = system_and_os_info["args"]
+        args = system_and_os_info.get("args", [])
         system_details = {
             "command": (
-                [system_and_os_info["program"]] + args
+                [system_and_os_info.get("program", "unknown")] + args
                 if args
-                else [system_and_os_info["program"]]
+                else [system_and_os_info.get("program", "unknown")]
             ),
             "env": None,
             "hostname": system_and_os_info.get("host", "unknown"),
