@@ -17,17 +17,16 @@ Finally run the following:
 ```shell
 export COMET_API_KEY=<COPY YOUR API KEY HERE>
 
-cometx admin chargeback-report 2024-09
+cometx admin chargeback-report 2024-09 # for older Comet installations
+cometx admin chargeback-report         # for newer Comet installations
 ```
-
-for the September 2024 chargeback report. Change the year or month as required.
 
 ## Advanced
 
 If your installation does not support Comet Smart Keys, or your host is at an unusual location, you can also use the `--host` flag as shown:
 
 ```shell
-cometx admin chargeback-report 2024-09 --host https://another-url.com
+cometx admin chargeback-report --host https://another-url.com
 ```
 The usage report contains the following fields in JSON format:
 
