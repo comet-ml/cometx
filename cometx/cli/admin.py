@@ -34,9 +34,11 @@ def get_parser_arguments(parser):
     )
     parser.add_argument(
         "YEAR_MONTH",
-        help="The YEAR-MONTH to run report for, eg 2024-09",
+        nargs="?",
+        help="(deprecated) The YEAR-MONTH to run report for, eg 2024-09",
         metavar="YEAR-MONTH",
         type=str,
+        default=None,
     )
     parser.add_argument(
         "--host",
@@ -73,13 +75,21 @@ def admin(parsed_args, remaining=None):
             admin_url += "/api/admin/chargeback/report"
 
             print("Attempting to get chargeback report from %s..." % admin_url)
-            response = api._client.get(
-                admin_url + ("?reportMonth=%s" % parsed_args.YEAR_MONTH),
-                headers={"Authorization": api.api_key},
-                params={},
-            )
+            if parsed_args.YEAR_MONTH:
+                response = api._client.get(
+                    admin_url + ("?reportMonth=%s" % parsed_args.YEAR_MONTH),
+                    headers={"Authorization": api.api_key},
+                    params={},
+                )
+                filename = "comet-chargeback-report-%s.json" % parsed_args.YEAR_MONTH
+            else:
+                response = api._client.get(
+                    admin_url,
+                    headers={"Authorization": api.api_key},
+                    params={},
+                )
+                filename = "comet-chargeback-report.json"
             print("Attempting to save chargeback report...")
-            filename = "comet-chargeback-report-%s.json" % parsed_args.YEAR_MONTH
             with open(filename, "w") as fp:
                 fp.write(json.dumps(response.json()))
             print("Chargeback report is saved in %r" % filename)
