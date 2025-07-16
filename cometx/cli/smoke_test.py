@@ -112,6 +112,7 @@ def get_parser_arguments(parser):
         default=False,
     )
 
+
 def get_opik_config(comet_base_url: str):
     config = configparser.ConfigParser()
 
@@ -121,10 +122,10 @@ def get_opik_config(comet_base_url: str):
         config.read(config_path)
         if "opik" in config and "url_override" in config["opik"]:
             return config["opik"]["url_override"]
-    
+
     env_url = os.getenv("OPIK_URL_OVERRIDE")
     if env_url:
-        return env_url 
+        return env_url
 
     return urljoin(comet_base_url + "/", "opik/api/")
 
@@ -217,39 +218,106 @@ def _create_image(
     return image
 
 
-def _log_mpm_events(MPM: any, nb_events: int, days: int) -> None:
-    # Create test data
-    end_date = datetime.datetime.now(datetime.timezone.utc)
-    start_date = end_date - datetime.timedelta(days=days)
-    timestamps = sorted(
-        [
-            start_date
-            + datetime.timedelta(seconds=random.randint(0, days * 24 * 60 * 60))
-            for _ in range(nb_events)
-        ]
-    )
+def _log_mpm_events(MPM: any) -> None:
+    # Start one week ago:
+    current_time = datetime.datetime.now() - datetime.timedelta(days=7, hours=1)
 
-    for ts in timestamps:
-        data_point = {
-            "prediction_id": str(uuid.uuid4()),
-            "timestamp": int(ts.timestamp()),
-            "input_features": {
-                "numerical_feature": random.uniform(0, 100),
-                "categorical_feature": random.choice(["a", "b", "c"]),
-            },
-            "output_features": {
-                "value": random.choice([True, False]),
-                "probability": random.uniform(0, 1),
-            },
-            "labels": {"label": random.choice([True, False])},
-        }
-        # Log the test data to MPM
-        MPM.log_event(**data_point)
+    # Phase 1:
+    for day in range(2):
+        ts = current_time.timestamp()
+        for i in range(125):
+            prediction_id = str(uuid.uuid4())
+
+            age = random.randrange(18, 95)
+            status = random.choices(
+                population=["single", "married", "divorced", "widow", "separated"],
+                weights=[0.04, 0.38, 0.27, 0.16, 0.06],
+            )[0]
+
+            value = random.choices(population=["true", "false"], weights=[0.24, 0.76])[
+                0
+            ]
+            probability = random.uniform(0, 1)
+
+            label = random.choices(population=["true", "false"], weights=[0.35, 0.65])[
+                0
+            ]
+
+            MPM.log_event(
+                prediction_id=prediction_id,
+                input_features={"age": age, "status": status},
+                output_features={"value": value, "probability": probability},
+                labels={"label": label},
+                timestamp=ts,
+            )
+        current_time += datetime.timedelta(days=1, hours=0)
+
+    # Phase 2:
+    for day in range(3):
+        ts = current_time.timestamp()
+        for i in range(97):
+            prediction_id = str(uuid.uuid4())
+
+            age = random.randrange(18, 95)
+            status = random.choices(
+                population=["single", "married", "divorced", "widow", "separated"],
+                weights=[0.24, 0.28, 0.17, 0.6, 0.16],
+            )[0]
+
+            value = random.choices(population=["true", "false"], weights=[0.04, 0.96])[
+                0
+            ]
+            probability = random.uniform(0, 1)
+
+            label = random.choices(population=["true", "false"], weights=[0.35, 0.65])[
+                0
+            ]
+
+            MPM.log_event(
+                prediction_id=prediction_id,
+                input_features={"age": age, "status": status},
+                output_features={"value": value, "probability": probability},
+                labels={"label": label},
+                timestamp=ts,
+            )
+        current_time += datetime.timedelta(days=1, hours=0)
+
+    # Phase 3:
+    for day in range(2):
+        ts = current_time.timestamp()
+        for i in range(115):
+            prediction_id = str(uuid.uuid4())
+
+            age = random.randrange(18, 95)
+            status = random.choices(
+                population=["single", "married", "divorced", "widow", "separated"],
+                weights=[0.14, 0.38, 0.21, 0.1, 0.17],
+            )[0]
+
+            value = random.choices(population=["true", "false"], weights=[0.14, 0.86])[
+                0
+            ]
+            probability = random.uniform(0, 1)
+
+            label = random.choices(population=["true", "false"], weights=[0.25, 0.75])[
+                0
+            ]
+
+            MPM.log_event(
+                prediction_id=prediction_id,
+                input_features={"age": age, "status": status},
+                output_features={"value": value, "probability": probability},
+                labels={"label": label},
+                timestamp=ts,
+            )
+        current_time += datetime.timedelta(days=1, hours=0)
 
 
 def _log_mpm_training_distribution(MPM: any, nb_events: int) -> None:
     # Create training distribution
+    prediction_id = str(uuid.uuid4())
     header = [
+        "predictionId",
         "feature_numerical_feature",
         "feature_categorical_feature",
         "prediction_value",
@@ -262,6 +330,7 @@ def _log_mpm_training_distribution(MPM: any, nb_events: int) -> None:
         writer.writerow(header)
         for _ in range(nb_events):
             row = [
+                prediction_id,
                 random.uniform(0, 100),
                 random.choices(["a", "b", "c"], [0.1, 0.2, 0.7])[0],
                 random.choice([True, False]),
@@ -280,7 +349,7 @@ def _log_mpm_training_distribution(MPM: any, nb_events: int) -> None:
         )
 
 
-def mpm_test(api, workspace: str, model_name: str, nb_events: int, days: int):
+def mpm_test(api, workspace: str, model_name: str, nb_events: int):
     """
     Args:
         workspace (str): workspace
@@ -305,7 +374,7 @@ def mpm_test(api, workspace: str, model_name: str, nb_events: int, days: int):
     )
 
     # Log MPM events
-    _log_mpm_events(MPM, nb_events, days)
+    _log_mpm_events(MPM)
 
     # Log MPM training distribution
     _log_mpm_training_distribution(MPM, nb_events)
@@ -314,6 +383,7 @@ def mpm_test(api, workspace: str, model_name: str, nb_events: int, days: int):
     MPM.end()
 
     return True
+
 
 def experiment_test(
     includes: List[str],
@@ -456,6 +526,7 @@ def optimizer_test(workspace: str, project_name: str):
 
     pprint("Optimizer job done! Completed %d experiments." % count, "good")
 
+
 def opik_test(workspace: str, project_name: str, api: API):
     try:
         import opik
@@ -466,21 +537,24 @@ def opik_test(workspace: str, project_name: str, api: API):
         )
         pprint("Skipping opik tests", "error")
         return
-    
+
     comet_base_url = api.config["comet.url_override"].rstrip("/")
     opik_url_override = get_opik_config(comet_base_url)
 
     if not opik_url_override:
-        pprint("Opik URL override is missing. Ensure it's set in ~/.opik.config or OPIK_URL_OVERRIDE.", "error")
+        pprint(
+            "Opik URL override is missing. Ensure it's set in ~/.opik.config or OPIK_URL_OVERRIDE.",
+            "error",
+        )
 
     opik_api_key = api.config["comet.api_key"]
     if not opik_api_key:
         pprint("Opik API key is missing in API configuration.", "error")
         return
-    
+
     def generate_random_string(length=100):
-        return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
-    
+        return "".join(random.choices(string.ascii_letters + string.digits, k=length))
+
     pprint("Starting Opik sanity test...", "info")
 
     pprint(f"Opik URL override: {opik_url_override}", "info")
@@ -493,13 +567,14 @@ def opik_test(workspace: str, project_name: str, api: API):
             workspace=workspace,
             api_key=opik_api_key,
         )
-        trace = client.trace(name='trace-1')
+        trace = client.trace(name="trace-1")
         trace.update(input=random_data)
         trace.end()
         client.end()
         pprint("Opik sanity test completed successfully.", "good")
     except Exception as e:
         pprint(f"Opik test failed: {e}", "error")
+
 
 def smoke_test(parsed_args, remaning=None) -> None:
     """
@@ -608,8 +683,10 @@ def smoke_test(parsed_args, remaning=None) -> None:
     if "mpm" in includes or any(value in includes for value in RESOURCES["mpm"]):
         pprint("    Attempting to run mpm tests...", "info")
 
-        if mpm_test(api, workspace, project_name, nb_events=10, days=7):
-            comet_mpm_ui_url = comet_base_url + f"/{workspace}#model-production-monitoring"
+        if mpm_test(api, workspace, project_name, nb_events=10):
+            comet_mpm_ui_url = (
+                comet_base_url + f"/{workspace}#model-production-monitoring"
+            )
             pprint(
                 f"\nCompleted MPM test, you will need to check the MPM UI ({comet_mpm_ui_url}) to validate the data has been logged, this can take up to 5 minutes.\n",
                 "good",
