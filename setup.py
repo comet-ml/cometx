@@ -47,12 +47,23 @@ setup_args = dict(
     long_description_content_type="text/markdown",
     install_requires=[
         "comet_ml>=3.49.1",
+        "six",
+        "requests",
+        "tqdm",
     ],
     extras_require={
         "all": [
             "pillow>=11.1.0",
             "opik",
             "comet_mpm",
+            "numpy",
+            "scikit-learn",
+            "matplotlib",
+            "scipy",
+            "ipywidgets",
+            "markdown",
+            "IPython",
+            "wandb",
         ],
     },
     packages=[
