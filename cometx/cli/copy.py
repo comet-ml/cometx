@@ -219,7 +219,7 @@ class CopyManager:
         self.sync = sync
         self.copied_reports = False
         comet_destination = remove_extra_slashes(destination)
-        comet_destination = comet_destination.split("/")
+        comet_destination = comet_destination.replace("\\", "/").split("/")
         if len(comet_destination) == 2:
             workspace_dst, project_dst = comet_destination
         elif len(comet_destination) == 1:
@@ -229,7 +229,7 @@ class CopyManager:
             raise Exception("invalid COMET_DESTINATION: %r" % destination)
 
         comet_source = remove_extra_slashes(source)
-        comet_source = comet_source.split("/")
+        comet_source = comet_source.replace("\\", "/").split("/")
 
         if len(comet_source) == 3:
             workspace_src, project_src, experiment_src = comet_source
@@ -260,14 +260,13 @@ class CopyManager:
 
         # For checking if the project_dst exists below:
         projects = self.api.get_projects(workspace_dst)
-
         for experiment_folder in self.get_experiment_folders(
             workspace_src, project_src, experiment_src
         ):
-            if experiment_folder.count("/") >= 2:
-                folder_workspace, folder_project, folder_experiment = (
-                    experiment_folder
-                ).rsplit("/", 2)
+            # Normalize path separators for cross-platform compatibility
+            normalized_path = experiment_folder.replace("\\", "/")
+            if normalized_path.count("/") >= 2:
+                folder_workspace, folder_project, folder_experiment = normalized_path.rsplit("/", 2)
             else:
                 print("Unknown folder: %r; ignoring" % experiment_folder)
                 continue
@@ -391,7 +390,7 @@ class CopyManager:
         # Copy other project-level items to an experiment:
         if "reports" not in self.ignore and not self.copied_reports:
             experiment = None
-            workspace_src, project_src, _ = experiment_folder.split("/")
+            workspace_src, project_src, _ = experiment_folder.replace("\\", "/").split("/")
             reports = os.path.join(workspace_src, project_src, "reports", "*")
             for filename in glob.glob(reports):
                 if filename.endswith("reports_metadata.jsonl"):
