@@ -87,11 +87,7 @@ def delete_assets(parsed_args, remaining=None):
 
 
 def delete_cli(parsed_args):
-    args = (
-        [part for part in pathlib.Path(parsed_args.COMET_PATH).parts if part]
-        if parsed_args.COMET_PATH is not None
-        else []
-    )
+    args = get_path_parts(parsed_args.COMET_PATH) if parsed_args.COMET_PATH else []
 
     if not args:
         workspace = None

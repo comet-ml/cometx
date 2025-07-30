@@ -290,12 +290,8 @@ class DownloadManager:
         self.summary["panels"] = 0
 
         comet_path = clean_comet_path(comet_path)
-        # Use pathlib.Path.parts for cross-platform compatibility
-        args = (
-            [part for part in pathlib.Path(comet_path).parts if part]
-            if comet_path is not None
-            else []
-        )
+        # Use get_path_parts for cross-platform compatibility and consistency
+        args = get_path_parts(comet_path) if comet_path is not None else []
         artifact = len(args) > 1 and args[1] == "artifacts"
         model_registry = len(args) > 1 and args[1] == "model-registry"
         panel = len(args) > 1 and args[1] == "panels"
