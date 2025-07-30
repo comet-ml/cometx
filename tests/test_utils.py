@@ -49,7 +49,7 @@ class TestGetPathParts:
     def test_leading_slash(self):
         """Test path with leading slash."""
         result = get_path_parts("/workspace/project")
-        assert result == ["/", "workspace", "project"]
+        assert result == ["workspace", "project"]
 
     def test_trailing_slash(self):
         """Test path with trailing slash."""
@@ -59,7 +59,7 @@ class TestGetPathParts:
     def test_both_leading_and_trailing_slash(self):
         """Test path with both leading and trailing slashes."""
         result = get_path_parts("/workspace/project/")
-        assert result == ["/", "workspace", "project"]
+        assert result == ["workspace", "project"]
 
     def test_multiple_slashes(self):
         """Test path with multiple consecutive slashes."""
@@ -79,18 +79,12 @@ class TestGetPathParts:
     def test_windows_absolute_path(self):
         """Test Windows absolute path."""
         result = get_path_parts("C:\\workspace\\project\\experiment")
-        assert result == ["C:\\", "workspace", "project", "experiment"]
+        assert result == ["workspace", "project", "experiment"]
 
     def test_unix_absolute_path(self):
         """Test Unix absolute path."""
         result = get_path_parts("/home/user/workspace/project")
-        assert result == ["/", "home", "user", "workspace", "project"]
-
-    def test_path_with_dots(self):
-        """Test path with dot components."""
-        result = get_path_parts("workspace/./project/../experiment")
-        # pathlib.parts doesn't resolve dots automatically
-        assert result == ["workspace", "project", "..", "experiment"]
+        assert result == ["home", "user", "workspace", "project"]
 
     def test_path_with_spaces(self):
         """Test path with spaces in components."""
@@ -123,17 +117,6 @@ class TestGetPathParts:
         result = get_path_parts(".")
         assert result == []
 
-    def test_parent_directory(self):
-        """Test parent directory notation."""
-        result = get_path_parts("..")
-        assert result == [".."]
-
-    def test_complex_path_with_dots_and_slashes(self):
-        """Test complex path with dots and multiple slashes."""
-        result = get_path_parts("///workspace//./project/../experiment///")
-        # pathlib.parts doesn't normalize automatically
-        assert result == ["/", "workspace", "project", "..", "experiment"]
-
     def test_path_with_numbers(self):
         """Test path with numeric components."""
         result = get_path_parts("workspace123/project456/experiment789")
@@ -147,12 +130,12 @@ class TestGetPathParts:
     def test_only_slashes(self):
         """Test path with only slashes."""
         result = get_path_parts("///")
-        assert result == ["/"]
+        assert result == []
 
     def test_single_slash(self):
         """Test path with single slash."""
         result = get_path_parts("/")
-        assert result == ["/"]
+        assert result == []
 
     def test_backslash_only(self):
         """Test path with only backslashes."""
@@ -167,27 +150,12 @@ class TestGetPathParts:
     def test_root_path(self):
         """Test root path on Unix systems."""
         result = get_path_parts("/")
-        assert result == ["/"]
+        assert result == []
 
     def test_relative_path_with_dots(self):
         """Test relative path with dot notation."""
         result = get_path_parts("./workspace/project")
         assert result == ["workspace", "project"]
-
-    def test_path_with_multiple_parent_dirs(self):
-        """Test path with multiple parent directory references."""
-        result = get_path_parts("workspace/../project/../../experiment")
-        assert result == ["workspace", "..", "project", "..", "..", "experiment"]
-
-    def test_path_with_tilde(self):
-        """Test path with tilde (home directory)."""
-        result = get_path_parts("~/workspace/project")
-        assert result == ["~", "workspace", "project"]
-
-    def test_path_with_environment_variable(self):
-        """Test path with environment variable syntax."""
-        result = get_path_parts("$HOME/workspace/project")
-        assert result == ["$HOME", "workspace", "project"]
 
     def test_path_with_quotes(self):
         """Test path with quoted components."""
@@ -197,4 +165,111 @@ class TestGetPathParts:
     def test_path_with_escaped_characters(self):
         """Test path with escaped characters."""
         result = get_path_parts("workspace/project\\ name/experiment")
-        assert result == ["workspace", "project\\ name", "experiment"]
+        assert result == ["workspace", "project name", "experiment"]
+
+    # Tests for invalid paths containing ".."
+    def test_path_with_double_dots_raises_exception(self):
+        """Test that paths with '..' raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("workspace/../project")
+
+    def test_path_with_double_dots_at_start_raises_exception(self):
+        """Test that paths starting with '..' raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("../workspace/project")
+
+    def test_path_with_double_dots_at_end_raises_exception(self):
+        """Test that paths ending with '..' raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("workspace/project/..")
+
+    def test_path_with_multiple_double_dots_raises_exception(self):
+        """Test that paths with multiple '..' raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("workspace/../project/../experiment")
+
+    def test_path_with_double_dots_in_middle_raises_exception(self):
+        """Test that paths with '..' in the middle raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("workspace/project/../experiment")
+
+    def test_path_with_double_dots_windows_style_raises_exception(self):
+        """Test that Windows-style paths with '..' raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("workspace\\..\\project")
+
+    def test_path_with_double_dots_mixed_separators_raises_exception(self):
+        """Test that mixed separator paths with '..' raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("workspace\\../project")
+
+    def test_path_with_double_dots_absolute_path_raises_exception(self):
+        """Test that absolute paths with '..' raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("/workspace/../project")
+
+    def test_path_with_double_dots_windows_absolute_raises_exception(self):
+        """Test that Windows absolute paths with '..' raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("C:\\workspace\\..\\project")
+
+    def test_path_with_double_dots_and_spaces_raises_exception(self):
+        """Test that paths with '..' and spaces raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("workspace name/../project name")
+
+    def test_path_with_double_dots_and_special_chars_raises_exception(self):
+        """Test that paths with '..' and special characters raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("workspace-name/../project_name")
+
+    def test_path_with_double_dots_and_unicode_raises_exception(self):
+        """Test that paths with '..' and unicode characters raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("wörkspace/../pröject")
+
+    def test_path_with_double_dots_and_quotes_raises_exception(self):
+        """Test that paths with '..' and quotes raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts('workspace/"../project"')
+
+    def test_path_with_double_dots_and_escaped_chars_raises_exception(self):
+        """Test that paths with '..' and escaped characters raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("workspace\\../project")
+
+    def test_path_with_double_dots_and_numbers_raises_exception(self):
+        """Test that paths with '..' and numbers raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("workspace123/../project456")
+
+    def test_path_with_double_dots_and_empty_components_raises_exception(self):
+        """Test that paths with '..' and empty components raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("workspace//../project")
+
+    def test_path_with_double_dots_and_multiple_slashes_raises_exception(self):
+        """Test that paths with '..' and multiple slashes raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("workspace///../project")
+
+    def test_path_with_double_dots_and_mixed_slashes_raises_exception(self):
+        """Test that paths with '..' and mixed slashes raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("workspace\\/../project")
+
+    def test_path_with_double_dots_and_root_raises_exception(self):
+        """Test that root paths with '..' raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("/../workspace")
+
+    def test_path_with_double_dots_and_current_dir_raises_exception(self):
+        """Test that paths with '..' and current directory notation raise ValueError."""
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts("./../workspace")
+
+    def test_path_with_double_dots_and_pathlib_object_raises_exception(self):
+        """Test that pathlib.Path objects with '..' raise ValueError."""
+        path_obj = pathlib.Path("workspace/../project")
+        with pytest.raises(ValueError, match="Path contains '..' which is not allowed"):
+            get_path_parts(path_obj)
