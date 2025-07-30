@@ -57,8 +57,13 @@ class ProgressBar:
 def _input_user(prompt):
     # type: (str) -> str
     """
-    Independent function to apply clean_string to all
-    responses + make mocking easier
+    Prompts the user for input, applies clean_string to the response, and returns it.
+
+    Args:
+        prompt (str): The message to display to the user.
+
+    Returns:
+        str: The cleaned user input.
     """
     return clean_string(six.moves.input(prompt))
 
