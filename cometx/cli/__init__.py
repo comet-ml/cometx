@@ -29,6 +29,7 @@ For more information:
     cometx COMMAND --help
 """
 import argparse
+import os
 import sys
 
 from cometx import __version__
@@ -81,6 +82,16 @@ def main(raw_args=sys.argv[1:]):
         const=True,
         default=False,
     )
+    parser.add_argument(
+        "--api-key",
+        help="Set the COMET_API_KEY",
+        type=str
+    )
+    parser.add_argument(
+        "--url-override",
+        help="Set the COMET_URL_OVERRIDE",
+        type=str
+    )
     subparsers = parser.add_subparsers()
 
     # Register CLI commands:
@@ -100,11 +111,29 @@ def main(raw_args=sys.argv[1:]):
 
     args, rest = parser.parse_known_args(raw_args)
 
+    # Set global environment variables early
+    if args.api_key:
+        os.environ["COMET_API_KEY"] = args.api_key
+    if args.url_override:
+        os.environ["COMET_URL_OVERRIDE"] = args.url_override
+
+    # Remove global flags from remaining arguments
+    filtered_rest = []
+    skip_next = False
+    for i, arg in enumerate(rest):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in ["--api-key", "--url-override"]:
+            skip_next = True  # Skip the value for this flag
+            continue
+        filtered_rest.append(arg)
+
     # args won't have additional args if no subparser added
     if hasattr(args, "additional_args") and args.additional_args:
         parser_func = args.func
 
-        parser_func(args, rest)
+        parser_func(args, filtered_rest)
     elif args.version:
         print(__version__)
     else:
