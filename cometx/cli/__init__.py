@@ -130,6 +130,7 @@ def main(raw_args=sys.argv[1:]):
     else:
         # No subcommand provided, show help
         parser.print_help()
+        sys.exit(0)
 
 
 if __name__ == "__main__":
