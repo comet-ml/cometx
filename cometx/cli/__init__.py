@@ -29,6 +29,7 @@ For more information:
     cometx COMMAND --help
 """
 import argparse
+import os
 import sys
 
 from cometx import __version__
@@ -71,6 +72,7 @@ def add_subparser(subparsers, module, name):
 
 
 def main(raw_args=sys.argv[1:]):
+    # Create single parser with global arguments and subparsers
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -81,6 +83,12 @@ def main(raw_args=sys.argv[1:]):
         const=True,
         default=False,
     )
+    parser.add_argument("--api-key", help="Set the COMET_API_KEY", type=str)
+    parser.add_argument(
+        "--url-override", help="Set the COMET_URL_OVERRIDE", type=str
+    )
+
+    # Add subparsers to the same parser
     subparsers = parser.add_subparsers()
 
     # Register CLI commands:
@@ -95,29 +103,34 @@ def main(raw_args=sys.argv[1:]):
     add_subparser(subparsers, config, "config")
     add_subparser(subparsers, smoke_test, "smoke-test")
 
-    # First identify the subparser as some subparser pass additional args to
-    # the subparser and other not
-
+    # Parse arguments
     args, rest = parser.parse_known_args(raw_args)
 
-    # args won't have additional args if no subparser added
+    # Set global environment variables early
+    if args.api_key:
+        os.environ["COMET_API_KEY"] = args.api_key
+    if args.url_override:
+        os.environ["COMET_URL_OVERRIDE"] = args.url_override
+
+    # Handle version flag
+    if args.version:
+        print(__version__)
+        return
+
+    # Handle subcommands
     if hasattr(args, "additional_args") and args.additional_args:
         parser_func = args.func
-
         parser_func(args, rest)
-    elif args.version:
-        print(__version__)
-    else:
+    elif hasattr(args, "func"):
         # If the subcommand doesn't need extra args, reparse in strict mode so
-        # the users get a nice message in case of unsupported CLi argument
+        # the users get a nice message in case of unsupported CLI argument
         args = parser.parse_args(raw_args)
-        if hasattr(args, "func"):
-            parser_func = args.func
-
-            parser_func(args)
-        else:
-            # comet with no args; call recursively:
-            main(["--help"])
+        parser_func = args.func
+        parser_func(args)
+    else:
+        # No subcommand provided, show help
+        parser.print_help()
+        sys.exit(0)
 
 
 if __name__ == "__main__":
