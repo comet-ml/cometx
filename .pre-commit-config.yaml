@@ -6,7 +6,6 @@ repos:
       - id: black
         language_version: python3
         args: [--line-length=88]
-        stages: [manual]
 
   # Import sorting
   - repo: https://github.com/pycqa/isort
@@ -21,7 +20,6 @@ repos:
     hooks:
       - id: flake8
         args: [--max-line-length=88, --extend-ignore=E203]
-        stages: [manual]
 
   # Type checking
   - repo: https://github.com/pre-commit/mirrors-mypy
