@@ -1,0 +1,21 @@
+[flake8]
+max-line-length = 88
+extend-ignore = E203, W503
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    venv,
+    .env,
+    .eggs,
+    *.egg,
+    .pytest_cache,
+    .coverage,
+    build,
+    dist,
+    *.egg-info
+per-file-ignores =
+    # Ignore missing docstrings in __init__.py files
+    __init__.py:D104
+    # Ignore unused imports in __init__.py files (often used for exports)
+    __init__.py:F401
