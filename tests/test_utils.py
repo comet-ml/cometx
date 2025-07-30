@@ -69,7 +69,7 @@ class TestGetPathParts:
     def test_windows_path_separators(self):
         """Test Windows-style path separators."""
         result = get_path_parts("workspace\\project\\experiment")
-        assert result == ["workspace\\project\\experiment"]
+        assert result == ["workspace", "project", "experiment"]
 
     def test_mixed_path_separators(self):
         """Test mixed forward and backward slashes."""
