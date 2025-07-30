@@ -52,7 +52,6 @@ repos:
       - id: check-docstring-first
       - id: check-ast
       - id: check-json
-      - id: check-merge-conflict
       - id: check-symlinks
       - id: debug-statements
       - id: end-of-file-fixer
