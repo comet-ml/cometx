@@ -37,7 +37,7 @@ from comet_ml.summary import Summary
 
 from ..._version import __version__
 from ...api import API
-from ...utils import _input_user_yn, get_query_experiments
+from ...utils import _input_user_yn, get_query_experiments, get_path_parts
 
 LOGGER = logging.getLogger(__name__)
 

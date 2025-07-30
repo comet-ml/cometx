@@ -59,7 +59,8 @@ class TestDownload:
     def setup_class(cls):
         cls.USER = os.environ.get("COMET_USER")
         if cls.USER is None:
-            raise Exception("define in env 'COMET_USER' to run tests")
+            import pytest
+            pytest.skip("COMET_USER environment variable not set - skipping integration tests")
         cls.WORKSPACE = get_config("comet.workspace") or cls.USER
         cls.API_KEY = get_config("comet.api_key")
 

@@ -39,7 +39,7 @@ import sys
 
 from comet_ml import API
 
-from ..utils import get_query_experiments
+from ..utils import get_query_experiments, get_path_parts
 
 ADDITIONAL_ARGS = False
 
