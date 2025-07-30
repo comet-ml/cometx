@@ -75,7 +75,6 @@ import zipfile
 
 from comet_ml import APIExperiment, Artifact, Experiment, OfflineExperiment
 from comet_ml._typing import TemporaryFilePath
-from comet_ml.utils import compress_git_patch
 from comet_ml.file_uploader import GitPatchUploadProcessor
 from comet_ml.messages import (
     GitMetadataMessage,
@@ -86,6 +85,7 @@ from comet_ml.messages import (
     SystemDetailsMessage,
 )
 from comet_ml.offline_utils import write_experiment_meta_file
+from comet_ml.utils import compress_git_patch
 
 from ..api import API
 from ..utils import remove_extra_slashes

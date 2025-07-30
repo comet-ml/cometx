@@ -1,0 +1,17 @@
+# Development dependencies
+-r requirements.txt
+
+# Additional development tools
+black>=23.0.0
+flake8>=6.0.0
+
+# Additional tools for pre-commit hooks
+isort>=5.13.0
+mypy>=1.0.0
+pre-commit>=3.0.0
+pydocstyle>=6.3.0
+tox>=4.0.0
+
+# Type stubs for mypy
+types-requests
+types-six

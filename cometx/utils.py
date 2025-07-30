@@ -111,8 +111,9 @@ def get_query_experiments(api, query_string, workspace, project_name):
     return api.query(workspace, project_name, query)
 
 
-def download_url(url, output_filename, width=None, height=None, timeout=5,
-                 headless=False):
+def download_url(
+    url, output_filename, width=None, height=None, timeout=5, headless=False
+):
     """
     Args:
         url: (str) the URL to download
