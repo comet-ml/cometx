@@ -13,13 +13,13 @@
 
 import base64
 import os
+import pathlib
 import sys
 import time
 
 import six
 from comet_ml.config import get_config
 from comet_ml.utils import clean_string, get_root_url
-import pathlib
 
 
 class ProgressBar:
@@ -98,7 +98,8 @@ def display_invalid_api_key(api_key=None, cloud_url=None):
 
 
 def get_query_experiments(api, query_string, workspace, project_name):
-    from comet_ml.query import Environment, Metadata, Metric, Other, Parameter, Tag
+    from comet_ml.query import (Environment, Metadata, Metric, Other,
+                                Parameter, Tag)
 
     env = {
         "Environment": Environment,
@@ -171,14 +172,16 @@ def download_url(
         driver.save_screenshot(output_filename)
 
     else:
-        raise Exception("unknown output_filename type: should end with html or pdf")
+        raise Exception(
+            "unknown output_filename type: should end with html or pdf")
 
     driver.quit()
 
 
 def remove_extra_slashes(path):
     if path:
-        # Handle both forward and backward slashes for cross-platform compatibility
+        # Handle both forward and backward slashes for cross-platform
+        # compatibility
         if path.startswith("/") or path.startswith("\\"):
             path = path[1:]
         if path.endswith("/") or path.endswith("\\"):

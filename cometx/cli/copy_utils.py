@@ -16,12 +16,9 @@ import logging
 import shutil
 
 from comet_ml.config.config_class import Config
-from comet_ml.exceptions import (
-    ExperimentAlreadyUploaded,
-    ExperimentNotFound,
-    InvalidExperimentMode,
-    InvalidExperimentModeUnsupported,
-)
+from comet_ml.exceptions import (ExperimentAlreadyUploaded, ExperimentNotFound,
+                                 InvalidExperimentMode,
+                                 InvalidExperimentModeUnsupported)
 from comet_ml.offline import OfflineSender, unzip_offline_archive
 
 LOGGER = logging.getLogger(__name__)

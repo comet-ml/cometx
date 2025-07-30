@@ -11,9 +11,9 @@
 #      Team. All rights reserved.
 # ****************************************
 
+from IPython import get_ipython
 from IPython.core.magic import register_cell_magic, register_line_magic
 from IPython.display import display
-from IPython import get_ipython
 
 
 def remove_quotes(text):

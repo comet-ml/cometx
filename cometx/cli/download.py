@@ -86,10 +86,9 @@ def get_parser_arguments(parser):
     parser.add_argument(
         "RESOURCE",
         help=(
-            "Resource(s) to include in download. For experiments, any of: system, run, code, git, "
-            + "output, requirements, others, parameters, metadata, metrics, output, assets, "
-            + "project, project_notes, or project_metadata."
-        ),
+            "Resource(s) to include in download. For experiments, any of: system, run, code, git, " +
+            "output, requirements, others, parameters, metadata, metrics, output, assets, " +
+            "project, project_notes, or project_metadata."),
         nargs="*",
         default=[],
     )
@@ -260,8 +259,8 @@ def download(parsed_args, remaining=None):
 def main(args):
     # Called via `cometx download ...`
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     get_parser_arguments(parser)
     parsed_args = parser.parse_args(args)
 

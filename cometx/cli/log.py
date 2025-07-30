@@ -44,20 +44,16 @@ import argparse
 import glob
 import json
 import os
-import sys
 import pathlib
+import sys
 
 from comet_ml import ExistingExperiment
 
 from ..api import API
 from ..panel_utils import create_panel_zip
 from ..utils import get_file_extension, get_query_experiments
-from .utils import (
-    log_points_3d_off_file,
-    log_points_3d_pcd_file,
-    log_points_3d_xyz_file,
-    log_tensorboard_folder_assets,
-)
+from .utils import (log_points_3d_off_file, log_points_3d_pcd_file,
+                    log_points_3d_xyz_file, log_tensorboard_folder_assets)
 
 ADDITIONAL_ARGS = False
 # From filename extension to Comet Asset Type
@@ -93,9 +89,8 @@ def get_parser_arguments(parser):
     parser.add_argument(
         "COMET_PATH",
         help=(
-            "The Comet identifier, such as 'WORKSPACE', 'WORKSPACE/PROJECT', or "
-            + "'WORKSPACE/PROJECT/EXPERIMENT'. Leave empty to use defaults."
-        ),
+            "The Comet identifier, such as 'WORKSPACE', 'WORKSPACE/PROJECT', or " +
+            "'WORKSPACE/PROJECT/EXPERIMENT'. Leave empty to use defaults."),
         nargs="?",
         default=None,
         type=str,
@@ -126,8 +121,10 @@ def get_parser_arguments(parser):
         default=None,
     )
     parser.add_argument(
-        "--debug", help="If given, allow debugging", default=False, action="store_true"
-    )
+        "--debug",
+        help="If given, allow debugging",
+        default=False,
+        action="store_true")
     parser.add_argument(
         "--use-base-name",
         help="If given, using the basename for logging assets",
@@ -173,7 +170,11 @@ def log_cli(parsed_args):
     if parsed_args.type in ["panel", "tensorboard-folder-assets"]:
         experiments = []
     elif experiment_key:
-        experiments = [api.get_experiment(workspace, project_name, experiment_key)]
+        experiments = [
+            api.get_experiment(
+                workspace,
+                project_name,
+                experiment_key)]
     elif parsed_args.query is not None:
         experiments = get_query_experiments(
             api, parsed_args.query, workspace, project_name
@@ -211,7 +212,8 @@ def log_cli(parsed_args):
                 log_experiment_code_from_file(experiment, filename)
 
     elif parsed_args.type == "other":
-        # two possibilities: log key:value to set of experiments; log filename to experiment
+        # two possibilities: log key:value to set of experiments; log filename
+        # to experiment
         if parsed_args.FILENAME:
             for experiment in experiments:
                 for filename in parsed_args.FILENAME:
@@ -219,7 +221,8 @@ def log_cli(parsed_args):
             return
 
         elif not parsed_args.set or ":" not in parsed_args.set:
-            raise Exception("Logging `other` without FILENAME requires --set key:value")
+            raise Exception(
+                "Logging `other` without FILENAME requires --set key:value")
 
         key, value = parsed_args.set.split(":", 1)
         set_experiments_other(experiments, key, value)
@@ -262,14 +265,17 @@ def log_cli(parsed_args):
         for experiment in experiments:
             for filename in parsed_args.FILENAME:
                 log_experiment_assets_from_file(
-                    experiment, filename, parsed_args.type, parsed_args.use_base_name
-                )
+                    experiment, filename, parsed_args.type, parsed_args.use_base_name)
 
     for experiment in experiments:
         experiment.end()
 
 
-def log_experiment_assets_from_file(experiment, filename, file_type, use_base_name):
+def log_experiment_assets_from_file(
+        experiment,
+        filename,
+        file_type,
+        use_base_name):
     SKELETON = filename
     base_name = os.path.basename(filename) if use_base_name else filename
     for filename in glob.glob(SKELETON):
@@ -304,7 +310,9 @@ def log_experiment_code_from_file(experiment, filename):
     elif os.path.isdir(filename):
         experiment.log_code(folder=filename)
     else:
-        raise Exception("cannot log code: %r; use filename or folder" % filename)
+        raise Exception(
+            "cannot log code: %r; use filename or folder" %
+            filename)
 
 
 def set_experiments_other(experiments, key, value):
@@ -346,8 +354,8 @@ def log_experiment_others_from_file(experiment, filename):
 
 def main(args):
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     get_parser_arguments(parser)
     parsed_args = parser.parse_args(args)
     log(parsed_args)

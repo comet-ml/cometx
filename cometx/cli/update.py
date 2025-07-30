@@ -56,13 +56,17 @@ def get_parser_arguments(parser):
         type=str,
     )
     parser.add_argument(
-        "--debug", help="If given, allow debugging", default=False, action="store_true"
-    )
+        "--debug",
+        help="If given, allow debugging",
+        default=False,
+        action="store_true")
 
 
 def get_experiment_folders(workspace_src, project_src, experiment_src):
     for path in glob.iglob(f"{workspace_src}/{project_src}/{experiment_src}"):
-        if any([path.endswith("~"), path.endswith(".json"), path.endswith(".jsonl")]):
+        if any([path.endswith("~"),
+                path.endswith(".json"),
+                path.endswith(".jsonl")]):
             continue
         else:
             yield path
@@ -122,12 +126,14 @@ def update_experiments(source, destination):
             )
         )
         experiment = api.get_experiment(
-            workspace_dst, project_dst or act_project, metadata.get("experimentName")
-        )
+            workspace_dst,
+            project_dst or act_project,
+            metadata.get("experimentName"))
         # Finally, update data:
         if experiment:
             print("    Updating to %r..." % experiment.url)
-            if metadata.get("startTimeMillis") or metadata.get("endTimeMillis"):
+            if metadata.get("startTimeMillis") or metadata.get(
+                    "endTimeMillis"):
                 experiment._api._client.set_experiment_start_end(
                     experiment.id,
                     metadata["startTimeMillis"],
@@ -152,7 +158,9 @@ def update_experiments(source, destination):
 def update(parsed_args, remaining=None):
     # Called via `cometx update ...`
     try:
-        update_experiments(parsed_args.COMET_SOURCE, parsed_args.COMET_DESTINATION)
+        update_experiments(
+            parsed_args.COMET_SOURCE,
+            parsed_args.COMET_DESTINATION)
     except KeyboardInterrupt:
         if parsed_args.debug:
             raise
@@ -167,8 +175,8 @@ def update(parsed_args, remaining=None):
 
 def main(args):
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     get_parser_arguments(parser)
     parsed_args = parser.parse_args(args)
     update(parsed_args)

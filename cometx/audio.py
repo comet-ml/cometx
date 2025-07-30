@@ -45,7 +45,7 @@ def log_waveform(experiment, data, title, outname, step):
         plt.plot(data)
     else:
         for channel in range(data.shape[1]):
-            plt.plot(data[:, channel], label=f"Channel {channel+1}")
+            plt.plot(data[:, channel], label=f"Channel {channel + 1}")
         plt.legend()
     plt.title(title)
     plt.xlabel("Sample")
@@ -88,7 +88,9 @@ def log_audio(
         else:
             basename, ext = os.path.splitext(os.path.basename(audio_data))
     else:
-        raise Exception("Unable to handle this audio file format; " + "use .wav file")
+        raise Exception(
+            "Unable to handle this audio file format; " +
+            "use .wav file")
 
     # Overwrite, get from file:
     sample_rate, data = wavfile.read(audio_fp)

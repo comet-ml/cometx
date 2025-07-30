@@ -136,7 +136,8 @@ class API(API):
     def upload_panel(self, workspace=None, name=None):
         # Upload well-known panel names
         if name is None:
-            raise Exception("Missing panel name to api.upload_panel(name='Name')")
+            raise Exception(
+                "Missing panel name to api.upload_panel(name='Name')")
         workspace = workspace if workspace is not None else self.get_default_workspace()
         url = f"https://raw.githubusercontent.com/comet-ml/comet-examples/master/panels/{name}/{name}.py"
         return self.upload_panel_url(workspace, url)
@@ -169,9 +170,15 @@ class API(API):
                 print("    Uploading panel...")
                 self.upload_panel_zip(workspace, fp.name)
         else:
-            raise Exception("I don't know what to do with %r" % parsed_url.path)
+            raise Exception(
+                "I don't know what to do with %r" %
+                parsed_url.path)
 
-    def upload_panel_code(self, workspace: str, panel_name: str, code: str) -> None:
+    def upload_panel_code(
+            self,
+            workspace: str,
+            panel_name: str,
+            code: str) -> None:
         """
         Upload Python code as a panel in a workspace.
 
@@ -196,7 +203,8 @@ class API(API):
         filename = create_panel_zip(panel_name, code)
         self.upload_panel_zip(workspace, filename)
 
-    def upload_panel_zip(self, workspace: str, filename: str) -> Dict[str, str]:
+    def upload_panel_zip(self, workspace: str,
+                         filename: str) -> Dict[str, str]:
         """
         Upload a panel zip file to a workspace.
 
@@ -227,8 +235,13 @@ class API(API):
         return results.json()
 
     def log_pr_curves(
-        self, experiment, y_true, y_predicted, labels=None, overwrite=False, step=None
-    ):
+            self,
+            experiment,
+            y_true,
+            y_predicted,
+            labels=None,
+            overwrite=False,
+            step=None):
         """
         Log a Precision/Recall curve for each class/column to the given experiment.
 

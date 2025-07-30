@@ -34,18 +34,8 @@ import sys
 from cometx import __version__
 
 # Import CLI commands:
-from . import (
-    admin,
-    config,
-    copy,
-    delete_assets,
-    download,
-    list_command,
-    log,
-    reproduce,
-    smoke_test,
-    update,
-)
+from . import (admin, config, copy, delete_assets, download, list_command, log,
+               reproduce, smoke_test, update)
 
 
 def add_subparser(subparsers, module, name):
@@ -63,8 +53,9 @@ def add_subparser(subparsers, module, name):
     docs = module.__doc__
 
     parser = subparsers.add_parser(
-        name, description=docs, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+        name,
+        description=docs,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.set_defaults(func=func)
     parser.set_defaults(additional_args=additional_args)
     get_parser_arguments(parser)
@@ -72,8 +63,8 @@ def add_subparser(subparsers, module, name):
 
 def main(raw_args=sys.argv[1:]):
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--version",
         help="Display comet_ml version",

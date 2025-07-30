@@ -34,8 +34,8 @@ Where TYPE is one of the following names:
 * video
 """
 import argparse
-import sys
 import pathlib
+import sys
 
 from comet_ml import API
 
@@ -48,9 +48,8 @@ def get_parser_arguments(parser):
     parser.add_argument(
         "COMET_PATH",
         help=(
-            "The Comet identifier, such as 'WORKSPACE', 'WORKSPACE/PROJECT', or "
-            + "'WORKSPACE/PROJECT/EXPERIMENT'. Leave empty to use defaults."
-        ),
+            "The Comet identifier, such as 'WORKSPACE', 'WORKSPACE/PROJECT', or " +
+            "'WORKSPACE/PROJECT/EXPERIMENT'. Leave empty to use defaults."),
         nargs="?",
         default=None,
         type=str,
@@ -62,8 +61,10 @@ def get_parser_arguments(parser):
         default=None,
     )
     parser.add_argument(
-        "--debug", help="If given, allow debugging", default=False, action="store_true"
-    )
+        "--debug",
+        help="If given, allow debugging",
+        default=False,
+        action="store_true")
     parser.add_argument(
         "--query",
         help="Only delete experiments that match this Comet query string",
@@ -111,7 +112,11 @@ def delete_cli(parsed_args):
     api = API()
 
     if experiment_key:
-        experiments = [api.get_experiment(workspace, project_name, experiment_key)]
+        experiments = [
+            api.get_experiment(
+                workspace,
+                project_name,
+                experiment_key)]
     elif parsed_args.query is not None:
         experiments = get_query_experiments(
             api, parsed_args.query, workspace, project_name
@@ -128,15 +133,16 @@ def delete_experiment_assets(api, experiments, asset_type):
         print("Looking in %s..." % experiment.url)
         assets = experiment.get_asset_list(asset_type)
         for asset in assets:
-            api._client.delete_experiment_asset(experiment.id, asset["assetId"])
+            api._client.delete_experiment_asset(
+                experiment.id, asset["assetId"])
             count += 1
     print("Deleted %d assets of type %r" % (count, asset_type))
 
 
 def main(args):
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     get_parser_arguments(parser)
     parsed_args = parser.parse_args(args)
     delete_assets(parsed_args)

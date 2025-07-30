@@ -156,12 +156,15 @@ def optimizer_populate(workspace, project_name, config):
             others = experiment.get_others_summary()
             if not all([check_name(name, others) for name in other_names]):
                 print(
-                    "Missing other optimizer elements; skipping %r..." % experiment.name
-                )
+                    "Missing other optimizer elements; skipping %r..." %
+                    experiment.name)
                 continue
             parameters = experiment.get_parameters_summary()
-            if not all([check_name(name, parameters) for name in parameter_names]):
-                print("Missing parameter elements; skipping %r..." % experiment.name)
+            if not all([check_name(name, parameters)
+                       for name in parameter_names]):
+                print(
+                    "Missing parameter elements; skipping %r..." %
+                    experiment.name)
                 continue
             metadata = experiment.get_metadata()
             # Metadata:
@@ -175,7 +178,8 @@ def optimizer_populate(workspace, project_name, config):
             metric_name = get_value("optimizer_metric", others)
             metric_value = get_value("optimizer_metric_value", others)
             optimizer_trial = int(get_value("optimizer_trial", others))
-            optimizer_parameters = json.loads(get_value("optimizer_parameters", others))
+            optimizer_parameters = json.loads(
+                get_value("optimizer_parameters", others))
             # FIXME: Make sure parameters are correct; what is criteria?
             # Metrics:
             metrics = experiment.get_metrics(metric_name)
@@ -216,13 +220,15 @@ def optimizer_populate(workspace, project_name, config):
             }
             new_experiment._set_optimizer_from_data(optimizer_data)
             new_experiment.optimizer["optimizer"] = new_optimizer
-            new_experiment.log_metric(metric_name, float(metric_value), step=step)
+            new_experiment.log_metric(
+                metric_name, float(metric_value), step=step)
             new_experiment.end()
 
     new_optimizer._api.optimizer_update = original_func
 
     print("Your new optimizer id is:")
     print("%r" % new_optimizer.id)
-    print("%s/%s was populated with %d experiments" % (workspace, project_name, count))
+    print("%s/%s was populated with %d experiments" %
+          (workspace, project_name, count))
     print("You are now ready to continue to run experiments.")
     return new_optimizer.id

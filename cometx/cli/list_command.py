@@ -27,9 +27,8 @@ def get_parser_arguments(parser):
     parser.add_argument(
         "COMET_PATH",
         help=(
-            "The Comet identifier, such as 'WORKSPACE', 'WORKSPACE/PROJECT', or "
-            + "'WORKSPACE/PROJECT/EXPERIMENT'. Leave empty to use defaults."
-        ),
+            "The Comet identifier, such as 'WORKSPACE', 'WORKSPACE/PROJECT', or " +
+            "'WORKSPACE/PROJECT/EXPERIMENT'. Leave empty to use defaults."),
         nargs="?",
     )
     parser.add_argument(
@@ -92,8 +91,8 @@ def list(parsed_args, remaining=None):
 def main(args):
     # Called via `cometx list ...`
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     get_parser_arguments(parser)
     parsed_args = parser.parse_args(args)
 

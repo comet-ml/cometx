@@ -96,7 +96,8 @@ def get_parser_arguments(parser):
     )
     parser.add_argument(
         "include",
-        help=(f"Items to include; leave out for all, or any of: {RESOURCES_ALL_STR}"),
+        help=(
+            f"Items to include; leave out for all, or any of: {RESOURCES_ALL_STR}"),
         nargs="*",
         default=[],
     )
@@ -230,18 +231,30 @@ def _log_mpm_events(MPM: any) -> None:
 
             age = random.randrange(18, 95)
             status = random.choices(
-                population=["single", "married", "divorced", "widow", "separated"],
-                weights=[0.04, 0.38, 0.27, 0.16, 0.06],
+                population=[
+                    "single",
+                    "married",
+                    "divorced",
+                    "widow",
+                    "separated"],
+                weights=[
+                    0.04,
+                    0.38,
+                    0.27,
+                    0.16,
+                    0.06],
             )[0]
 
-            value = random.choices(population=["true", "false"], weights=[0.24, 0.76])[
-                0
-            ]
+            value = random.choices(
+                population=[
+                    "true", "false"], weights=[
+                    0.24, 0.76])[0]
             probability = random.uniform(0, 1)
 
-            label = random.choices(population=["true", "false"], weights=[0.35, 0.65])[
-                0
-            ]
+            label = random.choices(
+                population=[
+                    "true", "false"], weights=[
+                    0.35, 0.65])[0]
 
             MPM.log_event(
                 prediction_id=prediction_id,
@@ -260,18 +273,30 @@ def _log_mpm_events(MPM: any) -> None:
 
             age = random.randrange(18, 95)
             status = random.choices(
-                population=["single", "married", "divorced", "widow", "separated"],
-                weights=[0.24, 0.28, 0.17, 0.6, 0.16],
+                population=[
+                    "single",
+                    "married",
+                    "divorced",
+                    "widow",
+                    "separated"],
+                weights=[
+                    0.24,
+                    0.28,
+                    0.17,
+                    0.6,
+                    0.16],
             )[0]
 
-            value = random.choices(population=["true", "false"], weights=[0.04, 0.96])[
-                0
-            ]
+            value = random.choices(
+                population=[
+                    "true", "false"], weights=[
+                    0.04, 0.96])[0]
             probability = random.uniform(0, 1)
 
-            label = random.choices(population=["true", "false"], weights=[0.35, 0.65])[
-                0
-            ]
+            label = random.choices(
+                population=[
+                    "true", "false"], weights=[
+                    0.35, 0.65])[0]
 
             MPM.log_event(
                 prediction_id=prediction_id,
@@ -290,18 +315,30 @@ def _log_mpm_events(MPM: any) -> None:
 
             age = random.randrange(18, 95)
             status = random.choices(
-                population=["single", "married", "divorced", "widow", "separated"],
-                weights=[0.14, 0.38, 0.21, 0.1, 0.17],
+                population=[
+                    "single",
+                    "married",
+                    "divorced",
+                    "widow",
+                    "separated"],
+                weights=[
+                    0.14,
+                    0.38,
+                    0.21,
+                    0.1,
+                    0.17],
             )[0]
 
-            value = random.choices(population=["true", "false"], weights=[0.14, 0.86])[
-                0
-            ]
+            value = random.choices(
+                population=[
+                    "true", "false"], weights=[
+                    0.14, 0.86])[0]
             probability = random.uniform(0, 1)
 
-            label = random.choices(population=["true", "false"], weights=[0.25, 0.75])[
-                0
-            ]
+            label = random.choices(
+                population=[
+                    "true", "false"], weights=[
+                    0.25, 0.75])[0]
 
             MPM.log_event(
                 prediction_id=prediction_id,
@@ -345,7 +382,10 @@ def _log_mpm_training_distribution(MPM: any, nb_events: int) -> None:
         MPM.upload_dataset_csv(
             file_path=fp.name,
             dataset_type="TRAINING_EVENTS",
-            dataset_name="training_dataset-%s" % random.randint(100000, 999999),
+            dataset_name="training_dataset-%s" %
+            random.randint(
+                100000,
+                999999),
         )
 
 
@@ -411,8 +451,10 @@ def experiment_test(
     if "metric" in includes:
         pprint("    Attempting to log metrics...", "info")
         for step in range(100):
-            experiment.log_metric("accuracy", random.random() * step, step=step)
-            experiment.log_metric("loss", 100 - (random.random() * step), step=step)
+            experiment.log_metric(
+                "accuracy", random.random() * step, step=step)
+            experiment.log_metric(
+                "loss", 100 - (random.random() * step), step=step)
 
     if "image" in includes:
         pprint("    Attempting to log an image...", "info")
@@ -434,19 +476,26 @@ def experiment_test(
         pprint("    Attempting to log a confusion matrix...", "info")
         y_true = [(i % 10) for i in range(500)]
         y_predicted = [random.randint(0, 9) for i in range(500)]
-        images = [_create_image(str(n), margin=30, randomness=30) for n in y_true]
-        experiment.log_confusion_matrix(y_true, y_predicted, images=images, step=0)
+        images = [
+            _create_image(
+                str(n),
+                margin=30,
+                randomness=30) for n in y_true]
+        experiment.log_confusion_matrix(
+            y_true, y_predicted, images=images, step=0)
 
     if "embedding" in includes:
         pprint("    Attempting to log embedding...", "info")
         labels = [str(i % 10) for i in range(100)]
         images = [
-            _create_image(label, margin=0, randomness=30, width=30) for label in labels
-        ]
+            _create_image(
+                label,
+                margin=0,
+                randomness=30,
+                width=30) for label in labels]
         vectors = [_get_vector_from_image(image) for image in images]
-        tables = [["label", "index", "score"]] + [
-            [label, index, random.random()] for index, label in enumerate(labels)
-        ]
+        tables = [["label", "index", "score"]] + [[label, index,
+                                                   random.random()] for index, label in enumerate(labels)]
 
         def get_color(index):
             label = str(index % 10)
@@ -553,7 +602,11 @@ def opik_test(workspace: str, project_name: str, api: API):
         return
 
     def generate_random_string(length=100):
-        return "".join(random.choices(string.ascii_letters + string.digits, k=length))
+        return "".join(
+            random.choices(
+                string.ascii_letters +
+                string.digits,
+                k=length))
 
     pprint("Starting Opik sanity test...", "info")
 
@@ -589,7 +642,8 @@ def smoke_test(parsed_args, remaning=None) -> None:
     if comet_base_url.endswith("/clientlib"):
         comet_base_url = comet_base_url[:-10]
 
-    includes = parsed_args.include if parsed_args.include else list(RESOURCES.keys())
+    includes = parsed_args.include if parsed_args.include else list(
+        RESOURCES.keys())
     # pprint(f"Initial includes: {includes}", "info")
     # pprint(f"Excludes: {parsed_args.exclude}", "info")
     for item in parsed_args.exclude:
@@ -603,7 +657,8 @@ def smoke_test(parsed_args, remaning=None) -> None:
 
     if "/" in parsed_args.COMET_PATH:
         if parsed_args.COMET_PATH.count("/") != 1:
-            raise Exception("COMET_PATH should be WORKSPACE or WORKSPACE/PROJECT")
+            raise Exception(
+                "COMET_PATH should be WORKSPACE or WORKSPACE/PROJECT")
         workspace, project_name = parsed_args.COMET_PATH.split("/", 1)
     else:
         workspace, project_name = parsed_args.COMET_PATH, "smoke-tests"
@@ -612,7 +667,12 @@ def smoke_test(parsed_args, remaning=None) -> None:
         raise Exception("workspace %r does not exist!" % workspace)
 
     pprint("Running cometx smoke tests...", "info")
-    pprint("Using %s/%s on %s" % (workspace, project_name, comet_base_url), "info")
+    pprint(
+        "Using %s/%s on %s" %
+        (workspace,
+         project_name,
+         comet_base_url),
+        "info")
 
     if "experiment" in includes or any(
         value in includes for value in RESOURCES["experiment"]
@@ -680,7 +740,8 @@ def smoke_test(parsed_args, remaning=None) -> None:
             "good",
         )
 
-    if "mpm" in includes or any(value in includes for value in RESOURCES["mpm"]):
+    if "mpm" in includes or any(
+            value in includes for value in RESOURCES["mpm"]):
         pprint("    Attempting to run mpm tests...", "info")
 
         if mpm_test(api, workspace, project_name, nb_events=10):

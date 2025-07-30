@@ -46,8 +46,10 @@ def get_parser_arguments(parser):
         type=str,
     )
     parser.add_argument(
-        "--debug", help="If given, allow debugging", default=False, action="store_true"
-    )
+        "--debug",
+        help="If given, allow debugging",
+        default=False,
+        action="store_true")
 
 
 def admin(parsed_args, remaining=None):
@@ -95,9 +97,8 @@ def admin(parsed_args, remaining=None):
             print("Chargeback report is saved in %r" % filename)
         else:
             print(
-                "Unknown action %r; should be one of these: 'chargeback-report'"
-                % parsed_args.ACTION
-            )
+                "Unknown action %r; should be one of these: 'chargeback-report'" %
+                parsed_args.ACTION)
 
     except KeyboardInterrupt:
         if parsed_args.debug:
@@ -113,8 +114,8 @@ def admin(parsed_args, remaining=None):
 
 def main(args):
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     get_parser_arguments(parser)
     parsed_args = parser.parse_args(args)
     admin(parsed_args)

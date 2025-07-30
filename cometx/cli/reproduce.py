@@ -14,10 +14,11 @@
 
 import argparse
 import os
-import sys
 import pathlib
+import sys
 
-from cometx.framework.comet.download_manager import DownloadManager, clean_comet_path
+from cometx.framework.comet.download_manager import (DownloadManager,
+                                                     clean_comet_path)
 
 ADDITIONAL_ARGS = False
 
@@ -26,9 +27,8 @@ def get_parser_arguments(parser):
     parser.add_argument(
         "COMET_PATH",
         help=(
-            "The Comet identifier, such as 'WORKSPACE', 'WORKSPACE/PROJECT', or "
-            + "'WORKSPACE/PROJECT/EXPERIMENT'. Leave empty for all workspaces."
-        ),
+            "The Comet identifier, such as 'WORKSPACE', 'WORKSPACE/PROJECT', or " +
+            "'WORKSPACE/PROJECT/EXPERIMENT'. Leave empty for all workspaces."),
         type=str,
     )
     parser.add_argument(
@@ -87,7 +87,10 @@ def reproduce(parsed_args, remaining=None):
     manager.download_code(experiment)
     manager.download_git(experiment)
     manager.download_requirements(experiment)
-    for asset_filename in ["conda-spec.txt", "conda-info.yml", "conda-environment.yml"]:
+    for asset_filename in [
+        "conda-spec.txt",
+        "conda-info.yml",
+            "conda-environment.yml"]:
         manager.download_asset(experiment, asset_filename)
 
     shell_commands = ""
@@ -95,11 +98,17 @@ def reproduce(parsed_args, remaining=None):
     if os.path.exists(os.path.join(parsed_args.OUTPUT_DIR, "conda-spec.txt")):
         shell_commands += "conda create --name reproduced-env --file conda-spec.txt\n"
         shell_commands += "conda activate reproduced-env\n"
-    if os.path.exists(os.path.join(parsed_args.OUTPUT_DIR, "requirements.txt")):
+    if os.path.exists(
+        os.path.join(
+            parsed_args.OUTPUT_DIR,
+            "requirements.txt")):
         shell_commands += "pip install -r requirements.txt\n"
     if os.path.exists(os.path.join(parsed_args.OUTPUT_DIR, "git_diff.patch")):
         shell_commands += "git apply git_diff.patch\n"
-    if os.path.exists(os.path.join(parsed_args.OUTPUT_DIR, "git_metadata.json")):
+    if os.path.exists(
+        os.path.join(
+            parsed_args.OUTPUT_DIR,
+            "git_metadata.json")):
         shell_commands += manager.get_git_text(experiment)
         script = "../script.py"
     else:
@@ -118,14 +127,16 @@ def reproduce(parsed_args, remaining=None):
         print("Running...")
         os.system("cd %s; %s" % (parsed_args.OUTPUT_DIR, shell_script_name))
     else:
-        print("To run, cd into %s and execute the script." % parsed_args.OUTPUT_DIR)
+        print(
+            "To run, cd into %s and execute the script." %
+            parsed_args.OUTPUT_DIR)
 
 
 def main(args):
     # Called via `cometx reproduce ...`
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     get_parser_arguments(parser)
     parsed_args = parser.parse_args(args)
 
