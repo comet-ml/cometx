@@ -84,8 +84,7 @@ class DownloadManager:
                 except Exception as exc:
                     print(exc)
                     print(
-                        "Unable to download %r to %r; skipping..." %
-                        (file.name, path))
+                        f"Unable to download {file.name!r} to {path!r}; skipping...")
 
         if self.queue is None or doit:
             # Do it now:
