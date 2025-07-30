@@ -163,7 +163,7 @@ class TestGetPathParts:
     def test_mixed_slashes_with_empty_components(self):
         """Test mixed slashes with empty components."""
         result = get_path_parts("workspace\\/project//\\experiment")
-        assert result == ["workspace\\", "project", "\\experiment"]
+        assert result == ["workspace", "project", "experiment"]
 
     def test_root_path(self):
         """Test root path on Unix systems."""
