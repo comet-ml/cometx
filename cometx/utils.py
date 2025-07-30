@@ -237,8 +237,8 @@ def get_path_parts(path):
     if parts and len(parts[0]) == 2 and parts[0].endswith(":"):
         parts = parts[1:]
 
-    # Remove root part if present (Unix absolute paths)
-    if parts and parts[0] == "/":
+    # Remove root part if the path is absolute
+    if path_obj.is_absolute():
         parts = parts[1:]
 
     return parts
