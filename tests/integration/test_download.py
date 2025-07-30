@@ -18,6 +18,7 @@ import sys
 import tempfile
 
 import comet_ml
+import pytest
 from comet_ml.config import get_config
 from comet_ml.utils import proper_registry_model_name
 from mock import patch
@@ -59,8 +60,6 @@ class TestDownload:
     def setup_class(cls):
         cls.USER = os.environ.get("COMET_USER")
         if cls.USER is None:
-            import pytest
-
             pytest.skip(
                 "COMET_USER environment variable not set - skipping integration tests"
             )
