@@ -19,6 +19,7 @@ import time
 import six
 from comet_ml.config import get_config
 from comet_ml.utils import clean_string, get_root_url
+import pathlib
 
 
 class ProgressBar:
@@ -111,8 +112,9 @@ def get_query_experiments(api, query_string, workspace, project_name):
     return api.query(workspace, project_name, query)
 
 
-def download_url(url, output_filename, width=None, height=None, timeout=5,
-                 headless=False):
+def download_url(
+    url, output_filename, width=None, height=None, timeout=5, headless=False
+):
     """
     Args:
         url: (str) the URL to download
@@ -186,3 +188,18 @@ def remove_extra_slashes(path):
         return path
     else:
         return ""
+
+
+def get_path_parts(path):
+    """
+    Get path parts using pathlib.Path.parts for cross-platform compatibility.
+
+    Args:
+        path: Path string or Path object
+
+    Returns:
+        List of path components, excluding empty parts
+    """
+    if path is None:
+        return []
+    return [part for part in pathlib.Path(path).parts if part]

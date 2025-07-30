@@ -285,8 +285,12 @@ class DownloadManager:
         self.summary["panels"] = 0
 
         comet_path = clean_comet_path(comet_path)
-        # Use pathlib.Path for cross-platform compatibility
-        args = str(pathlib.Path(comet_path)).split("/") if comet_path is not None else []
+        # Use pathlib.Path.parts for cross-platform compatibility
+        args = (
+            [part for part in pathlib.Path(comet_path).parts if part]
+            if comet_path is not None
+            else []
+        )
         artifact = len(args) > 1 and args[1] == "artifacts"
         model_registry = len(args) > 1 and args[1] == "model-registry"
         panel = len(args) > 1 and args[1] == "panels"
@@ -877,7 +881,7 @@ class DownloadManager:
             if html:
                 self.summary["html"] += 1
                 os.makedirs(path, exist_ok=True)
-                            with open(filepath, "w", encoding="utf-8") as f:
+                with open(filepath, "w", encoding="utf-8") as f:
                     f.write(html)
 
     def download_metrics(self, experiment):

@@ -35,7 +35,6 @@ Where TYPE is one of the following names:
 """
 import argparse
 import sys
-import os
 import pathlib
 
 from comet_ml import API
@@ -88,7 +87,9 @@ def delete_assets(parsed_args, remaining=None):
 
 def delete_cli(parsed_args):
     args = (
-        str(pathlib.Path(parsed_args.COMET_PATH)).split("/") if parsed_args.COMET_PATH is not None else []
+        [part for part in pathlib.Path(parsed_args.COMET_PATH).parts if part]
+        if parsed_args.COMET_PATH is not None
+        else []
     )
 
     if not args:

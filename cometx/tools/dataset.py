@@ -15,7 +15,7 @@ import os
 import random
 import tempfile
 
-## Randomize large files
+# Randomize large files
 
 
 def merge_files(temp_files, filename_out):

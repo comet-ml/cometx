@@ -52,7 +52,9 @@ def get_parser_arguments(parser):
 
 def reproduce(parsed_args, remaining=None):
     comet_path = (
-        str(pathlib.Path(parsed_args.COMET_PATH)).split("/") if parsed_args.COMET_PATH is not None else []
+        [part for part in pathlib.Path(parsed_args.COMET_PATH).parts if part]
+        if parsed_args.COMET_PATH is not None
+        else []
     )
 
     if len(comet_path) != 3:

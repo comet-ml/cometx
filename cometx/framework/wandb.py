@@ -106,8 +106,8 @@ class DownloadManager:
 
     def download(self, PATH):
         path = remove_extra_slashes(PATH)
-        # Use pathlib.Path for cross-platform compatibility
-        path_parts = str(pathlib.Path(path)).split("/")
+        # Use pathlib.Path.parts for cross-platform compatibility
+        path_parts = [part for part in pathlib.Path(path).parts if part]
 
         if len(path_parts) == 1:
             projects = []
