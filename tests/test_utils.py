@@ -79,8 +79,7 @@ class TestGetPathParts:
     def test_windows_absolute_path(self):
         """Test Windows absolute path."""
         result = get_path_parts("C:\\workspace\\project\\experiment")
-        # On Unix systems, this is treated as a relative path
-        assert result == ["C:\\workspace\\project\\experiment"]
+        assert result == ["C:\\", "workspace", "project", "experiment"]
 
     def test_unix_absolute_path(self):
         """Test Unix absolute path."""
