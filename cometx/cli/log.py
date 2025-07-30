@@ -45,6 +45,7 @@ import glob
 import json
 import os
 import sys
+import pathlib
 
 from comet_ml import ExistingExperiment
 
@@ -149,19 +150,19 @@ def log(parsed_args, remaining=None):
 
 
 def log_cli(parsed_args):
-    comet_path = (
-        parsed_args.COMET_PATH.split(os.sep) if parsed_args.COMET_PATH is not None else []
+    args = (
+        str(pathlib.Path(parsed_args.COMET_PATH)).split("/") if parsed_args.COMET_PATH is not None else []
     )
 
-    if len(comet_path) == 1:
-        workspace = comet_path[0]
+    if len(args) == 1:
+        workspace = args[0]
         project_name = None
         experiment_key = None
-    elif len(comet_path) == 2:
-        workspace, project_name = comet_path
+    elif len(args) == 2:
+        workspace, project_name = args
         experiment_key = None
-    elif len(comet_path) == 3:
-        workspace, project_name, experiment_key = comet_path
+    elif len(args) == 3:
+        workspace, project_name, experiment_key = args
     else:
         raise Exception("invalid COMET_PATH: %r" % parsed_args.COMET_PATH)
 

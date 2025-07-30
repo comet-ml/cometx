@@ -15,6 +15,7 @@
 import argparse
 import os
 import sys
+import pathlib
 
 from cometx.framework.comet.download_manager import DownloadManager, clean_comet_path
 
@@ -51,7 +52,7 @@ def get_parser_arguments(parser):
 
 def reproduce(parsed_args, remaining=None):
     comet_path = (
-        parsed_args.COMET_PATH.split(os.sep) if parsed_args.COMET_PATH is not None else []
+        str(pathlib.Path(parsed_args.COMET_PATH)).split("/") if parsed_args.COMET_PATH is not None else []
     )
 
     if len(comet_path) != 3:

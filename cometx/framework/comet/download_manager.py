@@ -23,6 +23,7 @@ import re
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, List, Optional
+import pathlib
 
 try:
     from tqdm import tqdm as ProgressBar
@@ -284,8 +285,8 @@ class DownloadManager:
         self.summary["panels"] = 0
 
         comet_path = clean_comet_path(comet_path)
-        # Use os.path for cross-platform compatibility
-        args = comet_path.split(os.sep) if comet_path is not None else []
+        # Use pathlib.Path for cross-platform compatibility
+        args = str(pathlib.Path(comet_path)).split("/") if comet_path is not None else []
         artifact = len(args) > 1 and args[1] == "artifacts"
         model_registry = len(args) > 1 and args[1] == "model-registry"
         panel = len(args) > 1 and args[1] == "panels"

@@ -20,6 +20,7 @@ import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import unquote
+import pathlib
 
 import comet_ml
 import wandb
@@ -105,8 +106,8 @@ class DownloadManager:
 
     def download(self, PATH):
         path = remove_extra_slashes(PATH)
-        # Use os.path for cross-platform compatibility
-        path_parts = path.split(os.sep)
+        # Use pathlib.Path for cross-platform compatibility
+        path_parts = str(pathlib.Path(path)).split("/")
 
         if len(path_parts) == 1:
             projects = []
