@@ -105,7 +105,8 @@ class DownloadManager:
 
     def download(self, PATH):
         path = remove_extra_slashes(PATH)
-        path_parts = path.split("/")
+        # Use os.path for cross-platform compatibility
+        path_parts = path.split(os.sep)
 
         if len(path_parts) == 1:
             projects = []
@@ -169,10 +170,12 @@ class DownloadManager:
         return path
 
     def get_file_path(self, wandb_file):
-        return "/".join(wandb_file.name.split("/")[:-1])
+        # Use os.path for cross-platform compatibility
+        return os.path.dirname(wandb_file.name)
 
     def get_file_name(self, wandb_file):
-        file_name = clean_for_filename(wandb_file.name.split("/")[-1])
+        # Use os.path for cross-platform compatibility
+        file_name = clean_for_filename(os.path.basename(wandb_file.name))
         return file_name
 
     def download_cmd_parameters(self, run, args):

@@ -35,6 +35,7 @@ Where TYPE is one of the following names:
 """
 import argparse
 import sys
+import os
 
 from comet_ml import API
 
@@ -85,23 +86,23 @@ def delete_assets(parsed_args, remaining=None):
 
 
 def delete_cli(parsed_args):
-    comet_path = (
-        parsed_args.COMET_PATH.split("/") if parsed_args.COMET_PATH is not None else []
+    args = (
+        parsed_args.COMET_PATH.split(os.sep) if parsed_args.COMET_PATH is not None else []
     )
 
-    if not comet_path:
+    if not args:
         workspace = None
         project_name = None
         experiment_key = None
-    elif len(comet_path) == 1:
-        workspace = comet_path[0]
+    elif len(args) == 1:
+        workspace = args[0]
         project_name = None
         experiment_key = None
-    elif len(comet_path) == 2:
-        workspace, project_name = comet_path
+    elif len(args) == 2:
+        workspace, project_name = args
         experiment_key = None
-    elif len(comet_path) == 3:
-        workspace, project_name, experiment_key = comet_path
+    elif len(args) == 3:
+        workspace, project_name, experiment_key = args
     else:
         raise Exception("invalid COMET_PATH: %r" % parsed_args.COMET_PATH)
 

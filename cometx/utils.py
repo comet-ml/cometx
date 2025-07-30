@@ -176,10 +176,13 @@ def download_url(url, output_filename, width=None, height=None, timeout=5,
 
 def remove_extra_slashes(path):
     if path:
-        if path.startswith("/"):
+        # Handle both forward and backward slashes for cross-platform compatibility
+        if path.startswith("/") or path.startswith("\\"):
             path = path[1:]
-        if path.endswith("/"):
+        if path.endswith("/") or path.endswith("\\"):
             path = path[:-1]
+        # Normalize path separators to forward slashes for consistency
+        path = path.replace("\\", "/")
         return path
     else:
         return ""

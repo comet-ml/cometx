@@ -150,7 +150,7 @@ def log(parsed_args, remaining=None):
 
 def log_cli(parsed_args):
     comet_path = (
-        parsed_args.COMET_PATH.split("/") if parsed_args.COMET_PATH is not None else []
+        parsed_args.COMET_PATH.split(os.sep) if parsed_args.COMET_PATH is not None else []
     )
 
     if len(comet_path) == 1:
