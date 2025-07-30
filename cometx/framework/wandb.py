@@ -28,7 +28,7 @@ from comet_ml.annotations import Box, Layer
 from comet_ml.cli_args_parse import _parse_cmd_args, _parse_cmd_args_naive
 from comet_ml.data_structure import Histogram
 
-from ..utils import download_url, remove_extra_slashes
+from ..utils import download_url, remove_extra_slashes, get_path_parts
 
 MAX_METRIC_SAMPLES = 15_000
 
@@ -106,8 +106,8 @@ class DownloadManager:
 
     def download(self, PATH):
         path = remove_extra_slashes(PATH)
-        # Use pathlib.Path.parts for cross-platform compatibility
-        path_parts = [part for part in pathlib.Path(path).parts if part]
+        # Use get_path_parts utility function for cross-platform compatibility
+        path_parts = get_path_parts(path)
 
         if len(path_parts) == 1:
             projects = []
