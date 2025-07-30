@@ -140,10 +140,8 @@ def get_parser_arguments(parser):
         default=[],
     )
     parser.add_argument(
-        "--debug",
-        help="If given, allow debugging",
-        default=False,
-        action="store_true")
+        "--debug", help="If given, allow debugging", default=False, action="store_true"
+    )
     parser.add_argument(
         "--quiet",
         help="If given, don't display update info",
@@ -248,16 +246,15 @@ class CopyManager:
         workspaces = self.api.get_workspaces()
         if workspace_dst not in workspaces:
             raise Exception(
-                f"{workspace_dst} does not exist; use the Comet UI to create it")
+                f"{workspace_dst} does not exist; use the Comet UI to create it"
+            )
 
         if project_src == "panels":
             # experiment_src may be "*" or filename
             for filename in glob.glob(
                 os.path.join(workspace_src, project_src, experiment_src)
             ):
-                print(
-                    "Uploading panel zip: %r to %r..." %
-                    (filename, workspace_dst))
+                print("Uploading panel zip: %r to %r..." % (filename, workspace_dst))
                 self.api.upload_panel_zip(workspace_dst, filename)
             return
 
@@ -298,12 +295,13 @@ class CopyManager:
 
             if symlink:
                 print(
-                    f"Creating symlink from {workspace_src}/{project_src}/{experiment_src} to {workspace_dst}/{temp_project_dst}")
+                    f"Creating symlink from {workspace_src}/{project_src}/{experiment_src} to {workspace_dst}/{temp_project_dst}"
+                )
                 experiment = APIExperiment(previous_experiment=experiment_src)
                 experiment.create_symlink(temp_project_dst)
                 print(
-                    f"    New symlink created: {
-                        self.api._get_url_server()}/{workspace_dst}/{temp_project_dst}/{experiment_src}")
+                    f"    New symlink created: {self.api._get_url_server()}/{workspace_dst}/{temp_project_dst}/{experiment_src}"
+                )
             elif "experiments" not in self.ignore:
                 self.copy_experiment_to(
                     experiment_folder, workspace_dst, temp_project_dst
@@ -362,25 +360,16 @@ class CopyManager:
         )
         return experiment
 
-    def get_experiment_folders(
-            self,
-            workspace_src,
-            project_src,
-            experiment_src):
-        for path in glob.iglob(
-                f"{workspace_src}/{project_src}/{experiment_src}"):
-            if any([path.endswith("~"),
-                    path.endswith(".json"),
-                    path.endswith(".jsonl")]):
+    def get_experiment_folders(self, workspace_src, project_src, experiment_src):
+        for path in glob.iglob(f"{workspace_src}/{project_src}/{experiment_src}"):
+            if any(
+                [path.endswith("~"), path.endswith(".json"), path.endswith(".jsonl")]
+            ):
                 continue
             else:
                 yield path
 
-    def copy_experiment_to(
-            self,
-            experiment_folder,
-            workspace_dst,
-            project_dst):
+    def copy_experiment_to(self, experiment_folder, workspace_dst, project_dst):
         title = experiment_folder
         experiment_name = None
         # See if there is a name:
@@ -393,8 +382,8 @@ class CopyManager:
                     if others_json["name"] == "Name":
                         experiment_name = others_json["valueCurrent"]
                         title = (
-                            f"{experiment_folder} (\"{
-                                others_json['valueCurrent']}\")")
+                            f"{experiment_folder} (\"{others_json['valueCurrent']}\")"
+                        )
                         break
                     line = fp.readline()
         print(f"Copying from {title} to {workspace_dst}/{project_dst}...")
@@ -440,9 +429,8 @@ class CopyManager:
         experiment.end()
 
         print(
-            f"Uploading {
-                experiment.offline_directory}/{
-                experiment._get_offline_archive_file_name()}")
+            f"Uploading {experiment.offline_directory}/{experiment._get_offline_archive_file_name()}"
+        )
         url = upload_single_offline_experiment(
             offline_archive_path=os.path.join(
                 experiment.offline_directory,
@@ -576,13 +564,8 @@ class CopyManager:
             asset_map[old_asset_id] = result["assetId"]
 
     def _log_asset(
-            self,
-            experiment,
-            path,
-            asset_type,
-            log_filename,
-            assets_metadata,
-            asset_map):
+        self, experiment, path, asset_type, log_filename, assets_metadata, asset_map
+    ):
         log_as_filename = assets_metadata[log_filename].get(
             "logAsFileName",
             None,
@@ -738,12 +721,8 @@ class CopyManager:
         asset_map = {}
         # Process all of the non-nested assets first:
         for log_filename in assets_metadata:
-            asset_type = assets_metadata[log_filename].get(
-                "type", "asset") or "asset"
-            if asset_type not in [
-                "confusion-matrix",
-                "embeddings",
-                    "datagrid"]:
+            asset_type = assets_metadata[log_filename].get("type", "asset") or "asset"
+            if asset_type not in ["confusion-matrix", "embeddings", "datagrid"]:
                 if (
                     "remote" in assets_metadata[log_filename]
                     and assets_metadata[log_filename]["remote"]
@@ -766,8 +745,7 @@ class CopyManager:
                     )
         # Process all nested assets:
         for log_filename in assets_metadata:
-            asset_type = assets_metadata[log_filename].get(
-                "type", "asset") or "asset"
+            asset_type = assets_metadata[log_filename].get("type", "asset") or "asset"
             if asset_type in ["confusion-matrix", "embeddings", "datagrid"]:
                 self._log_asset(
                     experiment,
@@ -797,8 +775,7 @@ class CopyManager:
             with experiment.context_manager("ignore"):
                 print("log_requirements...")
         if os.path.exists(filename):
-            installed_packages_list = [package.strip()
-                                       for package in open(filename)]
+            installed_packages_list = [package.strip() for package in open(filename)]
             if installed_packages_list is None:
                 return
             message = InstalledPackagesMessage(
@@ -843,9 +820,11 @@ class CopyManager:
             for line in open(summary_filename):
                 metric_summary = json.loads(line)
                 self.log_metrics(
-                    experiment, os.path.join(
-                        folder, "metrics", "metric_%05d.jsonl" %
-                        metric_summary["count"]), )
+                    experiment,
+                    os.path.join(
+                        folder, "metrics", "metric_%05d.jsonl" % metric_summary["count"]
+                    ),
+                )
 
     def _prepare_parameter_value(self, value):
         if isinstance(value, list):
@@ -866,8 +845,7 @@ class CopyManager:
                 )
                 for parameter in parameters
             }
-            experiment.log_parameters(
-                parameter_dictionary, nested_support=True)
+            experiment.log_parameters(parameter_dictionary, nested_support=True)
 
     def log_others(self, experiment, filename):
         """ """
@@ -966,11 +944,7 @@ class CopyManager:
             )
 
         if "others" not in self.ignore:
-            self.log_others(
-                experiment,
-                os.path.join(
-                    experiment_folder,
-                    "others.jsonl"))
+            self.log_others(experiment, os.path.join(experiment_folder, "others.jsonl"))
 
         if "assets" not in self.ignore:
             assets_metadata_filename = os.path.join(
@@ -995,22 +969,17 @@ class CopyManager:
 
         if "requirements" not in self.ignore:
             self.log_requirements(
-                experiment,
-                os.path.join(
-                    experiment_folder,
-                    "run/requirements.txt"))
+                experiment, os.path.join(experiment_folder, "run/requirements.txt")
+            )
 
         if "model-graph" not in self.ignore:
             self.log_graph(
-                experiment,
-                os.path.join(
-                    experiment_folder,
-                    "run/graph_definition.txt"))
+                experiment, os.path.join(experiment_folder, "run/graph_definition.txt")
+            )
 
         if "html" not in self.ignore:
             # NOTE: also logged as html asset
-            html_filenames = os.path.join(
-                experiment_folder, "assets", "html", "*")
+            html_filenames = os.path.join(experiment_folder, "assets", "html", "*")
             for html_filename in glob.glob(html_filenames):
                 self.log_html(experiment, html_filename)
             # Deprecated:
@@ -1021,22 +990,16 @@ class CopyManager:
 
         if "system-details" not in self.ignore:
             self.log_system_details(
-                experiment, os.path.join(
-                    experiment_folder, "system_details.json"))
+                experiment, os.path.join(experiment_folder, "system_details.json")
+            )
 
         if "git" not in self.ignore:
             self.log_git_metadata(
-                experiment,
-                os.path.join(
-                    experiment_folder,
-                    "run",
-                    "git_metadata.json"))
+                experiment, os.path.join(experiment_folder, "run", "git_metadata.json")
+            )
             self.log_git_patch(
-                experiment,
-                os.path.join(
-                    experiment_folder,
-                    "run",
-                    "git_diff.patch"))
+                experiment, os.path.join(experiment_folder, "run", "git_diff.patch")
+            )
 
         if "code" not in self.ignore:
             code_folder = os.path.join(experiment_folder, "run", "code")
@@ -1049,8 +1012,8 @@ class CopyManager:
 
 def main(args):
     parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     get_parser_arguments(parser)
     parsed_args = parser.parse_args(args)
     copy(parsed_args)
