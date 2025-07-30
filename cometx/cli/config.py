@@ -88,10 +88,8 @@ c.FileContentsManager.post_save_hook = post_save_hook
 
 def get_parser_arguments(parser):
     parser.add_argument(
-        "--debug",
-        help="If given, allow debugging",
-        default=False,
-        action="store_true")
+        "--debug", help="If given, allow debugging", default=False, action="store_true"
+    )
     parser.add_argument(
         "--auto-log-notebook",
         help="Takes a 1/yes/true, or 0/no/false",
@@ -144,8 +142,8 @@ def config(parsed_args):
 
 def main(args):
     parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     get_parser_arguments(parser)
     parsed_args = parser.parse_args(args)
     config(parsed_args)

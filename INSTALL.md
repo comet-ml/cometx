@@ -70,4 +70,4 @@ The following environment variables may be required for certain tests:
 
 ### Python Version
 
-This project requires Python 3.6 or higher. Python 3.12 is recommended for the best experience. 
+This project requires Python 3.6 or higher. Python 3.12 is recommended for the best experience.

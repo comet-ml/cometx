@@ -56,6 +56,48 @@ api_key = YOUR-COMET-API-KEY
 url_override = https://your-companys-comet.com/clientlib/
 ```
 
+## Development
+
+This project uses pre-commit hooks to ensure code quality and consistency. The hooks include:
+
+- **Black**: Code formatting
+- **isort**: Import sorting
+- **flake8**: Linting
+- **mypy**: Type checking
+- **pydocstyle**: Documentation style
+- **pre-commit hooks**: Various general checks (merge conflicts, YAML validation, etc.)
+
+### Setting up pre-commit
+
+1. Install development dependencies:
+   ```bash
+   pip install -r requirements-dev.txt
+   ```
+
+2. Install pre-commit hooks:
+   ```bash
+   pre-commit install
+   ```
+
+3. (Optional) Run the setup script:
+   ```bash
+   ./setup-pre-commit.sh
+   ```
+
+### Running checks manually
+
+- Run all checks: `pre-commit run --all-files`
+- Run specific checks:
+  - `pre-commit run black --all-files`
+  - `pre-commit run flake8 --all-files`
+  - `pre-commit run mypy --all-files`
+
+### Configuration files
+
+- `.pre-commit-config.yaml`: Pre-commit hook configuration
+- `.flake8`: Flake8 linting configuration
+- `pyproject.toml`: Black, isort, and mypy configuration
+
 ## Usage
 
 `cometx` is composed of a series of subcommands that are useful

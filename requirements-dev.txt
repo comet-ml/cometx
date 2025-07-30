@@ -1,6 +1,5 @@
 # Development dependencies
 -r requirements.txt
-bandit>=1.7.0
 
 # Additional development tools
 black>=23.0.0

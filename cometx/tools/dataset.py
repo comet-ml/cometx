@@ -40,12 +40,8 @@ def shuffle_in_memory(filename_in, filename_out):
 
 
 def shuffle(
-        filename_in,
-        filename_out,
-        memory_limit,
-        file_split_count,
-        depth=0,
-        debug=False):
+    filename_in, filename_out, memory_limit, file_split_count, depth=0, debug=False
+):
     if os.path.getsize(filename_in) < memory_limit:
         if debug:
             print(" " * depth, f"Level {depth + 1}", "Shuffle in memory...")

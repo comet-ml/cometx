@@ -78,8 +78,7 @@ def log_points_3d_pcd_file(experiment, filename):
                     xyz = adjust_point([float(num) for num in row[:3]])
                     points.append(xyz)
                 elif fields == ["j1", "j2", "j3"]:
-                    raise Exception(
-                        "unable to handle j1, j2, j3 fields format")
+                    raise Exception("unable to handle j1, j2, j3 fields format")
 
             line = fp.readline()
 
@@ -163,8 +162,8 @@ def log_points_3d_off_file(experiment, filename):
                 line = line.split("#", 1)[0]
                 raw_values = line.split()
                 vs = int(raw_values[0])
-                segment = [int(num) for num in raw_values[1:1 + vs]]
-                raw_color = raw_values[1 + vs:]
+                segment = [int(num) for num in raw_values[1 : 1 + vs]]
+                raw_color = raw_values[1 + vs :]
                 if any("." in c for c in raw_color):
                     color = [int(float(num) * 255) for num in raw_color]
                 else:

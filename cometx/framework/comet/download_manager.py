@@ -19,7 +19,6 @@ import io
 import json
 import logging
 import os
-import pathlib
 import re
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -37,7 +36,7 @@ from comet_ml.summary import Summary
 
 from ..._version import __version__
 from ...api import API
-from ...utils import _input_user_yn, get_query_experiments, get_path_parts
+from ...utils import _input_user_yn, get_path_parts, get_query_experiments
 
 LOGGER = logging.getLogger(__name__)
 
@@ -176,10 +175,8 @@ class DownloadManager:
             "html": "download_html",
         }
         self.ALL_RESOURCES = sorted(
-            list(
-                self.RESOURCE_FUNCTIONS.keys()) +
-            list(
-                self.META_RESOURCES.keys()))
+            list(self.RESOURCE_FUNCTIONS.keys()) + list(self.META_RESOURCES.keys())
+        )
         self.SUB_RESOURCES = flatten(
             [self.META_RESOURCES[resource] for resource in self.META_RESOURCES]
         )
@@ -271,9 +268,9 @@ class DownloadManager:
                 print(
                     "{resource} is not a supported experiment resource; aborting. Should be one of: {supported_resources}.".format(
                         resource=resource,
-                        supported_resources=", ".join(
-                            self.ALL_RESOURCES),
-                    ))
+                        supported_resources=", ".join(self.ALL_RESOURCES),
+                    )
+                )
                 return
 
         self.root = output if output is not None else os.getcwd()
@@ -519,9 +516,7 @@ class DownloadManager:
                     )
                 )
             else:
-                print(
-                    "%s/model-registry/%s/%s" %
-                    (workspace, name, version["version"]))
+                print("%s/model-registry/%s/%s" % (workspace, name, version["version"]))
 
     def verify_workspace(self, workspace):
         # type: (str) -> None
@@ -575,9 +570,7 @@ class DownloadManager:
                     )
                 )
             else:
-                print(
-                    "%s/artifacts/%s/%s" %
-                    (workspace, name, version["version"]))
+                print("%s/artifacts/%s/%s" % (workspace, name, version["version"]))
 
     def list_workspaces(self):
         # type: () -> None
@@ -743,8 +736,13 @@ class DownloadManager:
             path = os.path.join(self.root, workspace, "panels")
 
         all_panels = self.api.get_panels(workspace)
-        selected = [panel for panel in all_panels if (
-            panel["templateId"] == name_or_id or panel["templateName"] == name_or_id)]
+        selected = [
+            panel
+            for panel in all_panels
+            if (
+                panel["templateId"] == name_or_id or panel["templateName"] == name_or_id
+            )
+        ]
         if selected:
             panel_id = selected[0]["templateId"]
         else:
@@ -793,9 +791,7 @@ class DownloadManager:
                         break
 
             if not done:
-                raise ValueError(
-                    "cannot find version or stage: %r" %
-                    version_or_stage)
+                raise ValueError("cannot find version or stage: %r" % version_or_stage)
 
         results = self.api.download_registry_model(
             workspace,
@@ -829,17 +825,15 @@ class DownloadManager:
             name=name,
         )
         version = (
-            version_or_alias if version_or_alias else artifact_details["latestVersion"])
+            version_or_alias if version_or_alias else artifact_details["latestVersion"]
+        )
         params = {
             "artifact_id": artifact_details["artifactId"],
             "version_or_alias": version,
         }
         artifact = get_artifact(
-            self.api._client,
-            params,
-            None,
-            Summary("DownloadManager"),
-            self.config)
+            self.api._client, params, None, Summary("DownloadManager"), self.config
+        )
         result = artifact.download(path, "OVERWRITE")
         if result:
             self.summary["artifacts"] += 1
@@ -1087,8 +1081,7 @@ class DownloadManager:
             if git_meta.get("origin"):
                 origin = git_meta["origin"]
                 directory = git_meta["origin"].split("/")[-1].split(".")[0]
-                clone_text = CLONE_TEXT.format(
-                    origin=origin, directory=directory)
+                clone_text = CLONE_TEXT.format(origin=origin, directory=directory)
                 if git_patch:
                     patch_text = "git apply git_diff.patch"
                 else:
@@ -1117,8 +1110,7 @@ class DownloadManager:
         if git_meta["origin"]:
             origin = git_meta["origin"]
             directory = git_meta["origin"].split("/")[-1].split(".")[0]
-            clone_text = REPRODUCE_CLONE_TEXT.format(
-                origin=origin, directory=directory)
+            clone_text = REPRODUCE_CLONE_TEXT.format(origin=origin, directory=directory)
         else:
             clone_text = ""
 
@@ -1230,8 +1222,7 @@ class DownloadManager:
                             asset_filename = asset["fileName"]
                             asset["logAsFileName"] = asset_filename
                             if "." in asset_filename:
-                                asset_filename, ext = asset_filename.split(
-                                    ".", 1)
+                                asset_filename, ext = asset_filename.split(".", 1)
                             else:
                                 asset_filename, ext = asset_filename, ""
                             asset_filename = "%s-%s.%s" % (
@@ -1320,8 +1311,7 @@ class DownloadManager:
         if top_level:
             functions = ProgressBar(functions, "Downloading experiment")
         elif self.flat:
-            raise ValueError(
-                "--flat cannot be used with multiple experiment downloads")
+            raise ValueError("--flat cannot be used with multiple experiment downloads")
 
         # Download experiment items:
         for function_name in functions:
@@ -1334,12 +1324,7 @@ class DownloadManager:
             except Exception as err:
                 print("Error in experiment %r: %s" % (function, err))
 
-    def download_project(
-            self,
-            workspace,
-            project_name,
-            top_level=True,
-            query=None):
+    def download_project(self, workspace, project_name, top_level=True, query=None):
         # type: (str, str, Optional[bool]) -> None
         """
         Download a project.
@@ -1359,9 +1344,7 @@ class DownloadManager:
         if project_metadata:
             project_metadata["cometDownloadVersion"] = __version__
         else:
-            raise Exception(
-                "No such project: %s/%s" %
-                (workspace, project_name))
+            raise Exception("No such project: %s/%s" % (workspace, project_name))
 
         # If the project exists, anssync at project level, skip it
         if self.sync == "project" and os.path.exists(path):
@@ -1385,8 +1368,7 @@ class DownloadManager:
                     f.write(notes)
 
         if "experiments" not in self.ignore:
-            project_experiments = self.get_experiments(
-                workspace, project_name, query)
+            project_experiments = self.get_experiments(workspace, project_name, query)
             if top_level:
                 if self.flat:
                     raise ValueError(
@@ -1426,8 +1408,7 @@ class DownloadManager:
                 )
             total = 0
             if self.ask and "experiments" not in self.ignore:
-                for project_name in ProgressBar(
-                        projects, "Calculating download"):
+                for project_name in ProgressBar(projects, "Calculating download"):
                     metadata = self.api.get_project(workspace, project_name)
                     total = total + int(metadata["numberOfExperiments"])
                 if not self._confirm_download(total):

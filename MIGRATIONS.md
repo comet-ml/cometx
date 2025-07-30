@@ -34,7 +34,7 @@ from the source, and then copy it to the destination Comet instance.
 
 ### Downloading Data
 
-The first step in a migration is to use `cometx download`. 
+The first step in a migration is to use `cometx download`.
 For example, to download from an existing Comet installation:
 
 ```shell
@@ -115,7 +115,7 @@ cometx download --from wandb stacey/yolo-drive/1dwb18ia
 
 This will download the WandB run: https://wandb.ai/stacey/yolo-drive/runs/1dwb18ia
 
-After download, the following `copy` commands will be relevant. 
+After download, the following `copy` commands will be relevant.
 
 #### Additional Download Flags
 
@@ -167,4 +167,3 @@ COMET_URL_OVERRIDE=http://comet.b.com/clientlib \
 COMET_API_KEY=B-KEY \
 cometx copy <WORKSPACE> <NEW-WORKSPACE>
 ```
-

@@ -168,31 +168,21 @@ def draw_point_fake(size, fcanvas, transform, point, color):
     """
     Draw a point on the canvas given the transform.
     """
-    p = point_to_canvas(
-        size, multiply_point_by_matrix(
-            transform, point), z=True)
+    p = point_to_canvas(size, multiply_point_by_matrix(transform, point), z=True)
     location = fcanvas[(p[0], p[1])]
     if location is None or location["z"] < p[2]:
         fcanvas[(p[0], p[1])] = {"z": p[2], "color": color}
 
 
 def render(
-        points_filename,
-        boxes_filename,
-        x,
-        y,
-        z,
-        min_max_x,
-        min_max_y,
-        min_max_z,
-        size):
+    points_filename, boxes_filename, x, y, z, min_max_x, min_max_y, min_max_z, size
+):
     """
     Given to files, points and boxes, rotations (in degrees) on x, y ,z, and ranges,
     create an image.
     """
     if Image is None:
-        raise Exception(
-            "Python Image Library is not installed; pip install PIL")
+        raise Exception("Python Image Library is not installed; pip install PIL")
 
     background_color = (51, 51, 77)  # Skybox color
 
@@ -304,15 +294,9 @@ def create_image(
         for point in points:
             if swap_yz:
                 point[1], point[2] = point[2], point[1]
-            min_max_x = min(
-                point[0], min_max_x[0]), max(
-                point[0], min_max_x[1])
-            min_max_y = min(
-                point[1], min_max_y[0]), max(
-                point[1], min_max_y[1])
-            min_max_z = min(
-                point[2], min_max_z[0]), max(
-                point[2], min_max_z[1])
+            min_max_x = min(point[0], min_max_x[0]), max(point[0], min_max_x[1])
+            min_max_y = min(point[1], min_max_y[0]), max(point[1], min_max_y[1])
+            min_max_z = min(point[2], min_max_z[0]), max(point[2], min_max_z[1])
             points_fp.write(json.dumps(point))
             points_fp.write("\n")
 
@@ -324,15 +308,9 @@ def create_image(
                 for point in points:
                     if swap_yz:
                         point[1], point[2] = point[2], point[1]
-                    min_max_x = min(
-                        point[0], min_max_x[0]), max(
-                        point[0], min_max_x[1])
-                    min_max_y = min(
-                        point[1], min_max_y[0]), max(
-                        point[1], min_max_y[1])
-                    min_max_z = min(
-                        point[2], min_max_z[0]), max(
-                        point[2], min_max_z[1])
+                    min_max_x = min(point[0], min_max_x[0]), max(point[0], min_max_x[1])
+                    min_max_y = min(point[1], min_max_y[0]), max(point[1], min_max_y[1])
+                    min_max_z = min(point[2], min_max_z[0]), max(point[2], min_max_z[1])
             boxes_fp.write(json.dumps(box))
             boxes_fp.write("\n")
 

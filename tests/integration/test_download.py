@@ -60,7 +60,10 @@ class TestDownload:
         cls.USER = os.environ.get("COMET_USER")
         if cls.USER is None:
             import pytest
-            pytest.skip("COMET_USER environment variable not set - skipping integration tests")
+
+            pytest.skip(
+                "COMET_USER environment variable not set - skipping integration tests"
+            )
         cls.WORKSPACE = get_config("comet.workspace") or cls.USER
         cls.API_KEY = get_config("comet.api_key")
 

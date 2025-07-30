@@ -98,8 +98,7 @@ def display_invalid_api_key(api_key=None, cloud_url=None):
 
 
 def get_query_experiments(api, query_string, workspace, project_name):
-    from comet_ml.query import (Environment, Metadata, Metric, Other,
-                                Parameter, Tag)
+    from comet_ml.query import Environment, Metadata, Metric, Other, Parameter, Tag
 
     env = {
         "Environment": Environment,
@@ -172,8 +171,7 @@ def download_url(
         driver.save_screenshot(output_filename)
 
     else:
-        raise Exception(
-            "unknown output_filename type: should end with html or pdf")
+        raise Exception("unknown output_filename type: should end with html or pdf")
 
     driver.quit()
 

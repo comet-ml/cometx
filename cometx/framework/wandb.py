@@ -13,7 +13,6 @@
 import json
 import math
 import os
-import pathlib
 import re
 import shutil
 import tempfile
@@ -28,7 +27,7 @@ from comet_ml.annotations import Box, Layer
 from comet_ml.cli_args_parse import _parse_cmd_args, _parse_cmd_args_naive
 from comet_ml.data_structure import Histogram
 
-from ..utils import download_url, remove_extra_slashes, get_path_parts
+from ..utils import download_url, get_path_parts, remove_extra_slashes
 
 MAX_METRIC_SAMPLES = 15_000
 

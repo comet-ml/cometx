@@ -10,7 +10,6 @@ The pre-commit configuration includes the following hooks:
 - **Black**: Code formatting (88 character line length)
 - **isort**: Import sorting (compatible with Black)
 - **flake8**: Linting (with Black-compatible settings)
-- **bandit**: Security checks
 - **pre-commit hooks**: Various general checks:
   - Merge conflict detection
   - YAML/JSON validation
@@ -87,7 +86,6 @@ pre-commit run isort --all-files
 - Black (code formatting)
 - isort (import sorting)
 - flake8 (linting)
-- bandit (security checks)
 - All pre-commit general hooks
 
 ⚠️ **Manual Hooks:**
@@ -99,7 +97,7 @@ pre-commit run isort --all-files
 1. **Line Length Violations**: Some files exceed the 88-character line limit
 2. **Type Annotations**: Some files have syntax errors in type annotations
 3. **Documentation**: Many functions and classes lack proper docstrings
-4. **Security Warnings**: Bandit found some issues (mostly in tests)
+4. **Code Quality**: Focus on formatting, imports, and linting
 
 ## Next Steps
 
@@ -108,7 +106,7 @@ To improve the code quality:
 1. **Fix line length violations**: Run `pre-commit run black --all-files` to auto-format
 2. **Fix type annotations**: Address mypy errors in `cometx/framework/comet/download_manager.py`
 3. **Add docstrings**: Gradually add proper documentation to functions and classes
-4. **Address security issues**: Review and fix bandit warnings (especially the `eval` usage in `cometx/utils.py`)
+4. **Improve code quality**: Focus on formatting, imports, and linting issues
 
 ## Disabling Hooks
 

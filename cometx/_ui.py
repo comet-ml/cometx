@@ -161,11 +161,7 @@ class Streamlit:
         )
         self._observe(
             widget,
-            lambda results: self._rerun(
-                key,
-                results["owner"].index,
-                on_change,
-                args),
+            lambda results: self._rerun(key, results["owner"].index, on_change, args),
             names="value",
         )
         self._append(widgets.HTML(label))
@@ -222,19 +218,10 @@ class Streamlit:
         # FIXME
         pass
 
-    def button(
-            self,
-            label,
-            key=None,
-            help=None,
-            on_click=None,
-            args=None,
-            kwargs=None):
+    def button(self, label, key=None, help=None, on_click=None, args=None, kwargs=None):
         key = self._make_key("button", key)
         widget = widgets.Button(description=label)
-        self._on_click(
-            widget, lambda value: self._rerun(
-                key, value, on_click, args))
+        self._on_click(widget, lambda value: self._rerun(key, value, on_click, args))
         self._append(widget)
         retval = self._response.get(key, False)
         self._response[key] = False
@@ -262,25 +249,14 @@ class Streamlit:
         widget.style = {"description_width": "auto"}
         self._observe(
             widget,
-            lambda results: self._rerun(
-                key,
-                results["owner"].value,
-                on_change,
-                args),
+            lambda results: self._rerun(key, results["owner"].value, on_change, args),
             names="value",
         )
         self._append(widget)
         self._response[key] = retval
         return retval
 
-    def checkbox(
-            self,
-            label,
-            value,
-            key=None,
-            on_change=None,
-            args=None,
-            kwargs=None):
+    def checkbox(self, label, value, key=None, on_change=None, args=None, kwargs=None):
         # FIXME
         pass
 
@@ -325,7 +301,8 @@ class Streamlit:
                 traceback_str = traceback.format_exc()
                 self._clear()
                 self.markdown(
-                    f'<pre style="background-color:#fdd;">{traceback_str}</pre>')
+                    f'<pre style="background-color:#fdd;">{traceback_str}</pre>'
+                )
             # This will only actually display the first time
             display(self._top_level, HTML(STYLE))
         clear_output(wait=True)
