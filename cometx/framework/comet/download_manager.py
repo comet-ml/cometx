@@ -36,7 +36,7 @@ from comet_ml.summary import Summary
 
 from ..._version import __version__
 from ...api import API
-from ...utils import _input_user_yn, get_path_parts, get_query_experiments
+from ...utils import _input_user_yn, get_query_experiments
 
 LOGGER = logging.getLogger(__name__)
 
@@ -105,13 +105,10 @@ def clean_comet_path(path):
     """
     if not path:
         return path
-    # Handle both forward and backward slashes for cross-platform compatibility
-    while path.endswith("/") or path.endswith("\\"):
+    while path.endswith("/"):
         path = path[:-1]
-    while path.startswith("/") or path.startswith("\\"):
+    while path.startswith("/"):
         path = path[1:]
-    # Normalize path separators to forward slashes for consistency
-    path = path.replace("\\", "/")
     path = path.replace("//", "/")
     return path
 
@@ -219,10 +216,7 @@ class DownloadManager:
         query=None,
         max_workers=1,
     ):
-        # type: (Optional[str], Optional[List[str]], Optional[List[str]],
-        # Optional[str], Optional[bool], Optional[bool], Optional[bool],
-        # Optional[bool], Optional[str], Optional[str], Optional[bool],
-        # Optional[str]) -> None
+        # type: (Optional[str], Optional[List[str]], Optional[List[str]], Optional[str], Optional[bool], Optional[bool], Optional[bool], Optional[bool], Optional[str], Optional[str], Optional[bool], Optional[str]) -> None
         """
         The top-level method to download resources.
 
@@ -287,14 +281,12 @@ class DownloadManager:
         self.summary["panels"] = 0
 
         comet_path = clean_comet_path(comet_path)
-        # Use get_path_parts for cross-platform compatibility and consistency
-        args = get_path_parts(comet_path) if comet_path is not None else []
+        args = comet_path.split("/") if comet_path is not None else []
         artifact = len(args) > 1 and args[1] == "artifacts"
         model_registry = len(args) > 1 and args[1] == "model-registry"
         panel = len(args) > 1 and args[1] == "panels"
 
-        # Downloads can be one of: experiment, panel, model-registry, or
-        # artifact
+        # Downloads can be one of: experiment, panel, model-registry, or artifact
         if artifact is True:
             if list_items:
                 if len(args) == 2:
@@ -717,7 +709,7 @@ class DownloadManager:
             if graph:
                 self.summary["graph"] += 1
                 os.makedirs(path, exist_ok=True)
-                with open(filepath, "w", encoding="utf-8") as f:
+                with open(filepath, "w") as f:
                     f.write(graph)
 
     def download_panel(self, workspace, name_or_id):
@@ -858,7 +850,7 @@ class DownloadManager:
             metadata["cometDownloadVersion"] = __version__
             self.summary["metadata"] += 1
             os.makedirs(path, exist_ok=True)
-            with open(filepath, "w", encoding="utf-8") as f:
+            with open(filepath, "w") as f:
                 f.write(json.dumps(metadata))
 
     def download_html(self, experiment):
@@ -880,7 +872,7 @@ class DownloadManager:
             if html:
                 self.summary["html"] += 1
                 os.makedirs(path, exist_ok=True)
-                with open(filepath, "w", encoding="utf-8") as f:
+                with open(filepath, "w") as f:
                     f.write(html)
 
     def download_metrics(self, experiment):
@@ -931,7 +923,7 @@ class DownloadManager:
             if os_packages:
                 self.summary["requirements"] += 1
                 os.makedirs(path, exist_ok=True)
-                with open(filepath, "w", encoding="utf-8") as f:
+                with open(filepath, "w") as f:
                     f.write("\n".join(os_packages))
 
     def download_system_details(self, experiment):
@@ -956,7 +948,7 @@ class DownloadManager:
                 del details["installedPackages"]
             self.summary["system"] += 1
             os.makedirs(path, exist_ok=True)
-            with open(filepath, "w", encoding="utf-8") as f:
+            with open(filepath, "w") as f:
                 f.write(json.dumps(details))
 
     def download_others(self, experiment):
@@ -977,7 +969,7 @@ class DownloadManager:
             others = experiment.get_others_summary()
             self.summary["others"] += 1
             os.makedirs(path, exist_ok=True)
-            with open(filepath, "w", encoding="utf-8") as f:
+            with open(filepath, "w") as f:
                 for other in others:
                     f.write(json.dumps(other))
                     f.write("\n")
@@ -1000,7 +992,7 @@ class DownloadManager:
             params = experiment.get_parameters_summary()
             self.summary["parameters"] += 1
             os.makedirs(path, exist_ok=True)
-            with open(filepath, "w", encoding="utf-8") as f:
+            with open(filepath, "w") as f:
                 f.write(json.dumps(params))
 
     def download_git(self, experiment):

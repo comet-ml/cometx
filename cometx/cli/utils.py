@@ -30,8 +30,7 @@ def log_points(filename, experiment, points, boxes):
     # log vertices and segments
     print(f"Logging {filename} to {experiment.get_name()}...")
     existingExperiment.log_points_3d(
-        os.path.basename(filename) + ".c3d",
-        # comet 3d file format, zipped jsonl files
+        os.path.basename(filename) + ".c3d",  # comet 3d file format, zipped jsonl files
         points,
         boxes,
         step=0,
@@ -228,8 +227,7 @@ def log_tensorboard_folder_assets(workspace, project_name, full_path):
                 if tags["scalars"]:
                     for metric_name in tags["scalars"]:
                         scalar_data = ea.Scalars(metric_name)
-                        # Extract step, value, and wall_time for each scalar
-                        # event
+                        # Extract step, value, and wall_time for each scalar event
                         data = []
                         for event in scalar_data:
                             step = event.step

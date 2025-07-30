@@ -27,7 +27,7 @@ from comet_ml.annotations import Box, Layer
 from comet_ml.cli_args_parse import _parse_cmd_args, _parse_cmd_args_naive
 from comet_ml.data_structure import Histogram
 
-from ..utils import download_url, get_path_parts, remove_extra_slashes
+from ..utils import download_url, remove_extra_slashes
 
 MAX_METRIC_SAMPLES = 15_000
 
@@ -84,7 +84,8 @@ class DownloadManager:
                 except Exception as exc:
                     print(exc)
                     print(
-                        f"Unable to download {file.name!r} to {path!r}; skipping...")
+                        "Unable to download %r to %r; skipping..." % (file.name, path)
+                    )
 
         if self.queue is None or doit:
             # Do it now:
@@ -104,8 +105,7 @@ class DownloadManager:
 
     def download(self, PATH):
         path = remove_extra_slashes(PATH)
-        # Use get_path_parts utility function for cross-platform compatibility
-        path_parts = get_path_parts(path)
+        path_parts = path.split("/")
 
         if len(path_parts) == 1:
             projects = []
@@ -140,12 +140,7 @@ class DownloadManager:
             path = self.root
         else:
             workspace, project, experiment = run.path
-            path = os.path.join(
-                self.root,
-                workspace,
-                project,
-                experiment,
-                *subdirs)
+            path = os.path.join(self.root, workspace, project, experiment, *subdirs)
         os.makedirs(path, exist_ok=True)
         if filename:
             path = os.path.join(path, filename)
@@ -159,8 +154,7 @@ class DownloadManager:
                 log_as_filename = None
                 base_filename, ext = os.path.splitext(filename)
                 parts = base_filename.rsplit("_", 2)
-                if len(parts) == 3 and parts[1].isdigit(
-                ) and parts[0] != "boxes":
+                if len(parts) == 3 and parts[1].isdigit() and parts[0] != "boxes":
                     log_as_filename, step, _ = parts
                     log_as_filename += ext
                     step = int(step)
@@ -175,12 +169,10 @@ class DownloadManager:
         return path
 
     def get_file_path(self, wandb_file):
-        # Use os.path for cross-platform compatibility
-        return os.path.dirname(wandb_file.name)
+        return "/".join(wandb_file.name.split("/")[:-1])
 
     def get_file_name(self, wandb_file):
-        # Use os.path for cross-platform compatibility
-        file_name = clean_for_filename(os.path.basename(wandb_file.name))
+        file_name = clean_for_filename(wandb_file.name.split("/")[-1])
         return file_name
 
     def download_cmd_parameters(self, run, args):
@@ -353,8 +345,7 @@ class DownloadManager:
         image_name = None
         for i, layer in enumerate(annotation["all_boxes"]):
             for name in layer.keys():
-                image_name, _ = os.path.splitext(
-                    os.path.basename(layer[name]["path"]))
+                image_name, _ = os.path.splitext(os.path.basename(layer[name]["path"]))
                 image_name, _ = image_name.rsplit("_", 1)
                 boxes = self.load_annotations(
                     run, layer[name]["path"], i, annotation["width"]
@@ -426,11 +417,13 @@ class DownloadManager:
                 and self.sync == "experiment"
             ):
                 print(
-                    f"Sync: skipping experiment {workspace}/{project}/{experiment}...")
+                    f"Sync: skipping experiment {workspace}/{project}/{experiment}..."
+                )
                 continue
 
             print(
-                f"downloading run '{run.name}' to {workspace}/{project}/{experiment}...")
+                f"downloading run '{run.name}' to {workspace}/{project}/{experiment}..."
+            )
             self.reset_run()
             others = {
                 "Name": run.name,
@@ -466,8 +459,7 @@ class DownloadManager:
                 elif path == "media/graph" and "graph" not in self.ignore:
                     self.download_model_graph(run, file)
                 elif path == "media/images" and "image" not in self.ignore:
-                    # FIXME: bounding boxes, (bb and bit masks are saved in
-                    # assets)
+                    # FIXME: bounding boxes, (bb and bit masks are saved in assets)
                     if "asset" not in self.ignore:
                         self.download_image(run, file)
                 elif path == "media/audio" and "audio" not in self.ignore:
@@ -496,14 +488,13 @@ class DownloadManager:
                                 and "_type" in summary[item]
                             ):
                                 if summary[item]["_type"] == "histogram":
-                                    self.write_histogram(
-                                        run, item, summary[item])
+                                    self.write_histogram(run, item, summary[item])
                                 elif summary[item]["_type"].endswith("-file"):
                                     pass  # This is listed in assets
                                 else:
                                     print(
-                                        f"Ignoring {
-                                            summary[item]['_type']} in summary")
+                                        f"Ignoring {summary[item]['_type']} in summary"
+                                    )
                         self.download_asset_data(
                             run, json.dumps(summary), "wandb_summary.json"
                         )
@@ -571,15 +562,11 @@ class DownloadManager:
         values, counts = self.convert_histogram(data)
         histogram = Histogram()
         histogram.add(values=values, counts=counts)
-        data_dict = {"histograms": [
-            {"step": 0, "histogram": histogram.to_json()}]}
+        data_dict = {"histograms": [{"step": 0, "histogram": histogram.to_json()}]}
         name = clean_for_filename(name)
         path = self.get_path(
-            run,
-            "assets",
-            "histogram_combined_3d",
-            filename="%s_summary.json" %
-            name)
+            run, "assets", "histogram_combined_3d", filename="%s_summary.json" % name
+        )
         with open(path, "w") as fp:
             fp.write(json.dumps(data_dict) + "\n")
 
@@ -655,22 +642,14 @@ class DownloadManager:
         ## self.experiment.set_filename(system_and_os_info['program'])
         """
         # Log the entire file as well:
-        path = self.get_path(
-            run,
-            "assets",
-            "asset",
-            filename="wandb-metadata.json")
+        path = self.get_path(run, "assets", "asset", filename="wandb-metadata.json")
         with open(path, "w") as fp:
             fp.write(json.dumps(system_and_os_info) + "\n")
 
     def download_artifact(self, run, file):
         _, artifact_id, artifact_name = file.name.split("/", 2)
         artifact_name = clean_for_filename(artifact_name)
-        path = self.get_path(
-            run,
-            "artifacts",
-            artifact_id,
-            filename=artifact_name)
+        path = self.get_path(run, "artifacts", artifact_id, filename=artifact_name)
         self.download_file_task(path, file)
 
     def download_artifact_by_name(
@@ -699,8 +678,7 @@ class DownloadManager:
             path = os.path.join(self.root, workspace, project, "artifacts")
 
         os.makedirs(path, exist_ok=True)
-        artifact = self.api.artifact(
-            f"{workspace}/{project}/{artifact_name}:{alias}")
+        artifact = self.api.artifact(f"{workspace}/{project}/{artifact_name}:{alias}")
         artifact.download(path)
 
     def ignore_metric_name(self, metric):
@@ -739,11 +717,8 @@ class DownloadManager:
                 )
         name = clean_for_filename(name)
         path = self.get_path(
-            run,
-            "assets",
-            "histogram_combined_3d",
-            filename="%s_history.json" %
-            name)
+            run, "assets", "histogram_combined_3d", filename="%s_history.json" % name
+        )
         with open(path, "w") as fp:
             fp.write(json.dumps(data_dict) + "\n")
 
@@ -766,8 +741,7 @@ class DownloadManager:
                         and value is not None
                         and not math.isnan(value)
                     ):
-                        ts = int(timestamp *
-                                 1000) if timestamp is not None else None
+                        ts = int(timestamp * 1000) if timestamp is not None else None
                         data = {
                             "metricName": metric,
                             "metricValue": value,
@@ -786,8 +760,7 @@ class DownloadManager:
             self.queue.submit(task)
 
     def download_metrics(self, run):
-        metrics_summary_path = self.get_path(
-            run, filename="metrics_summary.jsonl")
+        metrics_summary_path = self.get_path(run, filename="metrics_summary.jsonl")
 
         count = 0
         with open(metrics_summary_path, "w") as fp:
@@ -801,8 +774,10 @@ class DownloadManager:
                         system_metric_names.add(key)
 
                 for system_metric_name in system_metric_names:
-                    fp.write(json.dumps(
-                        {"metric": system_metric_name, "count": count}) + "\n")
+                    fp.write(
+                        json.dumps({"metric": system_metric_name, "count": count})
+                        + "\n"
+                    )
                     filename = self.get_path(
                         run, "metrics", filename="metric_%05d.jsonl" % count
                     )
@@ -816,8 +791,9 @@ class DownloadManager:
                         print("        downloading system metric %r..." % name)
                         for step, line in enumerate(system_metrics):
                             timestamp = line["_timestamp"]
-                            ts = (int(timestamp * 1000)
-                                  if timestamp is not None else None)
+                            ts = (
+                                int(timestamp * 1000) if timestamp is not None else None
+                            )
                             data = {
                                 "metricName": name,
                                 "metricValue": line.get(system_metric_name),
@@ -842,8 +818,7 @@ class DownloadManager:
                         if item == "boxes":
                             self.annotations.append(value)
                             continue
-                        if "_type" in value and value["_type"] in [
-                                "histogram"]:
+                        if "_type" in value and value["_type"] in ["histogram"]:
                             continue
 
                     summary[item] = value

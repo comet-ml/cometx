@@ -13,6 +13,7 @@
 
 import json
 import math
+import os
 import pathlib
 import tempfile
 from collections import defaultdict
@@ -22,7 +23,7 @@ try:
 except ImportError:
     Image, ImageDraw = None, None
 
-# 3D Graphics functions
+## 3D Graphics functions
 
 
 def identity():
@@ -243,12 +244,11 @@ def render(
             data = json.loads(line)
             # Each data is {"segments": [...], "name": "prediction", "color": [r, g, b],
             # "score": Number, "label": "pedestrian"}
-            # Each segment is a list of lines,  which is a list of points,
-            # which is [x, y, z]
+            # Each segment is a list of lines,  which is a list of points, which is [x, y, z]
             if "color" in data and data["color"]:
                 color = tuple(data["color"])
             else:
-                color = (255, 255, 255)  # default color is white
+                color = (255, 255, 255)  ## default color is white
             for points in data["segments"]:
                 point1 = points[0]
                 for point2 in points[1:]:

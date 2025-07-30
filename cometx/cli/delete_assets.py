@@ -38,7 +38,7 @@ import sys
 
 from comet_ml import API
 
-from ..utils import get_path_parts, get_query_experiments
+from ..utils import get_query_experiments
 
 ADDITIONAL_ARGS = False
 
@@ -85,21 +85,23 @@ def delete_assets(parsed_args, remaining=None):
 
 
 def delete_cli(parsed_args):
-    args = get_path_parts(parsed_args.COMET_PATH) if parsed_args.COMET_PATH else []
+    comet_path = (
+        parsed_args.COMET_PATH.split("/") if parsed_args.COMET_PATH is not None else []
+    )
 
-    if not args:
+    if not comet_path:
         workspace = None
         project_name = None
         experiment_key = None
-    elif len(args) == 1:
-        workspace = args[0]
+    elif len(comet_path) == 1:
+        workspace = comet_path[0]
         project_name = None
         experiment_key = None
-    elif len(args) == 2:
-        workspace, project_name = args
+    elif len(comet_path) == 2:
+        workspace, project_name = comet_path
         experiment_key = None
-    elif len(args) == 3:
-        workspace, project_name, experiment_key = args
+    elif len(comet_path) == 3:
+        workspace, project_name, experiment_key = comet_path
     else:
         raise Exception("invalid COMET_PATH: %r" % parsed_args.COMET_PATH)
 

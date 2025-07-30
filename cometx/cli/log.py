@@ -50,7 +50,7 @@ from comet_ml import ExistingExperiment
 
 from ..api import API
 from ..panel_utils import create_panel_zip
-from ..utils import get_file_extension, get_path_parts, get_query_experiments
+from ..utils import get_file_extension, get_query_experiments
 from .utils import (
     log_points_3d_off_file,
     log_points_3d_pcd_file,
@@ -149,21 +149,19 @@ def log(parsed_args, remaining=None):
 
 
 def log_cli(parsed_args):
-    args = (
-        get_path_parts(parsed_args.COMET_PATH)
-        if parsed_args.COMET_PATH is not None
-        else []
+    comet_path = (
+        parsed_args.COMET_PATH.split("/") if parsed_args.COMET_PATH is not None else []
     )
 
-    if len(args) == 1:
-        workspace = args[0]
+    if len(comet_path) == 1:
+        workspace = comet_path[0]
         project_name = None
         experiment_key = None
-    elif len(args) == 2:
-        workspace, project_name = args
+    elif len(comet_path) == 2:
+        workspace, project_name = comet_path
         experiment_key = None
-    elif len(args) == 3:
-        workspace, project_name, experiment_key = args
+    elif len(comet_path) == 3:
+        workspace, project_name, experiment_key = comet_path
     else:
         raise Exception("invalid COMET_PATH: %r" % parsed_args.COMET_PATH)
 
@@ -210,8 +208,7 @@ def log_cli(parsed_args):
                 log_experiment_code_from_file(experiment, filename)
 
     elif parsed_args.type == "other":
-        # two possibilities: log key:value to set of experiments; log filename
-        # to experiment
+        # two possibilities: log key:value to set of experiments; log filename to experiment
         if parsed_args.FILENAME:
             for experiment in experiments:
                 for filename in parsed_args.FILENAME:

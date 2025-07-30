@@ -13,7 +13,6 @@
 
 import base64
 import os
-import pathlib
 import sys
 import time
 
@@ -56,15 +55,7 @@ class ProgressBar:
 
 def _input_user(prompt):
     # type: (str) -> str
-    """
-    Prompts the user for input, applies clean_string to the response, and returns it.
-
-    Args:
-        prompt (str): The message to display to the user.
-
-    Returns:
-        str: The cleaned user input.
-    """
+    """Independent function to apply clean_string to all responses + make mocking easier"""
     return clean_string(six.moves.input(prompt))
 
 
@@ -186,59 +177,10 @@ def download_url(
 
 def remove_extra_slashes(path):
     if path:
-        # Handle both forward and backward slashes for cross-platform
-        # compatibility
-        if path.startswith("/") or path.startswith("\\"):
+        if path.startswith("/"):
             path = path[1:]
-        if path.endswith("/") or path.endswith("\\"):
+        if path.endswith("/"):
             path = path[:-1]
-        # Normalize path separators to forward slashes for consistency
-        path = path.replace("\\", "/")
         return path
     else:
         return ""
-
-
-def get_path_parts(path):
-    """
-    Get path parts using pathlib.Path.parts for cross-platform compatibility.
-
-    Args:
-        path: Path string or Path object
-
-    Returns:
-        List of path components, excluding empty parts and removing leading slashes
-
-    Raises:
-        ValueError: If the path contains '..' which is not allowed
-    """
-    if path is None:
-        return []
-
-    # Convert to string if it's a Path object
-    path_str = str(path)
-
-    # Check for '..' in the path
-    if ".." in path_str:
-        raise ValueError("Path contains '..' which is not allowed")
-
-    # Normalize path separators to forward slashes for consistent processing
-    # This ensures cross-platform compatibility since pathlib on Unix doesn't
-    # recognize backslashes as path separators
-    path_str = path_str.replace("\\", "/")
-
-    # Use pathlib.Path for cross-platform path handling
-    path_obj = pathlib.Path(path_str)
-
-    # Get parts and filter out empty parts and current directory
-    parts = [part for part in path_obj.parts if part and part != "."]
-
-    # Remove drive letter if present (Windows absolute paths)
-    if parts and len(parts[0]) == 2 and parts[0].endswith(":"):
-        parts = parts[1:]
-
-    # Remove root part if the path is absolute
-    if path_obj.is_absolute():
-        parts = parts[1:]
-
-    return parts
