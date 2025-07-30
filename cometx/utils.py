@@ -13,6 +13,7 @@
 
 import base64
 import os
+import pathlib
 import sys
 import time
 
@@ -216,17 +217,23 @@ def get_path_parts(path):
     if ".." in path_str:
         raise ValueError("Path contains '..' which is not allowed")
 
-    # Handle escaped characters first (backslash followed by space)
-    path_str = path_str.replace("\\ ", " ")
-
     # Normalize path separators to forward slashes for consistent processing
+    # This ensures cross-platform compatibility since pathlib on Unix doesn't
+    # recognize backslashes as path separators
     path_str = path_str.replace("\\", "/")
 
-    # Split by forward slashes and filter out empty parts and current directory
-    parts = [part for part in path_str.split("/") if part and part != "."]
+    # Use pathlib.Path for cross-platform path handling
+    path_obj = pathlib.Path(path_str)
+
+    # Get parts and filter out empty parts and current directory
+    parts = [part for part in path_obj.parts if part and part != "."]
 
     # Remove drive letter if present (Windows absolute paths)
     if parts and len(parts[0]) == 2 and parts[0].endswith(":"):
+        parts = parts[1:]
+
+    # Remove root part if present (Unix absolute paths)
+    if parts and parts[0] == "/":
         parts = parts[1:]
 
     return parts

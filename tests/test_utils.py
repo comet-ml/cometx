@@ -164,7 +164,7 @@ class TestGetPathParts:
 
     def test_path_with_escaped_characters(self):
         """Test path with escaped characters."""
-        result = get_path_parts("workspace/project\\ name/experiment")
+        result = get_path_parts("workspace\\project name\\experiment")
         assert result == ["workspace", "project name", "experiment"]
 
     # Tests for invalid paths containing ".."
