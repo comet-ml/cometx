@@ -431,8 +431,7 @@ class DownloadManager:
                 continue
 
             print(
-                f"downloading run '{
-                    run.name}' to {workspace}/{project}/{experiment}...")
+                f"downloading run '{run.name}' to {workspace}/{project}/{experiment}...")
             self.reset_run()
             others = {
                 "Name": run.name,
