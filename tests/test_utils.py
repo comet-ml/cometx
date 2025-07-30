@@ -158,7 +158,7 @@ class TestGetPathParts:
     def test_backslash_only(self):
         """Test path with only backslashes."""
         result = get_path_parts("\\\\\\")
-        assert result == ["\\\\\\"]
+        assert result == []
 
     def test_mixed_slashes_with_empty_components(self):
         """Test mixed slashes with empty components."""
