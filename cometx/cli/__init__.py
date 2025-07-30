@@ -72,27 +72,46 @@ def add_subparser(subparsers, module, name):
 
 
 def main(raw_args=sys.argv[1:]):
-    parser = argparse.ArgumentParser(
+    # Create main parser for global arguments
+    main_parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument(
+    main_parser.add_argument(
         "--version",
         help="Display comet_ml version",
         action="store_const",
         const=True,
         default=False,
     )
-    parser.add_argument(
-        "--api-key",
-        help="Set the COMET_API_KEY",
-        type=str
+    main_parser.add_argument("--api-key", help="Set the COMET_API_KEY", type=str)
+    main_parser.add_argument(
+        "--url-override", help="Set the COMET_URL_OVERRIDE", type=str
     )
-    parser.add_argument(
-        "--url-override",
-        help="Set the COMET_URL_OVERRIDE",
-        type=str
+
+    # Parse global arguments first
+    global_args, remaining = main_parser.parse_known_args(raw_args)
+
+    # Set global environment variables early
+    if global_args.api_key:
+        os.environ["COMET_API_KEY"] = global_args.api_key
+    if global_args.url_override:
+        os.environ["COMET_URL_OVERRIDE"] = global_args.url_override
+
+    # Handle version flag
+    if global_args.version:
+        print(__version__)
+        return
+
+    # If no subcommand provided, show help
+    if not remaining:
+        main_parser.print_help()
+        return
+
+    # Create subcommand parser
+    subcommand_parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    subparsers = parser.add_subparsers()
+    subparsers = subcommand_parser.add_subparsers()
 
     # Register CLI commands:
     add_subparser(subparsers, download, "download")
@@ -106,47 +125,19 @@ def main(raw_args=sys.argv[1:]):
     add_subparser(subparsers, config, "config")
     add_subparser(subparsers, smoke_test, "smoke-test")
 
-    # First identify the subparser as some subparser pass additional args to
-    # the subparser and other not
-
-    args, rest = parser.parse_known_args(raw_args)
-
-    # Set global environment variables early
-    if args.api_key:
-        os.environ["COMET_API_KEY"] = args.api_key
-    if args.url_override:
-        os.environ["COMET_URL_OVERRIDE"] = args.url_override
-
-    # Remove global flags from remaining arguments
-    filtered_rest = []
-    skip_next = False
-    for i, arg in enumerate(rest):
-        if skip_next:
-            skip_next = False
-            continue
-        if arg in ["--api-key", "--url-override"]:
-            skip_next = True  # Skip the value for this flag
-            continue
-        if "=" in arg:  # Handle --key=value syntax
-            key, value = arg.split("=", 1)
-            if key in ["--api-key", "--url-override"]:
-                continue  # Skip this flag entirely
-        filtered_rest.append(arg)
+    # Parse subcommand arguments
+    args, rest = subcommand_parser.parse_known_args(remaining)
 
     # args won't have additional args if no subparser added
     if hasattr(args, "additional_args") and args.additional_args:
         parser_func = args.func
-
-        parser_func(args, filtered_rest)
-    elif args.version:
-        print(__version__)
+        parser_func(args, rest)
     else:
         # If the subcommand doesn't need extra args, reparse in strict mode so
         # the users get a nice message in case of unsupported CLi argument
-        args = parser.parse_args(raw_args)
+        args = subcommand_parser.parse_args(remaining)
         if hasattr(args, "func"):
             parser_func = args.func
-
             parser_func(args)
         else:
             # comet with no args; call recursively:
