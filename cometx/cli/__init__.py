@@ -127,6 +127,10 @@ def main(raw_args=sys.argv[1:]):
         if arg in ["--api-key", "--url-override"]:
             skip_next = True  # Skip the value for this flag
             continue
+        if "=" in arg:  # Handle --key=value syntax
+            key, value = arg.split("=", 1)
+            if key in ["--api-key", "--url-override"]:
+                continue  # Skip this flag entirely
         filtered_rest.append(arg)
 
     # args won't have additional args if no subparser added
