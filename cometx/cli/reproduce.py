@@ -14,7 +14,6 @@
 
 import argparse
 import os
-import pathlib
 import sys
 
 from cometx.framework.comet.download_manager import (DownloadManager,
