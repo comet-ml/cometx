@@ -32,101 +32,38 @@ cometx --api-key="YOUR-COMET-API-KEY" --url-override="https://your-companys-come
 
 ## Usage
 
-`cometx` is composed of a series of subcommands that are useful
+`cometx` is composed of a series of commands that are useful
 independently, and can be used together to create sophisticated tools
 for ML management.
 
-This section will examine some common uses, followed by a more
-detailed exploration of each subcommand.
+### Commands
 
-### Use Cases
-
-In this section we'll explore some common scenarios.
-
-1. Copy a specific project from one Comet installation to another
-2. Copy all projects in workspace to a new workspace
-3. Copy specific experiments in a project to new experiments
-
-## 1. Copy a specific project from one comet installation to another
-
-A useful idiom is to set your Comet environment variables on the line
-of a subcommand. In this manner, you can set the `COMET_URL_OVERRIDE`
-and `COMET_API_KEY` for different installations.
-
-Of course, you don't have to set the environment variables if you are
-copying experiments on the same Comet installation.
-
-Here is how you one could download the experiments in
-WORKSPACE/PROJECT from http://comet.a.com:
-
-```shell
-cometx --api-key=A-KEY download WORKSPACE/PROJECT
-```
-
-The `cometx download` subcommand downloads all of the Comet experiment
-data into local files. Note that WORKSPACE/PROJECT refers to a
-workspace and project on http://comet.a.com.
-
-One could then copy the downloaded experiment data with a similar command:
-
-```shell
-cometx --api-key=B-KEY copy WORKSPACE/PROJECT NEW-WORKSPACE/NEW-PROJECT
-```
-
-Note that WORKSPACE/PROJECT now refers to a directory, and
-NEW-WORKSPACE/NEW-PROJECT refers to a workspace and project on
-http://comet.b.com.
-
-## 2. Copy all projects in workspace to a new workspace
-
-Similarly, one can copy all of the projects by first downloading them:
-
-```shell
-cometx --api-key=A-KEY download WORKSPACE
-```
-
-and then copying them:
-
-```shell
-cometx --api-key=B-KEY copy WORKSPACE NEW-WORKSPACE
-```
-
-## 3. Copy specific experiments in a project to new experiments
-
-Similarly, one can copy a single experiment first downloading it:
-
-```shell
-cometx --api-key=A-KEY download WORKSPACE/PROJECT/EXPERIMENT-NAME-OR-ID
-```
-
-and then copying it:
-
-```shell
-cometx --api-key=B-KEY copy WORKSPACE/PROJECT/EXPERIMENT-NAME-OR-ID NEW-WORKSPACE/NEW-PROJECT
-```
-
-### Subcommands
-
-* [cometx list](#cometx-list)
-* [cometx download](#cometx-download)
+* [cometx admin](#cometx-admin)
+* [cometx config](#cometx-config)
 * [cometx copy](#cometx-copy)
+* [cometx delete-assets](#cometx-delete-assets)
+* [cometx download](#cometx-download)
+* [cometx list](#cometx-list)
 * [cometx log](#cometx-log)
 * [cometx reproduce](#cometx-reproduce)
-* [cometx delete-assets](#cometx-delete-assets)
-* [cometx config](#cometx-config)
-* [cometx update](#cometx-update)
-* [cometx admin](#cometx-admin)
 * [cometx smoke-test](#cometx-smoke-test)
+* [cometx update](#cometx-update)
 
-For all subcommands, use the `--help` flag to get additional information.
+For all commands, use the `--help` flag to get additional information.
 
 ## Global Options
 
-All commands support these global options:
+These flags are availble before a command:
 
 * `--api-key API_KEY` - Set the COMET_API_KEY
 * `--url-override URL_OVERRIDE` - Set the COMET_URL_OVERRIDE
+
+This command shows the cometx version:
+
 * `--version` - Display comet_ml version
+
+This command can be used globally, or for individual commands:
+
 * `-h, --help` - Show help message
 
 ## cometx list
@@ -500,6 +437,72 @@ Items to include or exclude:
 * `--debug DEBUG` - Show debugging information
 
 For more information, `cometx smoke-test --help`
+
+## Copy/Download Use Cases
+
+In this section we'll explore some common scenarios.
+
+1. Copy a specific project from one Comet installation to another
+2. Copy all projects in workspace to a new workspace
+3. Copy specific experiments in a project to new experiments
+
+### 1. Copy a specific project from one comet installation to another
+
+A useful idiom is to set your Comet environment variables on the line
+of a command. In this manner, you can set the `COMET_URL_OVERRIDE`
+and `COMET_API_KEY` for different installations.
+
+Of course, you don't have to set the environment variables if you are
+copying experiments on the same Comet installation.
+
+Here is how you one could download the experiments in
+WORKSPACE/PROJECT from http://comet.a.com:
+
+```shell
+cometx --api-key=A-KEY download WORKSPACE/PROJECT
+```
+
+The `cometx download` command downloads all of the Comet experiment
+data into local files. Note that WORKSPACE/PROJECT refers to a
+workspace and project on http://comet.a.com.
+
+One could then copy the downloaded experiment data with a similar command:
+
+```shell
+cometx --api-key=B-KEY copy WORKSPACE/PROJECT NEW-WORKSPACE/NEW-PROJECT
+```
+
+Note that WORKSPACE/PROJECT now refers to a directory, and
+NEW-WORKSPACE/NEW-PROJECT refers to a workspace and project on
+http://comet.b.com.
+
+### 2. Copy all projects in workspace to a new workspace
+
+Similarly, one can copy all of the projects by first downloading them:
+
+```shell
+cometx --api-key=A-KEY download WORKSPACE
+```
+
+and then copying them:
+
+```shell
+cometx --api-key=B-KEY copy WORKSPACE NEW-WORKSPACE
+```
+
+### 3. Copy specific experiments in a project to new experiments
+
+Similarly, one can copy a single experiment first downloading it:
+
+```shell
+cometx --api-key=A-KEY download WORKSPACE/PROJECT/EXPERIMENT-NAME-OR-ID
+```
+
+and then copying it:
+
+```shell
+cometx --api-key=B-KEY copy WORKSPACE/PROJECT/EXPERIMENT-NAME-OR-ID NEW-WORKSPACE/NEW-PROJECT
+```
 
 ## Running Tests
 
