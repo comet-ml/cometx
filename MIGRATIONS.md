@@ -19,11 +19,10 @@ projects or experiments between different Comet instances, you need to
 configure `cometx` to connect to the source and destination Comet instances.
 
 You can either change the configuration in the `cometx` configuration file
-(`~/.comet.config`) or use the `COMET_API_KEY` and `COMET_URL_OVERRIDE`
-environment variables to specify the source and destination Comet instances.
+(`~/.comet.config`) or use the `--url-override` and `--api-key` parameters to specify the source and destination Comet instances.
 But you must ensure to either update the configuration file or change the
-environment variables between the source and destination Comet instances before
-compying data to the destination, so that `cometx` connects to the correct
+parameters between the source and destination Comet instances before
+copying data to the destination, so that `cometx` connects to the correct
 Comet instance. This is because only one Comet instance can be configured at a
 time.
 
@@ -32,15 +31,16 @@ time.
 Migrating your data is a two step process. First you must download the data
 from the source, and then copy it to the destination Comet instance.
 
+NOTE: if your installation does not use smart keys, you'll need to add the
+`--url-override=http://comet.X.com/clientlib` for the associated `--api-key=X-KEY`.
+
 ### Downloading Data
 
 The first step in a migration is to use `cometx download`.
 For example, to download from an existing Comet installation:
 
 ```shell
-COMET_URL_OVERRIDE=http://comet.a.com/clientlib \
-COMET_API_KEY=A-KEY \
-cometx download <WORKSPACE>/<PROJECT>
+cometx --api-key A-KEY download <WORKSPACE>/<PROJECT>
 ```
 See below for migrating from another vendor.
 
@@ -56,9 +56,7 @@ If you want to download a single experiment, you can specify the
 experiment ID or experiment name in addition to the project name:
 
 ```shell
-COMET_URL_OVERRIDE=http://comet.a.com/clientlib \
-COMET_API_KEY=A-KEY \
-cometx download <WORKSPACE>/<PROJECT>/<EXPERIMENT_ID_OR_NAME>
+cometx --api-key A-KEY download <WORKSPACE>/<PROJECT>/<EXPERIMENT_ID_OR_NAME>
 ```
 
 ##### Downloading an Entire Workspace
@@ -67,9 +65,7 @@ You can also omit the project name to download all of the projects in
 a workspace:
 
 ```shell
-COMET_URL_OVERRIDE=http://comet.a.com/clientlib \
-COMET_API_KEY=A-KEY \
-cometx download <WORKSPACE>
+cometx --api-key A-KEY download <WORKSPACE>
 ```
 
 #### Filtering Resources
@@ -78,9 +74,7 @@ You can also filter the resources that are downloaded by specifying them as
 arguments to the `download` subcommand:
 
 ```shell
-COMET_URL_OVERRIDE=http://comet.a.com/clientlib \
-COMET_API_KEY=A-KEY \
-cometx download <WORKSPACE>/<PROJECT> [RESOURCE ...]
+cometx --api-key A-KEY download <WORKSPACE>/<PROJECT> [RESOURCE ...]
 ```
 
 Where `[RESOURCE ...]` is zero or more of the following names:
@@ -131,14 +125,11 @@ then use the `copy` subcommand to upload the data to the destination
 Comet instance.
 
 ```shell
-COMET_URL_OVERRIDE=http://comet.b.com/clientlib \
-COMET_API_KEY=B-KEY \
-cometx copy <WORKSPACE>/<PROJECT> <NEW-WORKSPACE>/<NEW-PROJECT>
+cometx --api-key B-KEY copy <WORKSPACE>/<PROJECT> <NEW-WORKSPACE>/<NEW-PROJECT>
 ```
 
-Notice that we are using a different `COMET_URL_OVERRIDE` value than
-before. This allows us to copy the downloaded data to a different
-Comet installation.
+Note that you will need to add the associated`--url-override` values
+for each installation that doesn't use smart keys.
 
 Also note that `<WORKSPACE>/<PROJECT>` now refers to a directory, and
 `<NEW-WORKSPACE>/<NEW-PROJECT>` refers to a workspace and project on
@@ -151,9 +142,7 @@ experiments are always created.
 You can similarly copy a single experiment:
 
 ```shell
-COMET_URL_OVERRIDE=http://comet.b.com/clientlib \
-COMET_API_KEY=B-KEY \
-cometx copy <WORKSPACE>/<PROJECT>/<EXPERIMENT_ID_OR_NAME> <NEW-WORKSPACE>/<NEW-PROJECT>
+cometx --api-key B-KEY copy <WORKSPACE>/<PROJECT>/<EXPERIMENT_ID_OR_NAME> <NEW-WORKSPACE>/<NEW-PROJECT>
 ```
 
 Note the absence of the experiment ID in the destination path.
@@ -163,7 +152,138 @@ Note the absence of the experiment ID in the destination path.
 As well as uploading an entire workspace:
 
 ```shell
-COMET_URL_OVERRIDE=http://comet.b.com/clientlib \
-COMET_API_KEY=B-KEY \
-cometx copy <WORKSPACE> <NEW-WORKSPACE>
+cometx --api-key B-KEY copy <WORKSPACE> <NEW-WORKSPACE>
 ```
+
+## Command Line Reference
+
+### Download Command
+
+The `cometx download` command downloads experiment data, artifacts, models, and panels from Comet or other vendors.
+
+#### Basic Usage
+
+```shell
+cometx download [RESOURCE ...] [FLAGS ...]
+cometx download WORKSPACE [RESOURCE ...] [FLAGS ...]
+cometx download WORKSPACE/PROJECT [RESOURCE ...] [FLAGS ...]
+cometx download WORKSPACE/PROJECT/EXPERIMENT-KEY [RESOURCE ...] [FLAGS ...]
+```
+
+#### Downloading Different Resource Types
+
+**Experiments and Experiment Resources:**
+```shell
+cometx download WORKSPACE/PROJECT [RESOURCE ...]
+cometx download WORKSPACE/PROJECT/EXPERIMENT-KEY [RESOURCE ...]
+```
+
+**Artifacts:**
+```shell
+cometx download WORKSPACE/artifacts/NAME
+cometx download WORKSPACE/artifacts/NAME/VERSION-OR-ALIAS
+```
+
+**Models from Registry:**
+```shell
+cometx download WORKSPACE/model-registry/NAME
+cometx download WORKSPACE/model-registry/NAME/VERSION-OR-STAGE
+```
+
+**Panels:**
+```shell
+cometx download WORKSPACE/panels/NAME-OR-ID
+cometx download WORKSPACE/panels
+```
+
+#### Available Resources
+
+For experiments, you can specify zero or more of these resource types:
+
+* `run` - alias for: code, git, output, graph, and requirements
+* `system`
+* `others`
+* `parameters`
+* `metadata`
+* `metrics`
+* `assets`
+* `html`
+* `project` - alias for: project_notes, project_metadata
+
+#### Download Options
+
+* `--from from` - Source of data to download. Options: comet or wandb
+* `-i IGNORE, --ignore IGNORE` - Resource(s) (or 'experiments') to ignore
+* `-j PARALLEL, --parallel PARALLEL` - Number of threads to use for parallel downloading (default based on CPUs)
+* `-o OUTPUT, --output OUTPUT` - Output directory for downloads
+* `-u, --use-name` - Use experiment names for experiment folders and listings
+* `-l, --list` - List items at this level rather than download
+* `--flat` - Download files without subfolders
+* `-f, --ask` - Query the user before proceeding (defaults to 'yes' if not included)
+* `--filename FILENAME` - Only get resources ending with this filename
+* `--query QUERY` - Only download experiments that match this Comet query string
+* `--asset-type ASSET_TYPE` - Only get assets with this type
+* `--sync SYNC` - What level to sync at: all, experiment, project, or workspace
+* `--debug` - Provide debug info
+
+#### Asset Types
+
+The following asset types are supported:
+
+* 3d-image
+* 3d-points (deprecated)
+* audio
+* confusion-matrix (may contain assets)
+* curve
+* dataframe
+* dataframe-profile
+* datagrid
+* embeddings (may reference image asset)
+* histogram2d (not used)
+* histogram3d (internal only, single histogram, partial logging)
+* histogram_combined_3d
+* image
+* llm_data
+* model-element
+* notebook
+* source_code
+* tensorflow-model-graph-text (not used)
+* text-sample
+* video
+
+### Copy Command
+
+The `cometx copy` command copies experiment data to new experiments.
+
+#### Basic Usage
+
+```shell
+cometx copy [--symlink] SOURCE DESTINATION
+```
+
+#### Source and Destination Combinations
+
+| Destination:       | WORKSPACE            | WORKSPACE/PROJECT      |
+|--------------------|----------------------|------------------------|
+| WORKSPACE          | Copies all projects  | N/A                    |
+| WORKSPACE/PROJ     | N/A                  | Copies all experiments |
+| WORKSPACE/PROJ/EXP | N/A                  | Copies experiment      |
+
+#### Source Types
+
+* **Local folders** (when not using `--symlink`): "WORKSPACE/PROJECT/EXPERIMENT", "WORKSPACE/PROJECT", or "WORKSPACE" folder
+* **Comet paths** (when using `--symlink`): workspace or workspace/project
+* **Panels**: "WORKSPACE/panels" or "WORKSPACE/panels/PANEL-ZIP-FILENAME"
+
+#### Destination Types
+
+* WORKSPACE
+* WORKSPACE/PROJECT
+
+#### Copy Options
+
+* `-i IGNORE, --ignore IGNORE` - Resource(s) (or 'experiments') to ignore
+* `--debug` - If given, allow debugging
+* `--quiet` - If given, don't display update info
+* `--symlink` - Instead of copying, create a link to an experiment in a project
+* `--sync` - Check to see if experiment name has been created first; if so, skip

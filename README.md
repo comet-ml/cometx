@@ -15,45 +15,19 @@ not an official project of Comet ML. We welcome contributions!
 ## Installation
 
 ```
-pip install cometx
+pip install cometx --upgrade
 ```
 
-To use these command-line functions, you'll need to have your Comet
-API key set in one of the following two ways.
-
-1. [Environment variables](https://www.comet.com/docs/v2/guides/tracking-ml-training/configuring-comet/?utm_source=cometx&utm_medium=referral&utm_campaign=cometx_2022&utm_content=github#configure-comet-through-environment-variables)
-2. [Comet config file](https://www.comet.com/docs/v2/guides/tracking-ml-training/configuring-comet/?utm_source=cometx&utm_medium=referral&utm_campaign=cometx_2022&utm_content=github#configure-comet-using-the-comet-config-file)
-
-Either this way:
+To use these command-line functions, you can set your Comet API key and URL override using command-line flags:
 
 ```
-export COMET_API_KEY="YOUR-COMET-API-KEY"
+cometx --api-key="YOUR-COMET-API-KEY" COMMAND
 ```
 
-or this way:
+If you are a Comet on-prem user, and your installation does not use smart-keys, you'll also need to set the URL override:
 
 ```
-[comet]
-api_key = YOUR-COMET-API-KEY
-```
-
-If you are an Comet on-prem user, you'll also need to set the
-`COMET_URL_OVERRIDE` environment variable, or add it to your
-`~/.comet.config` file as below:
-
-Either this way:
-
-```
-export COMET_API_KEY="YOUR-COMET-API-KEY"
-export COMET_URL_OVERRIDE="https://your-companys-comet.com/clientlib/"
-```
-
-or this way:
-
-```
-[comet]
-api_key = YOUR-COMET-API-KEY
-url_override = https://your-companys-comet.com/clientlib/
+cometx --api-key="YOUR-COMET-API-KEY" --url-override="https://your-companys-comet.com/clientlib/" COMMAND
 ```
 
 ## Usage
@@ -71,7 +45,7 @@ In this section we'll explore some common scenarios.
 
 1. Copy a specific project from one Comet installation to another
 2. Copy all projects in workspace to a new workspace
-4. Copy specific experiments in a project to new experiments
+3. Copy specific experiments in a project to new experiments
 
 ## 1. Copy a specific project from one comet installation to another
 
@@ -86,9 +60,7 @@ Here is how you one could download the experiments in
 WORKSPACE/PROJECT from http://comet.a.com:
 
 ```shell
-COMET_URL_OVERRIDE=http://comet.a.com/clientlib \
-COMET_API_KEY=A-KEY \
-cometx download WORKSPACE/PROJECT
+cometx --api-key=A-KEY download WORKSPACE/PROJECT
 ```
 
 The `cometx download` subcommand downloads all of the Comet experiment
@@ -98,9 +70,7 @@ workspace and project on http://comet.a.com.
 One could then copy the downloaded experiment data with a similar command:
 
 ```shell
-COMET_URL_OVERRIDE=http://comet.b.com/clientlib \
-COMET_API_KEY=B-KEY \
-cometx copy WORKSPACE/PROJECT NEW-WORKSPACE/NEW-PROJECT
+cometx --api-key=B-KEY copy WORKSPACE/PROJECT NEW-WORKSPACE/NEW-PROJECT
 ```
 
 Note that WORKSPACE/PROJECT now refers to a directory, and
@@ -112,17 +82,13 @@ http://comet.b.com.
 Similarly, one can copy all of the projects by first downloading them:
 
 ```shell
-COMET_URL_OVERRIDE=http://comet.a.com/clientlib \
-COMET_API_KEY=A-KEY \
-cometx download WORKSPACE
+cometx --api-key=A-KEY download WORKSPACE
 ```
 
 and then copying them:
 
 ```shell
-COMET_URL_OVERRIDE=http://comet.b.com/clientlib \
-COMET_API_KEY=B-KEY \
-cometx copy WORKSPACE NEW-WORKSPACE
+cometx --api-key=B-KEY copy WORKSPACE NEW-WORKSPACE
 ```
 
 ## 3. Copy specific experiments in a project to new experiments
@@ -130,17 +96,13 @@ cometx copy WORKSPACE NEW-WORKSPACE
 Similarly, one can copy a single experiment first downloading it:
 
 ```shell
-COMET_URL_OVERRIDE=http://comet.a.com/clientlib \
-COMET_API_KEY=A-KEY \
-cometx download WORKSPACE/PROJECT/EXPERIMENT-NAME-OR-ID
+cometx --api-key=A-KEY download WORKSPACE/PROJECT/EXPERIMENT-NAME-OR-ID
 ```
 
 and then copying it:
 
 ```shell
-COMET_URL_OVERRIDE=http://comet.b.com/clientlib \
-COMET_API_KEY=B-KEY \
-cometx copy WORKSPACE/PROJECT/EXPERIMENT-NAME-OR-ID NEW-WORKSPACE/NEW-PROJECT
+cometx --api-key=B-KEY copy WORKSPACE/PROJECT/EXPERIMENT-NAME-OR-ID NEW-WORKSPACE/NEW-PROJECT
 ```
 
 ### Subcommands
@@ -152,9 +114,20 @@ cometx copy WORKSPACE/PROJECT/EXPERIMENT-NAME-OR-ID NEW-WORKSPACE/NEW-PROJECT
 * [cometx reproduce](#cometx-reproduce)
 * [cometx delete-assets](#cometx-delete-assets)
 * [cometx config](#cometx-config)
-
+* [cometx update](#cometx-update)
+* [cometx admin](#cometx-admin)
+* [cometx smoke-test](#cometx-smoke-test)
 
 For all subcommands, use the `--help` flag to get additional information.
+
+## Global Options
+
+All commands support these global options:
+
+* `--api-key API_KEY` - Set the COMET_API_KEY
+* `--url-override URL_OVERRIDE` - Set the COMET_URL_OVERRIDE
+* `--version` - Display comet_ml version
+* `-h, --help` - Show help message
 
 ## cometx list
 
@@ -175,46 +148,11 @@ cometx list
 
 ### Flags
 
-* `--query` - use to limit the experiments to download (see [experiment.api.query()](https://www.comet.com/docs/v2/api-and-sdk/python-sdk/reference/API/#apiquery) for more information)
-*  `-u`, `--use-name` - use experiment names for experiment folders and listings
+* `-u, --use-name` - Use experiment names for experiment folders and listings
+* `--query QUERY` - Only list experiments that match this Comet query string
+* `--debug` - Provide debug info
 
 For more information, `cometx list --help`
-
-## cometx copy
-
-This command is used to:
-
-* copy downloaded data to a new experiment
-* create a symlink from one project to existing experiments
-
-cometx copy examples:
-
-```
-cometx SOURCE DESTINATION
-cometx --symlink SOURCE DESTINATION
-```
-
-where SOURCE is:
-
-* if not `--symlink`, "WORKSPACE/PROJECT/EXPERIMENT", "WORKSPACE/PROJECT/*", or "WORKSPACE/*/*" folder (use quotes)
-* if `--symlink`, then it is a Comet path to workspace or workspace/project
-
-where DESTINATION is:
-
-* WORKSPACE
-* WORKSPACE/PROJECT
-
-Not all combinations are possible:
-
-
-| Destination → <br/>Source ↓ | WORKSPACE            | WORKSPACE/PROJECT      |
-|--------------------|----------------------|------------------------|
-| `WORKSPACE/*/*`      | Copies all projects  | N/A                    |
-| `WORKSPACE/PROJ/*`   | N/A                  | Copies all experiments |
-| `WORKSPACE/PROJ/EXP` | N/A                  | Copies experiment      |
-
-
-For more information, `cometx copy --help`
 
 ## cometx download
 
@@ -223,8 +161,10 @@ This command is used to:
 * download all workspaces, projects, and experiments of workspaces that you are a member of
 * download all projects, and experiments of a given workspace
 * download all experiments of a given workspace/project
+* download artifacts and models from the registry
+* download panels
 
-cometx dowload examples:
+cometx download examples:
 
 ```
 cometx download WORKSPACE/PROJECT/EXPERIMENT-KEY-OR-NAME [RESOURCE ...] [FLAGS ...]
@@ -235,33 +175,33 @@ cometx download [RESOURCE ...] [FLAGS ...]
 
 Where [RESOURCE ...] is zero or more of the following names:
 
-* assets
-* html
-* metadata
-* metrics
-* others
-* parameters
-* project - alias for: project_notes, project_metadata
 * run - alias for: code, git, output, graph, and requirements
 * system
+* others
+* parameters
+* metadata
+* metrics
+* assets
+* html
+* project - alias for: project_notes, project_metadata
 
 If no RESOURCE is given it will download all of them.
 
-## Flags
+### Flags
 
-* `--query` - use to limit the experiments to download (see [experiment.api.query()](https://www.comet.com/docs/v2/api-and-sdk/python-sdk/reference/API/#apiquery) for more information)
-* `--list` - use to list available workspaces, projects, experiments,
-    artifacts, or models (same as `cometx list`)
-* `--output` - download resources to folder other than current one
-* `--flat` - don't use the normal hiearchy for downloaded items
-* `--use-name` - use experiment names for folders and listings
-* `--ignore` - don't download the following resources (use one or more
-    RESOURCE names from above)
-* `--asset-type` - asset type to match, or leave off to match all
-* `--filename` - filename to match, or leave off to match all
-* `--overwrite` - overwrite any existing files
-* `--force` - don't ask to download, just do it
-* `--help` - this message
+* `--from from` - Source of data to copy. Should be: comet, wandb, or neptune
+* `-i IGNORE [IGNORE ...], --ignore IGNORE [IGNORE ...]` - Resource(s) (or 'experiments') to ignore
+* `-j PARALLEL, --parallel PARALLEL` - The number of threads to use for parallel downloading; default (None) is based on CPUs
+* `-o OUTPUT, --output OUTPUT` - Output directory for downloads
+* `-u, --use-name` - Use experiment names for experiment folders and listings
+* `-l, --list` - List the items at this level (workspace, project, experiment, artifacts, or model-registry) rather than download
+* `--flat` - Download the files without subfolders
+* `-f, --ask` - Queries the user; if flag not included system will answer `yes` for all queries
+* `--filename FILENAME` - Only get resources ending with this
+* `--query QUERY` - Only download experiments that match this Comet query string
+* `--asset-type ASSET_TYPE` - Only get assets with this type
+* `--sync SYNC` - What level to sync at: all, experiment, project, or workspace
+* `--debug` - Provide debug info
 
 To download artifacts:
 
@@ -277,67 +217,121 @@ cometx download WORKSPACE/model-registry/NAME [FLAGS ...]
 cometx download WORKSPACE/model-registry/NAME/VERSION-OR-STAGE [FLAGS ...]
 ```
 
+To download panels:
+
+```
+cometx download WORKSPACE/panels/NAME-OR-ID [FLAGS ...]
+cometx download WORKSPACE/panels [FLAGS ...]
+```
+
 For more information, `cometx download --help`
 
+## cometx copy
+
+This command is used to:
+
+* copy downloaded data to a new experiment
+* create a symlink from one project to existing experiments
+* copy panels
+
+cometx copy examples:
+
+```
+cometx copy SOURCE DESTINATION
+cometx copy --symlink SOURCE DESTINATION
+```
+
+where SOURCE is:
+
+* if not `--symlink`, "WORKSPACE/PROJECT/EXPERIMENT", "WORKSPACE/PROJECT", or "WORKSPACE" folder
+* if `--symlink`, then it is a Comet path to workspace or workspace/project
+* "WORKSPACE/panels" or "WORKSPACE/panels/PANEL-ZIP-FILENAME" to copy panels
+
+where DESTINATION is:
+
+* WORKSPACE
+* WORKSPACE/PROJECT
+
+Not all combinations are possible:
+
+| Destination → <br/>Source ↓ | WORKSPACE            | WORKSPACE/PROJECT      |
+|--------------------|----------------------|------------------------|
+| `WORKSPACE/*/*`      | Copies all projects  | N/A                    |
+| `WORKSPACE/PROJ/*`   | N/A                  | Copies all experiments |
+| `WORKSPACE/PROJ/EXP` | N/A                  | Copies experiment      |
+
+### Asset Types
+
+* 3d-image
+* 3d-points - deprecated
+* audio
+* confusion-matrix - may contain assets
+* curve
+* dataframe
+* dataframe-profile
+* datagrid
+* embeddings - may reference image asset
+* histogram2d - not used
+* histogram3d - internal only, single histogram, partial logging
+* histogram_combined_3d
+* image
+* llm_data
+* model-element
+* notebook
+* source_code
+* tensorflow-model-graph-text - not used
+* text-sample
+* video
+
+### Flags
+
+* `-i IGNORE [IGNORE ...], --ignore IGNORE [IGNORE ...]` - Resource(s) (or 'experiments') to ignore
+* `--debug` - If given, allow debugging
+* `--quiet` - If given, don't display update info
+* `--symlink` - Instead of copying, create a link to an experiment in a project
+* `--sync` - Check to see if experiment name has been created first; if so, skip
+
+For more information, `cometx copy --help`
 
 ## cometx log
 
 This command is used to log a resource (metrics, parameters, asset,
 etc) file to a specific experiment or experiments.
 
-cometx log example:
+cometx log examples:
 
 ```
-cometx log WORKSPACE/PROJECT/EXPERIMENT-KEY-OR-NAME [--type TYPE] FILENAME.EXT
+cometx log WORKSPACE/PROJECT/EXPERIMENT-KEY FILENAME ... --type=TYPE
+cometx log WORKSPACE PANEL-ZIP-FILENAME ... --type=panel
+cometx log WORKSPACE PANEL.py ... --type=panel
+cometx log WORKSPACE PANEL-URL ... --type=panel
+cometx log WORKSPACE/PROJECT --type=other --set "key:value"
+cometx log WORKSPACE --type=other --set "key:value"
 ```
 
-where TYPE is the asset type of the filename. TYPE is not needed if the
-filename extension (FILENAME.EXT) is known.
+Where TYPE is one of the following names:
 
-Known extensions:
-
-* png
-* jpg
-* gif
-* txt
-* webm
-* mp4
-* ogg
-* ipynb
-* wav
-* mp3
-
-Known types:
-
+* all
 * asset
+* audio
+* code
 * image
+* metrics
+* notebook
+* panel
+* tensorflow-file
 * text-sample
 * video
-* ipynb
-* audio
-
-Example to set an other key:value:
-
-```
-cometx log WORKSPACE/PROJECT --type other --set "key:value"
-cometx log WORKSPACE/PROJECT/EXPERIMENT-KEY-OR-NAME --type other --set "key:value"
-```
-The first version will set the other key:value in all experiments in a project, and the second will set the other key:value in the experiment.
-
-
-Example to log all items:
-
-```
-cometx log WORKSPACE/PROJECT PATH-TO-DOWNLOAD --type all
-cometx log WORKSPACE/PROJECT/EXPERIMENT-KEY-OR-NAME PATH-TO-DOWNLOAD --type all
-```
-The first version will create an experiment, and the second will log everything to an existing experiment.
+* other
+* tensorboard-folder-assets
 
 ### Flags
 
-* `--query` - use to limit the experiments to download (see [experiment.api.query()](https://www.comet.com/docs/v2/api-and-sdk/python-sdk/reference/API/#apiquery) for more information)
-* `--type` - the type of item to log
-* `--set` - the "key:value" to log
+* `--type TYPE` - The type of item to log
+* `--set SET` - The key:value to log
+* `--query QUERY` - A Comet Query string, see https://www.comet.com/docs/v2/api-and-sdk/python-sdk/reference/API/#apiquery
+* `--debug` - If given, allow debugging
+* `--use-base-name` - If given, using the basename for logging assets
 
 For more information, `cometx log --help`
 
@@ -349,7 +343,8 @@ To delete experiments assets:
 cometx delete-assets WORKSPACE/PROJECT --type=image
 cometx delete-assets WORKSPACE/PROJECT/EXPERIMENT --type=all
 ```
-Type can be valid asset tupe, including:
+
+Type can be valid asset type, including:
 
 * all
 * asset
@@ -359,6 +354,12 @@ Type can be valid asset tupe, including:
 * notebook
 * text-sample
 * video
+
+### Flags
+
+* `--type TYPE` - The type of item to log
+* `--debug` - If given, allow debugging
+* `--query QUERY` - Only delete experiments that match this Comet query string
 
 For more information, `cometx delete-assets --help`
 
@@ -375,7 +376,15 @@ To turn auto-logging of notebooks off, use:
 ```python
 cometx config --auto-log-notebook no
 ```
+
 If you keep the generated experiment URLs in the notebook, but later edit the notebook, the notebooks will be updated in all of the experiments created in the notebook.
+
+### Flags
+
+* `--debug` - If given, allow debugging
+* `--auto-log-notebook AUTO_LOG_NOTEBOOK` - Takes a 1/yes/true, or 0/no/false
+
+For more information, `cometx config --help`
 
 ## cometx reproduce
 
@@ -383,7 +392,110 @@ If you keep the generated experiment URLs in the notebook, but later edit the no
 cometx reproduce [-h] [--run] [--executable EXECUTABLE] COMET_PATH OUTPUT_DIR
 ```
 
+This command is used to reproduce experiments by copying files to a specified output directory.
+
+### Flags
+
+* `--run` - Run the reproducible script
+* `--executable EXECUTABLE` - Run the reproducible script with specified executable
+
 For more information, `cometx reproduce --help`
+
+## cometx update
+
+```
+cometx update [-h] [--debug] COMET_SOURCE COMET_DESTINATION
+```
+
+To update existing experiments.
+
+cometx update SOURCE DESTINATION
+
+where SOURCE is a folder:
+
+* "WORKSPACE/PROJECT/EXPERIMENT"
+* "WORKSPACE/PROJECT"
+* "WORKSPACE"
+
+where DESTINATION is a Comet:
+
+* WORKSPACE
+* WORKSPACE/PROJECT
+
+### Flags
+
+* `--debug` - If given, allow debugging
+
+For more information, `cometx update --help`
+
+## cometx admin
+
+```
+cometx admin [-h] [--host HOST] [--debug] ACTION [YEAR-MONTH]
+```
+
+To perform admin functions
+
+cometx admin chargeback-report
+
+### Flags
+
+* `--host HOST` - Override the HOST URL
+* `--debug` - If given, allow debugging
+
+For more information, `cometx admin --help`
+
+## cometx smoke-test
+
+```
+cometx smoke-test [-h] [--exclude [EXCLUDE ...]] [--debug DEBUG] COMET_PATH [include ...]
+```
+
+Perform a smoke test on a Comet installation. Logs results to WORKSPACE/smoke-tests or WORKSPACE/PROJECT.
+
+Examples:
+
+Run all tests:
+```
+cometx smoke-test WORKSPACE    # project defaults to smoke-tests
+cometx smoke-test WORKSPACE/PROJECT
+```
+
+Run everything except mpm tests:
+```
+cometx smoke-test WORKSPACE/PROJECT --exclude mpm
+```
+
+Run just optimizer tests:
+```
+cometx smoke-test WORKSPACE/PROJECT optimizer
+```
+
+Run just metric tests:
+```
+cometx smoke-test WORKSPACE/PROJECT metric
+```
+
+Items to include or exclude:
+
+* optimizer
+* mpm
+* panel
+* opik
+* experiment
+  * metric
+  * image
+  * asset
+  * dataset-info
+  * confusion-matrix
+  * embedding
+
+### Flags
+
+* `--exclude [EXCLUDE ...]` - Items to exclude; any of: asset, confusion-matrix, dataset-info, embedding, experiment, image, metric, mpm, opik, optimizer, panel
+* `--debug DEBUG` - Show debugging information
+
+For more information, `cometx smoke-test --help`
 
 ## Running Tests
 
@@ -405,4 +517,10 @@ Or, define `workspace` and `api_key` in your ~/.comet.config file:
 ```shell
 $ export COMET_USER="<USERNAME>"
 $ pytest tests
+```
+
+Or, use command-line flags:
+
+```shell
+$ pytest tests --cometx-api-key="<API-KEY>" --cometx-url-override="<URL>" --cometx-user="<USERNAME>" --cometx-workspace="<WORKSPACE>"
 ```
