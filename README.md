@@ -164,6 +164,8 @@ This command is used to:
 * download artifacts and models from the registry
 * download panels
 
+> **Note**: For detailed information on copying experiments from one Comet installation to another, see [MIGRATIONS.md](https://github.com/comet-ml/cometx/blob/main/MIGRATIONS.md).
+
 cometx download examples:
 
 ```
@@ -233,6 +235,8 @@ This command is used to:
 * copy downloaded data to a new experiment
 * create a symlink from one project to existing experiments
 * copy panels
+
+> **Note**: For detailed information on copying experiments from one Comet installation to another, see [MIGRATIONS.md](https://github.com/comet-ml/cometx/blob/main/MIGRATIONS.md).
 
 cometx copy examples:
 

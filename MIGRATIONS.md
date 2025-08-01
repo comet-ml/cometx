@@ -31,8 +31,7 @@ time.
 Migrating your data is a two step process. First you must download the data
 from the source, and then copy it to the destination Comet instance.
 
-NOTE: if your installation does not use smart keys, you'll need to add the
-`--url-override=http://comet.X.com/clientlib` for the associated `--api-key=X-KEY`.
+> **Note**: if your installation does not use smart keys, you'll need to add the `--url-override=http://comet.X.com/clientlib` for the associated `--api-key=X-KEY`.
 
 ### Downloading Data
 
