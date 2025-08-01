@@ -522,9 +522,3 @@ Or, define `workspace` and `api_key` in your ~/.comet.config file:
 $ export COMET_USER="<USERNAME>"
 $ pytest tests
 ```
-
-Or, use command-line flags:
-
-```shell
-$ pytest tests --cometx-api-key="<API-KEY>" --cometx-url-override="<URL>" --cometx-user="<USERNAME>" --cometx-workspace="<WORKSPACE>"
-```
