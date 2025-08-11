@@ -227,6 +227,7 @@ Not all combinations are possible:
 ### Flags
 
 * `-i IGNORE [IGNORE ...], --ignore IGNORE [IGNORE ...]` - Resource(s) (or 'experiments') to ignore
+* `-j PARALLEL, --parallel PARALLEL` - The number of threads to use for parallel uploading; default (None) is based on CPUs
 * `--debug` - If given, allow debugging
 * `--quiet` - If given, don't display update info
 * `--symlink` - Instead of copying, create a link to an experiment in a project

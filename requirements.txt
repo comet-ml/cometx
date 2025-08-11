@@ -26,6 +26,7 @@ pytest-env>=1.0.0
 requests
 responses>=0.20.0
 respx>=0.20.0
+rich>=13.0.0
 scikit-learn
 scipy
 six
