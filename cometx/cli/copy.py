@@ -253,11 +253,15 @@ def get_query_dict(url):
 class ProgressUI:
     """Progress UI for displaying upload progress with multiple concurrent uploads using rich"""
 
-    def __init__(self, quiet=False):
+    def __init__(self, quiet=False, max_workers=None):
         self.quiet = quiet
         self.console = Console()
         self.lock = threading.Lock()
         self.upload_status = {}  # experiment_id -> status info
+        self.worker_status = {}  # worker_id -> current task info
+        self.worker_mapping = {}  # actual_worker_id -> sequential_number
+        self.next_worker_number = 1
+        self.max_workers = max_workers
         self.start_time = None
         self.live = None
 
@@ -271,18 +275,48 @@ class ProgressUI:
         self.console.print("Starting upload process...")
 
     def update_upload_status(
-        self, experiment_id, status, url=None, error=None, progress=None, name=None
+        self,
+        experiment_id,
+        status,
+        url=None,
+        error=None,
+        progress=None,
+        name=None,
+        worker_id=None,
     ):
         """Update the status of an upload"""
         with self.lock:
+            # Map worker_id to sequential number if not already mapped
+            sequential_worker_id = None
+            if worker_id is not None:
+                if worker_id not in self.worker_mapping:
+                    self.worker_mapping[worker_id] = self.next_worker_number
+                    self.next_worker_number += 1
+                sequential_worker_id = self.worker_mapping[worker_id]
+
             self.upload_status[experiment_id] = {
                 "status": status,
                 "url": url,
                 "error": error,
                 "progress": progress,
                 "name": name,
+                "worker_id": sequential_worker_id,
                 "last_update": datetime.now(),
             }
+
+            # Update worker status using sequential worker ID
+            if sequential_worker_id is not None:
+                if status == "uploading":
+                    self.worker_status[sequential_worker_id] = {
+                        "experiment_id": experiment_id,
+                        "name": name,
+                        "progress": progress,
+                        "status": status,
+                    }
+                elif status in ["completed", "failed"]:
+                    # Clear worker status when task is done
+                    if sequential_worker_id in self.worker_status:
+                        del self.worker_status[sequential_worker_id]
         self._redraw()
 
     def _redraw(self):
@@ -316,63 +350,43 @@ class ProgressUI:
             border_style="blue",
         )
 
-        # Create table for upload details
+        # Create table for worker status (showing what each process is working on)
         table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("Worker", style="cyan", width=8)
         table.add_column("Status", style="cyan", width=8)
         table.add_column("Experiment Name", style="green", min_width=20, max_width=None)
         table.add_column("Progress Bar", style="yellow", width=25)
         table.add_column("Percentage", style="yellow", width=10)
-        table.add_column("Details", style="white")
 
-        # Add rows for each upload (limit to first 10 for display)
-        display_count = 0
-        for exp_id, info in self.upload_status.items():
-            if display_count >= 10:
-                remaining = len(self.upload_status) - 10
-                table.add_row("...", f"... and {remaining} more uploads", "", "", "")
-                break
+        # Show worker status (what each process is working on)
+        # Only show workers that are currently active or have been used
+        active_workers = set(self.worker_status.keys())
 
-            status_icon = {
-                "queued": "⏳",
-                "uploading": "🔄",
-                "completed": "✅",
-                "failed": "❌",
-            }.get(info["status"], "❓")
-
-            # Use name if available, otherwise fall back to experiment ID
-            display_name = info.get("name", exp_id)
-            display_id = display_name
-
-            # Progress information
-            if info["status"] == "uploading" and info["progress"] is not None:
-                progress_bar = self._create_progress_bar(info["progress"], 20)
-                percentage_text = f"{info['progress']:.1f}%"
-            elif info["status"] == "completed":
-                progress_bar = self._create_progress_bar(100, 20)
-                percentage_text = "100%"
-            elif info["status"] == "failed":
-                progress_bar = "Failed"
-                percentage_text = "Failed"
-            else:
-                progress_bar = info["status"].title()
-                percentage_text = ""
-
-            # Details column
-            if info["status"] == "completed" and info["url"]:
-                details = "Upload successful"
-            elif info["status"] == "failed" and info["error"]:
-                details = (
-                    info["error"][:50] + "..."
-                    if len(info["error"]) > 50
-                    else info["error"]
+        # If no workers are active yet, show a placeholder
+        if not active_workers and not self.max_workers:
+            table.add_row("N/A", "❓", "No worker info available", "", "")
+        elif not active_workers:
+            # Show that workers are waiting for tasks
+            table.add_row("1", "⏸️", "Waiting for tasks...", "", "")
+        else:
+            # Show only active workers
+            for worker_id in sorted(active_workers):
+                worker_info = self.worker_status[worker_id]
+                status_icon = "🔄"  # uploading
+                display_name = worker_info.get(
+                    "name", worker_info.get("experiment_id", "Unknown")
                 )
-            else:
-                details = ""
+                progress = worker_info.get("progress", 0)
+                progress_bar = self._create_progress_bar(progress, 20)
+                percentage_text = f"{progress:.1f}%" if progress is not None else "0%"
 
-            table.add_row(
-                status_icon, display_id, progress_bar, percentage_text, details
-            )
-            display_count += 1
+                table.add_row(
+                    f"{worker_id}",
+                    status_icon,
+                    display_name,
+                    progress_bar,
+                    percentage_text,
+                )
 
         # Create layout using rich Group
         from rich.console import Group
@@ -400,7 +414,9 @@ class ProgressUI:
             display_name = info.get("name", exp_id)
             if info["status"] == "completed":
                 if info["url"]:
-                    self.console.print(f"✅ {display_name} -> {info['url']}")
+                    self.console.print(
+                        f"✅ {display_name} -> [link={info['url']}]{info['url']}[/link]"
+                    )
                 else:
                     self.console.print(
                         f"⚠️  {display_name} -> Upload completed but no URL returned"
@@ -471,7 +487,7 @@ class CopyManager:
         self.upload_lock = threading.Lock()
         self.upload_threads = []
         self.progress_ui = ProgressUI(
-            quiet=debug
+            quiet=debug, max_workers=self.max_concurrent_uploads
         )  # Show UI by default, hide when debug=True
 
         # Register signal handler for cursor reset on interruption
@@ -483,11 +499,13 @@ class CopyManager:
     def _start_upload_workers(self):
         """Start background worker threads for handling uploads"""
         for i in range(self.max_concurrent_uploads):
-            thread = threading.Thread(target=self._upload_worker, daemon=True)
+            thread = threading.Thread(
+                target=self._upload_worker, args=(i,), daemon=True
+            )
             thread.start()
             self.upload_threads.append(thread)
 
-    def _upload_worker(self):
+    def _upload_worker(self, worker_id):
         """Worker thread that processes upload tasks from the queue"""
         while True:
             try:
@@ -497,52 +515,60 @@ class CopyManager:
 
                 experiment_id, name, archive_path, settings = task
 
-                # Get file size for progress calculation
+                # Get file size for debug logging
                 try:
                     file_size = os.path.getsize(archive_path)
-                    # Estimate upload time based on file size (rough estimate: 1MB = 24 seconds)
-                    estimated_upload_time = max(1.0, file_size / (1024 * 1024) * 24)
-                    progress_interval = (
-                        estimated_upload_time / 10
-                    )  # 10 progress updates
                     if self.debug:
                         size_mb = file_size / (1024 * 1024)
                         print(
-                            f"Uploading {experiment_id}: {size_mb:.1f} MB, estimated time: {estimated_upload_time:.1f}s"
+                            f"Worker {worker_id} uploading {experiment_id}: {size_mb:.1f} MB"
                         )
                 except (OSError, TypeError):
-                    # Fallback if we can't get file size
-                    file_size = 0
-                    estimated_upload_time = 3.0
-                    progress_interval = 0.3
                     if self.debug:
                         print(
-                            f"Uploading {experiment_id}: size unknown, using default timing"
+                            f"Worker {worker_id} uploading {experiment_id}: size unknown"
                         )
 
                 # Update status to uploading
                 self.progress_ui.update_upload_status(
-                    experiment_id, "uploading", progress=0, name=name
+                    experiment_id,
+                    "uploading",
+                    progress=0,
+                    name=name,
+                    worker_id=worker_id,
                 )
 
                 try:
-                    # Simulate progress updates based on file size
-                    progress_steps = [10, 20, 30, 40, 50, 60, 70, 80, 90]
-                    for progress in progress_steps:
-                        time.sleep(progress_interval)  # Longer delay based on file size
-                        self.progress_ui.update_upload_status(
-                            experiment_id, "uploading", progress=progress, name=name
-                        )
+                    # Start progress updates in a separate thread to avoid blocking the upload
+                    progress_stop_event = threading.Event()
+                    progress_thread = threading.Thread(
+                        target=self._update_progress_periodically,
+                        args=(experiment_id, name, worker_id, progress_stop_event),
+                        daemon=True,
+                    )
+                    progress_thread.start()
 
+                    # Perform the actual upload (this is the real work)
                     url = upload_single_offline_experiment(
                         offline_archive_path=archive_path,
                         settings=settings,
                         force_upload=False,
                     )
 
+                    # Stop progress updates and wait for thread to finish
+                    progress_stop_event.set()
+                    progress_thread.join(
+                        timeout=1.0
+                    )  # Wait max 1 second for thread to finish
+
                     # Update status to completed
                     self.progress_ui.update_upload_status(
-                        experiment_id, "completed", url=url, progress=100, name=name
+                        experiment_id,
+                        "completed",
+                        url=url,
+                        progress=100,
+                        name=name,
+                        worker_id=worker_id,
                     )
 
                     with self.upload_lock:
@@ -555,7 +581,11 @@ class CopyManager:
                 except Exception as e:
                     # Update status to failed
                     self.progress_ui.update_upload_status(
-                        experiment_id, "failed", error=str(e), name=name
+                        experiment_id,
+                        "failed",
+                        error=str(e),
+                        name=name,
+                        worker_id=worker_id,
                     )
 
                     with self.upload_lock:
@@ -571,8 +601,54 @@ class CopyManager:
                 continue
             except Exception as e:
                 if self.debug:
-                    print(f"Upload worker error: {e}")
+                    print(f"Upload worker {worker_id} error: {e}")
                 continue
+
+    def _update_progress_periodically(self, experiment_id, name, worker_id, stop_event):
+        """Update progress periodically without blocking the main upload thread"""
+        start_time = time.time()
+
+        while not stop_event.is_set():
+            # Update progress every 0.5 seconds
+            if stop_event.wait(timeout=0.5):
+                break
+
+            current_time = time.time()
+            elapsed_time = current_time - start_time
+
+            # Calculate a more realistic progress based on time elapsed
+            # This assumes uploads typically take 5-30 seconds depending on size
+            # We'll show progress that accelerates over time to be more realistic
+            if elapsed_time < 2.0:
+                # First 2 seconds: 0-20%
+                progress = min(20, (elapsed_time / 2.0) * 20)
+            elif elapsed_time < 8.0:
+                # 2-8 seconds: 20-70%
+                progress = 20 + ((elapsed_time - 2.0) / 6.0) * 50
+            elif elapsed_time < 15.0:
+                # 8-15 seconds: 70-90%
+                progress = 70 + ((elapsed_time - 8.0) / 7.0) * 20
+            else:
+                # After 15 seconds: 90-95% (slow crawl to completion)
+                progress = min(95, 90 + ((elapsed_time - 15.0) / 10.0) * 5)
+
+            # Only update if progress has increased significantly (avoid too many updates)
+            current_progress = self._get_current_progress(experiment_id)
+            if progress - current_progress >= 3.0:  # Update every ~3% progress
+                self.progress_ui.update_upload_status(
+                    experiment_id,
+                    "uploading",
+                    progress=progress,
+                    name=name,
+                    worker_id=worker_id,
+                )
+
+    def _get_current_progress(self, experiment_id):
+        """Get the current progress for an experiment"""
+        with self.progress_ui.lock:
+            if experiment_id in self.progress_ui.upload_status:
+                return self.progress_ui.upload_status[experiment_id].get("progress", 0)
+        return 0
 
     def _queue_upload(self, experiment_id, name, archive_path, settings):
         """Queue an upload task for background processing"""
@@ -583,7 +659,7 @@ class CopyManager:
                 "error": None,
                 "name": name,
             }
-        # Update progress UI to show queued status
+        # Update progress UI to show queued status (no worker_id yet since it's queued)
         self.progress_ui.update_upload_status(experiment_id, "queued", name=name)
         self.upload_queue.put((experiment_id, name, archive_path, settings))
 
