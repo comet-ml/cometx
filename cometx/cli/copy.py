@@ -271,7 +271,7 @@ class ProgressUI:
         self.console.print("Starting upload process...")
 
     def update_upload_status(
-        self, experiment_id, status, url=None, error=None, progress=None
+        self, experiment_id, status, url=None, error=None, progress=None, name=None
     ):
         """Update the status of an upload"""
         with self.lock:
@@ -280,6 +280,7 @@ class ProgressUI:
                 "url": url,
                 "error": error,
                 "progress": progress,
+                "name": name,
                 "last_update": datetime.now(),
             }
         self._redraw()
@@ -318,7 +319,7 @@ class ProgressUI:
         # Create table for upload details
         table = Table(show_header=True, header_style="bold magenta")
         table.add_column("Status", style="cyan", width=8)
-        table.add_column("Experiment Key", style="green", width=35)
+        table.add_column("Experiment Name", style="green", min_width=20, max_width=None)
         table.add_column("Progress Bar", style="yellow", width=25)
         table.add_column("Percentage", style="yellow", width=10)
         table.add_column("Details", style="white")
@@ -338,8 +339,9 @@ class ProgressUI:
                 "failed": "❌",
             }.get(info["status"], "❓")
 
-            # Truncate experiment ID for display
-            display_id = exp_id[:30] + "..." if len(exp_id) > 30 else exp_id
+            # Use name if available, otherwise fall back to experiment ID
+            display_name = info.get("name", exp_id)
+            display_id = display_name
 
             # Progress information
             if info["status"] == "uploading" and info["progress"] is not None:
@@ -395,15 +397,16 @@ class ProgressUI:
 
         # Show final results
         for exp_id, info in self.upload_status.items():
+            display_name = info.get("name", exp_id)
             if info["status"] == "completed":
                 if info["url"]:
-                    self.console.print(f"✅ {exp_id} -> {info['url']}")
+                    self.console.print(f"✅ {display_name} -> {info['url']}")
                 else:
                     self.console.print(
-                        f"⚠️  {exp_id} -> Upload completed but no URL returned"
+                        f"⚠️  {display_name} -> Upload completed but no URL returned"
                     )
             else:
-                self.console.print(f"❌ {exp_id} -> {info['error']}")
+                self.console.print(f"❌ {display_name} -> {info['error']}")
 
         # Summary
         total = len(self.upload_status)
@@ -519,7 +522,7 @@ class CopyManager:
 
                 # Update status to uploading
                 self.progress_ui.update_upload_status(
-                    experiment_id, "uploading", progress=0
+                    experiment_id, "uploading", progress=0, name=name
                 )
 
                 try:
@@ -528,7 +531,7 @@ class CopyManager:
                     for progress in progress_steps:
                         time.sleep(progress_interval)  # Longer delay based on file size
                         self.progress_ui.update_upload_status(
-                            experiment_id, "uploading", progress=progress
+                            experiment_id, "uploading", progress=progress, name=name
                         )
 
                     url = upload_single_offline_experiment(
@@ -539,7 +542,7 @@ class CopyManager:
 
                     # Update status to completed
                     self.progress_ui.update_upload_status(
-                        experiment_id, "completed", url=url, progress=100
+                        experiment_id, "completed", url=url, progress=100, name=name
                     )
 
                     with self.upload_lock:
@@ -552,7 +555,7 @@ class CopyManager:
                 except Exception as e:
                     # Update status to failed
                     self.progress_ui.update_upload_status(
-                        experiment_id, "failed", error=str(e)
+                        experiment_id, "failed", error=str(e), name=name
                     )
 
                     with self.upload_lock:
@@ -581,7 +584,7 @@ class CopyManager:
                 "name": name,
             }
         # Update progress UI to show queued status
-        self.progress_ui.update_upload_status(experiment_id, "queued")
+        self.progress_ui.update_upload_status(experiment_id, "queued", name=name)
         self.upload_queue.put((experiment_id, name, archive_path, settings))
 
     def wait_for_uploads(self):
@@ -849,7 +852,7 @@ class CopyManager:
                 print(f"Queuing upload for {archive_path} (size unknown)")
         self._queue_upload(
             experiment.id,
-            f"{workspace_dst}/{project_dst}/{experiment.name}",
+            f"{workspace_dst}/{project_dst}/{experiment_name or experiment.id}",
             archive_path,
             self.api.config,
         )
