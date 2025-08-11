@@ -399,8 +399,8 @@ class CopyManager:
                 # Get file size for progress calculation
                 try:
                     file_size = os.path.getsize(archive_path)
-                    # Estimate upload time based on file size (rough estimate: 1MB = 2 seconds)
-                    estimated_upload_time = max(1.0, file_size / (1024 * 1024) * 2)
+                    # Estimate upload time based on file size (rough estimate: 1MB = 24 seconds)
+                    estimated_upload_time = max(1.0, file_size / (1024 * 1024) * 24)
                     progress_interval = (
                         estimated_upload_time / 10
                     )  # 10 progress updates
