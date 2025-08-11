@@ -415,12 +415,10 @@ class ProgressUI:
             if info["status"] == "completed":
                 if info["url"]:
                     self.console.print(
-                        f"✅ [link={info['url']}]{display_name}[/link] -> {info['url']}"
+                        f"✅ [bold magenta]{display_name}[/bold magenta] -> {info['url']}"
                     )
                 else:
-                    self.console.print(
-                        f"⚠️  {display_name} -> Upload completed but no URL returned"
-                    )
+                    self.console.print(f"❌️  {display_name} -> [red]error in copy[red]")
             else:
                 self.console.print(f"❌ {display_name} -> {info['error']}")
 
@@ -740,54 +738,164 @@ class CopyManager:
 
         # For checking if the project_dst exists below:
         projects = self.api.get_projects(workspace_dst)
-        for experiment_folder in self.get_experiment_folders(
-            workspace_src, project_src, experiment_src
-        ):
-            # Normalize path separators for cross-platform compatibility
-            normalized_path = experiment_folder.replace("\\", "/")
-            if normalized_path.count("/") >= 2:
-                folder_workspace, folder_project, folder_experiment = (
-                    normalized_path.rsplit("/", 2)
-                )
-            else:
-                print("Unknown folder: %r; ignoring" % experiment_folder)
-                continue
-            if folder_experiment in ["project_metadata.json"]:
-                continue
-            temp_project_dst = project_dst
-            if temp_project_dst is None:
-                temp_project_dst = folder_project
 
-            # Next, check if the project_dst exists:
-            if temp_project_dst not in projects:
-                project_metadata_path = os.path.join(
-                    workspace_src, project_src, "project_metadata.json"
-                )
-                if os.path.exists(project_metadata_path):
-                    with open(project_metadata_path) as fp:
-                        project_metadata = json.load(fp)
-                    self.api.create_project(
-                        workspace_dst,
-                        temp_project_dst,
-                        project_description=project_metadata["projectDescription"],
-                        public=project_metadata["public"],
+        # First, count total experiments to gather for progress bar
+        if not self.debug:
+            print("Gathering experiments for copy queue...")
+            total_experiments = 0
+            for experiment_folder in self.get_experiment_folders(
+                workspace_src, project_src, experiment_src
+            ):
+                # Normalize path separators for cross-platform compatibility
+                normalized_path = experiment_folder.replace("\\", "/")
+                if normalized_path.count("/") >= 2:
+                    folder_workspace, folder_project, folder_experiment = (
+                        normalized_path.rsplit("/", 2)
                     )
-                projects.append(temp_project_dst)
+                else:
+                    continue
+                if folder_experiment in ["project_metadata.json"]:
+                    continue
+                total_experiments += 1
 
-            if symlink:
-                print(
-                    f"Creating symlink from {workspace_src}/{project_src}/{experiment_src} to {workspace_dst}/{temp_project_dst}"
+            if total_experiments == 0:
+                print("No experiments found to copy.")
+                return
+            elif total_experiments == 1:
+                print("Found 1 experiment to copy.")
+            else:
+                print(f"Found {total_experiments} experiments to copy.")
+
+        # Now process experiments with progress bar
+        processed_count = 0
+        from rich.progress import (
+            BarColumn,
+            Progress,
+            SpinnerColumn,
+            TaskProgressColumn,
+            TextColumn,
+        )
+
+        if not self.debug and total_experiments > 1:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                console=self.progress_ui.console,
+                transient=True,
+            ) as progress:
+                task = progress.add_task(
+                    "Gathering experiments...", total=total_experiments
                 )
-                experiment = APIExperiment(previous_experiment=experiment_src)
-                experiment.create_symlink(temp_project_dst)
-                symlink_url = f"{self.api._get_url_server()}/{workspace_dst}/{temp_project_dst}/{experiment_src}"
-                print(
-                    f"    New symlink created: [link={symlink_url}]{symlink_url}[/link]"
-                )
-            elif "experiments" not in self.ignore:
-                self.copy_experiment_to(
-                    experiment_folder, workspace_dst, temp_project_dst
-                )
+
+                for experiment_folder in self.get_experiment_folders(
+                    workspace_src, project_src, experiment_src
+                ):
+                    # Normalize path separators for cross-platform compatibility
+                    normalized_path = experiment_folder.replace("\\", "/")
+                    if normalized_path.count("/") >= 2:
+                        folder_workspace, folder_project, folder_experiment = (
+                            normalized_path.rsplit("/", 2)
+                        )
+                    else:
+                        print("Unknown folder: %r; ignoring" % experiment_folder)
+                        continue
+                    if folder_experiment in ["project_metadata.json"]:
+                        continue
+                    temp_project_dst = project_dst
+                    if temp_project_dst is None:
+                        temp_project_dst = folder_project
+
+                    # Next, check if the project_dst exists:
+                    if temp_project_dst not in projects:
+                        project_metadata_path = os.path.join(
+                            workspace_src, project_src, "project_metadata.json"
+                        )
+                        if os.path.exists(project_metadata_path):
+                            with open(project_metadata_path) as fp:
+                                project_metadata = json.load(fp)
+                            self.api.create_project(
+                                workspace_dst,
+                                temp_project_dst,
+                                project_description=project_metadata[
+                                    "projectDescription"
+                                ],
+                                public=project_metadata["public"],
+                            )
+                        projects.append(temp_project_dst)
+
+                    if symlink:
+                        print(
+                            f"Creating symlink from {workspace_src}/{project_src}/{experiment_src} to {workspace_dst}/{temp_project_dst}"
+                        )
+                        experiment = APIExperiment(previous_experiment=experiment_src)
+                        experiment.create_symlink(temp_project_dst)
+                        symlink_url = f"{self.api._get_url_server()}/{workspace_dst}/{temp_project_dst}/{experiment_src}"
+                        print(
+                            f"    New symlink created: [link={symlink_url}]{symlink_url}[/link]"
+                        )
+                    elif "experiments" not in self.ignore:
+                        self.copy_experiment_to(
+                            experiment_folder, workspace_dst, temp_project_dst
+                        )
+
+                    processed_count += 1
+                    progress.update(task, completed=processed_count)
+
+        else:
+            # Debug mode or single experiment - no progress bar
+            for experiment_folder in self.get_experiment_folders(
+                workspace_src, project_src, experiment_src
+            ):
+                # Normalize path separators for cross-platform compatibility
+                normalized_path = experiment_folder.replace("\\", "/")
+                if normalized_path.count("/") >= 2:
+                    folder_workspace, folder_project, folder_experiment = (
+                        normalized_path.rsplit("/", 2)
+                    )
+                else:
+                    print("Unknown folder: %r; ignoring" % experiment_folder)
+                    continue
+                if folder_experiment in ["project_metadata.json"]:
+                    continue
+                temp_project_dst = project_dst
+                if temp_project_dst is None:
+                    temp_project_dst = folder_project
+
+                # Next, check if the project_dst exists:
+                if temp_project_dst not in projects:
+                    project_metadata_path = os.path.join(
+                        workspace_src, project_src, "project_metadata.json"
+                    )
+                    if os.path.exists(project_metadata_path):
+                        with open(project_metadata_path) as fp:
+                            project_metadata = json.load(fp)
+                        self.api.create_project(
+                            workspace_dst,
+                            temp_project_dst,
+                            project_description=project_metadata["projectDescription"],
+                            public=project_metadata["public"],
+                        )
+                    projects.append(temp_project_dst)
+
+                if symlink:
+                    print(
+                        f"Creating symlink from {workspace_src}/{project_src}/{experiment_src} to {workspace_dst}/{temp_project_dst}"
+                    )
+                    experiment = APIExperiment(previous_experiment=experiment_src)
+                    experiment.create_symlink(temp_project_dst)
+                    symlink_url = f"{self.api._get_url_server()}/{workspace_dst}/{temp_project_dst}/{experiment_src}"
+                    print(
+                        f"    New symlink created: [link={symlink_url}]{symlink_url}[/link]"
+                    )
+                elif "experiments" not in self.ignore:
+                    self.copy_experiment_to(
+                        experiment_folder, workspace_dst, temp_project_dst
+                    )
+
+        if not self.debug:
+            print("Gathering complete. Starting upload process...")
 
     def create_experiment(self, workspace_dst, project_dst, offline=True):
         """
