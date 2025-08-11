@@ -314,15 +314,35 @@ class ProgressUI:
                         "status": status,
                     }
                 elif status in ["completed", "failed"]:
-                    # Clear worker status when task is done
-                    if sequential_worker_id in self.worker_status:
-                        del self.worker_status[sequential_worker_id]
+                    # Keep completed/failed status visible for 1 second before clearing
+                    self.worker_status[sequential_worker_id] = {
+                        "experiment_id": experiment_id,
+                        "name": name,
+                        "progress": 100 if status == "completed" else progress,
+                        "status": status,
+                        "completion_time": datetime.now(),
+                    }
         self._redraw()
 
     def _redraw(self):
         """Redraw the progress display"""
         if self.quiet or not self.live:
             return
+
+        # Clean up completed/failed tasks that have been visible for more than 1 second
+        current_time = datetime.now()
+        workers_to_remove = []
+        for worker_id, worker_info in self.worker_status.items():
+            if worker_info.get("status") in ["completed", "failed"]:
+                completion_time = worker_info.get("completion_time")
+                if (
+                    completion_time
+                    and (current_time - completion_time).total_seconds() >= 1.0
+                ):
+                    workers_to_remove.append(worker_id)
+
+        for worker_id in workers_to_remove:
+            del self.worker_status[worker_id]
 
         # Calculate statistics
         total = len(self.upload_status)
@@ -348,54 +368,63 @@ class ProgressUI:
         )
 
         # Create table for worker status (showing what each process is working on)
-        table = Table(show_header=True, header_style="bold magenta")
-        table.add_column("Worker", style="cyan", width=8)
-        table.add_column("Status", style="cyan", width=8)
-        table.add_column("Experiment Name", style="green", min_width=20, max_width=None)
-        table.add_column("Progress Bar", style="yellow", width=25)
-        table.add_column("Percentage", style="yellow", width=10)
+        table = Table(show_header=True, header_style="bold magenta", expand=True)
+        table.add_column("Worker", style="cyan", width=8, no_wrap=True)
+        table.add_column("Status", style="cyan", width=8, no_wrap=True)
+        table.add_column("Experiment Name", style="green", min_width=20)
+        table.add_column("Progress Bar", style="yellow", width=25, no_wrap=True)
+        table.add_column("Percentage", style="yellow", width=10, no_wrap=True)
 
         # Show worker status (what each process is working on)
         # Get all worker IDs that have been used (active + waiting)
         active_workers = set(self.worker_status.keys())
 
-        # If no workers have been used yet and we have max_workers info, show waiting workers
-        if not active_workers and self.max_workers:
-            # Show all workers as waiting for tasks
+        # Show all workers sorted by worker ID (1 to N)
+        if self.max_workers:
             for worker_id in range(1, self.max_workers + 1):
-                table.add_row(f"{worker_id}", "⏸️", "Waiting for tasks...", "", "")
-        elif not active_workers and not self.max_workers:
+                if worker_id in active_workers:
+                    # Show active worker with progress
+                    worker_info = self.worker_status[worker_id]
+                    status = worker_info.get("status", "uploading")
+
+                    # Set appropriate status icon
+                    if status == "uploading":
+                        status_icon = "🔄"
+                    elif status == "completed":
+                        status_icon = "✅"
+                    elif status == "failed":
+                        status_icon = "❌"
+                    else:
+                        status_icon = "❓"
+
+                    display_name = worker_info.get(
+                        "name", worker_info.get("experiment_id", "Unknown")
+                    )
+                    progress = worker_info.get("progress", 0)
+                    progress_bar = self._create_progress_bar(progress, 20)
+                    percentage_text = (
+                        f"{progress:.1f}%" if progress is not None else "0%"
+                    )
+
+                    table.add_row(
+                        f"{worker_id}",
+                        status_icon,
+                        display_name,
+                        progress_bar,
+                        percentage_text,
+                    )
+                else:
+                    # Show waiting worker
+                    table.add_row(
+                        f"{worker_id}",
+                        "⏸️",
+                        "[bold blue]Waiting for tasks...[/bold blue]",
+                        "",
+                        "",
+                    )
+        else:
             # Fallback when we don't have max_workers info
             table.add_row("N/A", "❓", "No worker info available", "", "")
-        else:
-            # Show all workers sorted by worker ID (1 to N)
-            if self.max_workers:
-                for worker_id in range(1, self.max_workers + 1):
-                    if worker_id in active_workers:
-                        # Show active worker with progress
-                        worker_info = self.worker_status[worker_id]
-                        status_icon = "🔄"  # uploading
-                        display_name = worker_info.get(
-                            "name", worker_info.get("experiment_id", "Unknown")
-                        )
-                        progress = worker_info.get("progress", 0)
-                        progress_bar = self._create_progress_bar(progress, 20)
-                        percentage_text = (
-                            f"{progress:.1f}%" if progress is not None else "0%"
-                        )
-
-                        table.add_row(
-                            f"{worker_id}",
-                            status_icon,
-                            display_name,
-                            progress_bar,
-                            percentage_text,
-                        )
-                    else:
-                        # Show waiting worker
-                        table.add_row(
-                            f"{worker_id}", "⏸️", "Waiting for tasks...", "", ""
-                        )
 
         # Create layout using rich Group
         from rich.console import Group
@@ -410,7 +439,15 @@ class ProgressUI:
         if self.quiet:
             return
 
+        # Clear all worker status to show final "Waiting for tasks..." state
+        with self.lock:
+            self.worker_status.clear()
+
+        # Do one final redraw to show all workers as waiting
         if self.live:
+            self._redraw()
+            # Give a brief moment to see the final state
+            time.sleep(0.5)
             self.live.stop()
             # Ensure cursor is visible after stopping live display
             self.console.show_cursor()
@@ -419,17 +456,19 @@ class ProgressUI:
         self.console.print("=" * 80)
 
         # Show final results
-        for exp_id, info in self.upload_status.items():
+        for i, (exp_id, info) in enumerate(self.upload_status.items(), 1):
             display_name = info.get("name", exp_id)
             if info["status"] == "completed":
                 if info["url"]:
                     self.console.print(
-                        f"✅ [bold magenta]{display_name}[/bold magenta] -> {info['url']}"
+                        f"{i:3d}. ✅ [bold magenta]{display_name}[/bold magenta] -> {info['url']}"
                     )
                 else:
-                    self.console.print(f"❌️  {display_name} -> [red]error in copy[red]")
+                    self.console.print(
+                        f"{i:3d}. ❌️  {display_name} -> [red]error in copy[red]"
+                    )
             else:
-                self.console.print(f"❌ {display_name} -> {info['error']}")
+                self.console.print(f"{i:3d}. ❌ {display_name} -> {info['error']}")
 
         # Summary
         total = len(self.upload_status)
@@ -568,7 +607,7 @@ class CopyManager:
                         timeout=1.0
                     )  # Wait max 1 second for thread to finish
 
-                    # Update status to completed
+                    # Update status to completed with 100% progress
                     self.progress_ui.update_upload_status(
                         experiment_id,
                         "completed",
@@ -586,6 +625,12 @@ class CopyManager:
                             "name": name,
                         }
                 except Exception as e:
+                    # Stop progress updates if they were started
+                    if "progress_stop_event" in locals():
+                        progress_stop_event.set()
+                        if "progress_thread" in locals():
+                            progress_thread.join(timeout=1.0)
+
                     # Update status to failed
                     self.progress_ui.update_upload_status(
                         experiment_id,
@@ -799,9 +844,10 @@ class CopyManager:
                 print("No experiments found to copy.")
                 return
             elif total_experiments == 1:
-                print("Found 1 experiment to copy.")
+                print("Found 1 experiment to consider copying.")
             else:
-                print(f"Found {total_experiments} experiments to copy.")
+                print(f"Found {total_experiments} experiments to consider copying.")
+            print("Examining...")
 
         # Now process experiments
         for experiment_folder in self.get_experiment_folders(
@@ -852,9 +898,6 @@ class CopyManager:
                 self.copy_experiment_to(
                     experiment_folder, workspace_dst, temp_project_dst
                 )
-
-        if not self.debug:
-            print("Gathering complete. Starting upload process...")
 
     def create_experiment(self, workspace_dst, project_dst, offline=True):
         """
@@ -935,9 +978,6 @@ class CopyManager:
                         )
                         break
                     line = fp.readline()
-        if self.debug:
-            print(f"Copying from {title} to {workspace_dst}/{project_dst}...")
-
         # Copy other project-level items to an experiment:
         if "reports" not in self.ignore and not self.copied_reports:
             experiment = None
@@ -976,6 +1016,9 @@ class CopyManager:
             else:
                 if self.debug:
                     print("    Can't sync because source has no name; copying...")
+
+        if self.debug:
+            print(f"Copying from {title} to {workspace_dst}/{project_dst}...")
 
         experiment = self.create_experiment(workspace_dst, project_dst)
         # copy experiment_folder stuff to experiment
