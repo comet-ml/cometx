@@ -415,7 +415,7 @@ class ProgressUI:
             if info["status"] == "completed":
                 if info["url"]:
                     self.console.print(
-                        f"✅ {display_name} -> [link={info['url']}]{info['url']}[/link]"
+                        f"✅ [link={info['url']}]{display_name}[/link] -> {info['url']}"
                     )
                 else:
                     self.console.print(
@@ -780,8 +780,9 @@ class CopyManager:
                 )
                 experiment = APIExperiment(previous_experiment=experiment_src)
                 experiment.create_symlink(temp_project_dst)
+                symlink_url = f"{self.api._get_url_server()}/{workspace_dst}/{temp_project_dst}/{experiment_src}"
                 print(
-                    f"    New symlink created: {self.api._get_url_server()}/{workspace_dst}/{temp_project_dst}/{experiment_src}"
+                    f"    New symlink created: [link={symlink_url}]{symlink_url}[/link]"
                 )
             elif "experiments" not in self.ignore:
                 self.copy_experiment_to(
