@@ -326,9 +326,6 @@ class ProgressUI:
 
         # Calculate statistics
         total = len(self.upload_status)
-        queued = sum(
-            1 for info in self.upload_status.values() if info["status"] == "queued"
-        )
         uploading = sum(
             1 for info in self.upload_status.values() if info["status"] == "uploading"
         )
@@ -342,7 +339,7 @@ class ProgressUI:
         # Create header panel
         elapsed = datetime.now() - self.start_time if self.start_time else timedelta(0)
         header_text = f"Upload Progress - Elapsed: {elapsed.total_seconds():.1f}s"
-        stats_text = f"Total: {total} | Queued: {queued} | Uploading: {uploading} | Completed: {completed} | Failed: {failed}"
+        stats_text = f"Total: {total} | Uploading: {uploading} | Completed: {completed} | Failed: {failed}"
 
         header_panel = Panel(
             f"{header_text}\n{stats_text}",
@@ -359,34 +356,46 @@ class ProgressUI:
         table.add_column("Percentage", style="yellow", width=10)
 
         # Show worker status (what each process is working on)
-        # Only show workers that are currently active or have been used
+        # Get all worker IDs that have been used (active + waiting)
         active_workers = set(self.worker_status.keys())
 
-        # If no workers are active yet, show a placeholder
-        if not active_workers and not self.max_workers:
+        # If no workers have been used yet and we have max_workers info, show waiting workers
+        if not active_workers and self.max_workers:
+            # Show all workers as waiting for tasks
+            for worker_id in range(1, self.max_workers + 1):
+                table.add_row(f"{worker_id}", "⏸️", "Waiting for tasks...", "", "")
+        elif not active_workers and not self.max_workers:
+            # Fallback when we don't have max_workers info
             table.add_row("N/A", "❓", "No worker info available", "", "")
-        elif not active_workers:
-            # Show that workers are waiting for tasks
-            table.add_row("1", "⏸️", "Waiting for tasks...", "", "")
         else:
-            # Show only active workers
-            for worker_id in sorted(active_workers):
-                worker_info = self.worker_status[worker_id]
-                status_icon = "🔄"  # uploading
-                display_name = worker_info.get(
-                    "name", worker_info.get("experiment_id", "Unknown")
-                )
-                progress = worker_info.get("progress", 0)
-                progress_bar = self._create_progress_bar(progress, 20)
-                percentage_text = f"{progress:.1f}%" if progress is not None else "0%"
+            # Show all workers sorted by worker ID (1 to N)
+            if self.max_workers:
+                for worker_id in range(1, self.max_workers + 1):
+                    if worker_id in active_workers:
+                        # Show active worker with progress
+                        worker_info = self.worker_status[worker_id]
+                        status_icon = "🔄"  # uploading
+                        display_name = worker_info.get(
+                            "name", worker_info.get("experiment_id", "Unknown")
+                        )
+                        progress = worker_info.get("progress", 0)
+                        progress_bar = self._create_progress_bar(progress, 20)
+                        percentage_text = (
+                            f"{progress:.1f}%" if progress is not None else "0%"
+                        )
 
-                table.add_row(
-                    f"{worker_id}",
-                    status_icon,
-                    display_name,
-                    progress_bar,
-                    percentage_text,
-                )
+                        table.add_row(
+                            f"{worker_id}",
+                            status_icon,
+                            display_name,
+                            progress_bar,
+                            percentage_text,
+                        )
+                    else:
+                        # Show waiting worker
+                        table.add_row(
+                            f"{worker_id}", "⏸️", "Waiting for tasks...", "", ""
+                        )
 
         # Create layout using rich Group
         from rich.console import Group
@@ -611,6 +620,19 @@ class CopyManager:
             if stop_event.wait(timeout=0.5):
                 break
 
+            # Check if upload has completed (status changed from uploading)
+            current_status = self._get_current_status(experiment_id)
+            if current_status != "uploading":
+                # Upload completed, jump to 100%
+                self.progress_ui.update_upload_status(
+                    experiment_id,
+                    current_status,
+                    progress=100,
+                    name=name,
+                    worker_id=worker_id,
+                )
+                break
+
             current_time = time.time()
             elapsed_time = current_time - start_time
 
@@ -648,6 +670,15 @@ class CopyManager:
                 return self.progress_ui.upload_status[experiment_id].get("progress", 0)
         return 0
 
+    def _get_current_status(self, experiment_id):
+        """Get the current status for an experiment"""
+        with self.progress_ui.lock:
+            if experiment_id in self.progress_ui.upload_status:
+                return self.progress_ui.upload_status[experiment_id].get(
+                    "status", "unknown"
+                )
+        return "unknown"
+
     def _queue_upload(self, experiment_id, name, archive_path, settings):
         """Queue an upload task for background processing"""
         with self.upload_lock:
@@ -657,6 +688,11 @@ class CopyManager:
                 "error": None,
                 "name": name,
             }
+
+        # Start progress UI if this is the first upload
+        if len(self.upload_results) == 1:
+            self.progress_ui.start()
+
         # Update progress UI to show queued status (no worker_id yet since it's queued)
         self.progress_ui.update_upload_status(experiment_id, "queued", name=name)
         self.upload_queue.put((experiment_id, name, archive_path, settings))
@@ -666,8 +702,9 @@ class CopyManager:
         total_uploads = len(self.upload_results)
 
         if total_uploads > 0:
-            # Start the progress UI
-            self.progress_ui.start()
+            # Start the progress UI if not already started
+            if not self.progress_ui.live:
+                self.progress_ui.start()
 
             # Wait for all tasks to finish
             self.upload_queue.join()
@@ -766,133 +803,55 @@ class CopyManager:
             else:
                 print(f"Found {total_experiments} experiments to copy.")
 
-        # Now process experiments with progress bar
-        processed_count = 0
-        from rich.progress import (
-            BarColumn,
-            Progress,
-            SpinnerColumn,
-            TaskProgressColumn,
-            TextColumn,
-        )
-
-        if not self.debug and total_experiments > 1:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                console=self.progress_ui.console,
-                transient=True,
-            ) as progress:
-                task = progress.add_task(
-                    "Gathering experiments...", total=total_experiments
+        # Now process experiments
+        for experiment_folder in self.get_experiment_folders(
+            workspace_src, project_src, experiment_src
+        ):
+            # Normalize path separators for cross-platform compatibility
+            normalized_path = experiment_folder.replace("\\", "/")
+            if normalized_path.count("/") >= 2:
+                folder_workspace, folder_project, folder_experiment = (
+                    normalized_path.rsplit("/", 2)
                 )
+            else:
+                print("Unknown folder: %r; ignoring" % experiment_folder)
+                continue
+            if folder_experiment in ["project_metadata.json"]:
+                continue
+            temp_project_dst = project_dst
+            if temp_project_dst is None:
+                temp_project_dst = folder_project
 
-                for experiment_folder in self.get_experiment_folders(
-                    workspace_src, project_src, experiment_src
-                ):
-                    # Normalize path separators for cross-platform compatibility
-                    normalized_path = experiment_folder.replace("\\", "/")
-                    if normalized_path.count("/") >= 2:
-                        folder_workspace, folder_project, folder_experiment = (
-                            normalized_path.rsplit("/", 2)
-                        )
-                    else:
-                        print("Unknown folder: %r; ignoring" % experiment_folder)
-                        continue
-                    if folder_experiment in ["project_metadata.json"]:
-                        continue
-                    temp_project_dst = project_dst
-                    if temp_project_dst is None:
-                        temp_project_dst = folder_project
-
-                    # Next, check if the project_dst exists:
-                    if temp_project_dst not in projects:
-                        project_metadata_path = os.path.join(
-                            workspace_src, project_src, "project_metadata.json"
-                        )
-                        if os.path.exists(project_metadata_path):
-                            with open(project_metadata_path) as fp:
-                                project_metadata = json.load(fp)
-                            self.api.create_project(
-                                workspace_dst,
-                                temp_project_dst,
-                                project_description=project_metadata[
-                                    "projectDescription"
-                                ],
-                                public=project_metadata["public"],
-                            )
-                        projects.append(temp_project_dst)
-
-                    if symlink:
-                        print(
-                            f"Creating symlink from {workspace_src}/{project_src}/{experiment_src} to {workspace_dst}/{temp_project_dst}"
-                        )
-                        experiment = APIExperiment(previous_experiment=experiment_src)
-                        experiment.create_symlink(temp_project_dst)
-                        symlink_url = f"{self.api._get_url_server()}/{workspace_dst}/{temp_project_dst}/{experiment_src}"
-                        print(
-                            f"    New symlink created: [link={symlink_url}]{symlink_url}[/link]"
-                        )
-                    elif "experiments" not in self.ignore:
-                        self.copy_experiment_to(
-                            experiment_folder, workspace_dst, temp_project_dst
-                        )
-
-                    processed_count += 1
-                    progress.update(task, completed=processed_count)
-
-        else:
-            # Debug mode or single experiment - no progress bar
-            for experiment_folder in self.get_experiment_folders(
-                workspace_src, project_src, experiment_src
-            ):
-                # Normalize path separators for cross-platform compatibility
-                normalized_path = experiment_folder.replace("\\", "/")
-                if normalized_path.count("/") >= 2:
-                    folder_workspace, folder_project, folder_experiment = (
-                        normalized_path.rsplit("/", 2)
+            # Next, check if the project_dst exists:
+            if temp_project_dst not in projects:
+                project_metadata_path = os.path.join(
+                    workspace_src, project_src, "project_metadata.json"
+                )
+                if os.path.exists(project_metadata_path):
+                    with open(project_metadata_path) as fp:
+                        project_metadata = json.load(fp)
+                    self.api.create_project(
+                        workspace_dst,
+                        temp_project_dst,
+                        project_description=project_metadata["projectDescription"],
+                        public=project_metadata["public"],
                     )
-                else:
-                    print("Unknown folder: %r; ignoring" % experiment_folder)
-                    continue
-                if folder_experiment in ["project_metadata.json"]:
-                    continue
-                temp_project_dst = project_dst
-                if temp_project_dst is None:
-                    temp_project_dst = folder_project
+                projects.append(temp_project_dst)
 
-                # Next, check if the project_dst exists:
-                if temp_project_dst not in projects:
-                    project_metadata_path = os.path.join(
-                        workspace_src, project_src, "project_metadata.json"
-                    )
-                    if os.path.exists(project_metadata_path):
-                        with open(project_metadata_path) as fp:
-                            project_metadata = json.load(fp)
-                        self.api.create_project(
-                            workspace_dst,
-                            temp_project_dst,
-                            project_description=project_metadata["projectDescription"],
-                            public=project_metadata["public"],
-                        )
-                    projects.append(temp_project_dst)
-
-                if symlink:
-                    print(
-                        f"Creating symlink from {workspace_src}/{project_src}/{experiment_src} to {workspace_dst}/{temp_project_dst}"
-                    )
-                    experiment = APIExperiment(previous_experiment=experiment_src)
-                    experiment.create_symlink(temp_project_dst)
-                    symlink_url = f"{self.api._get_url_server()}/{workspace_dst}/{temp_project_dst}/{experiment_src}"
-                    print(
-                        f"    New symlink created: [link={symlink_url}]{symlink_url}[/link]"
-                    )
-                elif "experiments" not in self.ignore:
-                    self.copy_experiment_to(
-                        experiment_folder, workspace_dst, temp_project_dst
-                    )
+            if symlink:
+                print(
+                    f"Creating symlink from {workspace_src}/{project_src}/{experiment_src} to {workspace_dst}/{temp_project_dst}"
+                )
+                experiment = APIExperiment(previous_experiment=experiment_src)
+                experiment.create_symlink(temp_project_dst)
+                symlink_url = f"{self.api._get_url_server()}/{workspace_dst}/{temp_project_dst}/{experiment_src}"
+                print(
+                    f"    New symlink created: [link={symlink_url}]{symlink_url}[/link]"
+                )
+            elif "experiments" not in self.ignore:
+                self.copy_experiment_to(
+                    experiment_folder, workspace_dst, temp_project_dst
+                )
 
         if not self.debug:
             print("Gathering complete. Starting upload process...")
