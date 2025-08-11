@@ -71,7 +71,7 @@ import queue
 import re
 
 # Progress UI imports
-import shutil
+import signal
 import sys
 import tempfile
 import threading
@@ -93,12 +93,31 @@ from comet_ml.messages import (
 )
 from comet_ml.offline_utils import write_experiment_meta_file
 from comet_ml.utils import compress_git_patch
+from rich.console import Console
+from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table
 
 from ..api import API
 from ..utils import remove_extra_slashes
 from .copy_utils import upload_single_offline_experiment
 
 ADDITIONAL_ARGS = False
+
+# Global variable to track current CopyManager instance for signal handling
+_current_copy_manager = None
+
+
+def _signal_handler(signum, frame):
+    """Signal handler to reset cursor on interruption"""
+    global _current_copy_manager
+    if _current_copy_manager and hasattr(_current_copy_manager, "progress_ui"):
+        try:
+            _current_copy_manager.progress_ui.reset_cursor()
+        except Exception:
+            pass  # Ignore errors during cleanup
+    # Re-raise KeyboardInterrupt to allow normal handling
+    raise KeyboardInterrupt()
 
 
 class OfflineExperiment(OfflineExperiment):
@@ -194,6 +213,9 @@ def copy(parsed_args, remaining=None):
         # Shutdown upload workers
         copy_manager.shutdown_upload_workers()
 
+        # Cleanup resources
+        copy_manager.cleanup()
+
         if parsed_args.debug:
             print("finishing...")
 
@@ -201,12 +223,22 @@ def copy(parsed_args, remaining=None):
         if parsed_args.debug:
             raise
         else:
+            # Reset cursor and stop any live displays
+            try:
+                if hasattr(copy_manager, "progress_ui"):
+                    copy_manager.progress_ui.reset_cursor()
+            except Exception:
+                pass  # Ignore errors during cleanup
             print("Canceled by CONTROL+C")
     except Exception as exc:
         if parsed_args.debug:
             raise
         else:
             print("ERROR: " + str(exc))
+    finally:
+        # Always cleanup resources
+        if "copy_manager" in locals():
+            copy_manager.cleanup()
 
 
 def get_query_dict(url):
@@ -219,21 +251,24 @@ def get_query_dict(url):
 
 
 class ProgressUI:
-    """Progress UI for displaying upload progress with multiple concurrent uploads"""
+    """Progress UI for displaying upload progress with multiple concurrent uploads using rich"""
 
     def __init__(self, quiet=False):
         self.quiet = quiet
-        self.terminal_width = shutil.get_terminal_size().columns
+        self.console = Console()
         self.lock = threading.Lock()
         self.upload_status = {}  # experiment_id -> status info
         self.start_time = None
+        self.live = None
 
     def start(self):
         """Start the progress display"""
         if self.quiet:
             return
         self.start_time = datetime.now()
-        print("Starting upload process...")
+        self.live = Live("", console=self.console, refresh_per_second=4)
+        self.live.start()
+        self.console.print("Starting upload process...")
 
     def update_upload_status(
         self, experiment_id, status, url=None, error=None, progress=None
@@ -251,11 +286,8 @@ class ProgressUI:
 
     def _redraw(self):
         """Redraw the progress display"""
-        if self.quiet:
+        if self.quiet or not self.live:
             return
-
-        # Clear the screen (move cursor up and clear lines)
-        print("\033[2J\033[H", end="")
 
         # Calculate statistics
         total = len(self.upload_status)
@@ -272,19 +304,31 @@ class ProgressUI:
             1 for info in self.upload_status.values() if info["status"] == "failed"
         )
 
-        # Header
+        # Create header panel
         elapsed = datetime.now() - self.start_time if self.start_time else timedelta(0)
-        print(f"Upload Progress - Elapsed: {elapsed.total_seconds():.1f}s")
-        print(
-            f"Total: {total} | Queued: {queued} | Uploading: {uploading} | Completed: {completed} | Failed: {failed}"
-        )
-        print("=" * self.terminal_width)
+        header_text = f"Upload Progress - Elapsed: {elapsed.total_seconds():.1f}s"
+        stats_text = f"Total: {total} | Queued: {queued} | Uploading: {uploading} | Completed: {completed} | Failed: {failed}"
 
-        # Progress bars for each upload
-        for i, (exp_id, info) in enumerate(self.upload_status.items()):
-            if i >= 10:  # Limit display to first 10 uploads
+        header_panel = Panel(
+            f"{header_text}\n{stats_text}",
+            title="[bold blue]Upload Status[/bold blue]",
+            border_style="blue",
+        )
+
+        # Create table for upload details
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("Status", style="cyan", width=8)
+        table.add_column("Experiment Key", style="green", width=35)
+        table.add_column("Progress Bar", style="yellow", width=25)
+        table.add_column("Percentage", style="yellow", width=10)
+        table.add_column("Details", style="white")
+
+        # Add rows for each upload (limit to first 10 for display)
+        display_count = 0
+        for exp_id, info in self.upload_status.items():
+            if display_count >= 10:
                 remaining = len(self.upload_status) - 10
-                print(f"... and {remaining} more uploads")
+                table.add_row("...", f"... and {remaining} more uploads", "", "", "")
                 break
 
             status_icon = {
@@ -297,48 +341,69 @@ class ProgressUI:
             # Truncate experiment ID for display
             display_id = exp_id[:30] + "..." if len(exp_id) > 30 else exp_id
 
-            # Progress bar
+            # Progress information
             if info["status"] == "uploading" and info["progress"] is not None:
                 progress_bar = self._create_progress_bar(info["progress"], 20)
-                status_text = f"{status_icon} {display_id} {progress_bar}"
+                percentage_text = f"{info['progress']:.1f}%"
+            elif info["status"] == "completed":
+                progress_bar = self._create_progress_bar(100, 20)
+                percentage_text = "100%"
+            elif info["status"] == "failed":
+                progress_bar = "Failed"
+                percentage_text = "Failed"
             else:
-                status_text = f"{status_icon} {display_id} ({info['status']})"
+                progress_bar = info["status"].title()
+                percentage_text = ""
 
-            print(status_text)
+            # Details column
+            if info["status"] == "completed" and info["url"]:
+                details = "Upload successful"
+            elif info["status"] == "failed" and info["error"]:
+                details = (
+                    info["error"][:50] + "..."
+                    if len(info["error"]) > 50
+                    else info["error"]
+                )
+            else:
+                details = ""
 
-        # Footer
-        if completed > 0 or failed > 0:
-            success_rate = (
-                (completed / (completed + failed)) * 100
-                if (completed + failed) > 0
-                else 0
+            table.add_row(
+                status_icon, display_id, progress_bar, percentage_text, details
             )
-            print(f"Success Rate: {success_rate:.1f}%")
+            display_count += 1
 
-    def _create_progress_bar(self, progress, width=20):
-        """Create a text-based progress bar"""
-        filled = int(width * progress / 100)
-        bar = "█" * filled + "░" * (width - filled)
-        return f"[{bar}] {progress:.1f}%"
+        # Create layout using rich Group
+        from rich.console import Group
+
+        layout = Group(header_panel, table)
+
+        # Update the live display
+        self.live.update(layout)
 
     def finish(self):
         """Finish the progress display and show final results"""
         if self.quiet:
             return
 
-        print("\033[2J\033[H", end="")  # Clear screen
-        print("Upload Process Complete!")
-        print("=" * self.terminal_width)
+        if self.live:
+            self.live.stop()
+            # Ensure cursor is visible after stopping live display
+            self.console.show_cursor()
+
+        self.console.print("\n[bold green]Upload Process Complete![/bold green]")
+        self.console.print("=" * 80)
 
         # Show final results
         for exp_id, info in self.upload_status.items():
             if info["status"] == "completed":
                 if info["url"]:
-                    print(f"✅ {exp_id} -> {info['url']}")
+                    self.console.print(f"✅ {exp_id} -> {info['url']}")
                 else:
-                    print(f"⚠️  {exp_id} -> Upload completed but no URL returned")
+                    self.console.print(
+                        f"⚠️  {exp_id} -> Upload completed but no URL returned"
+                    )
             else:
-                print(f"❌ {exp_id} -> {info['error']}")
+                self.console.print(f"❌ {exp_id} -> {info['error']}")
 
         # Summary
         total = len(self.upload_status)
@@ -349,7 +414,32 @@ class ProgressUI:
             1 for info in self.upload_status.values() if info["status"] == "failed"
         )
 
-        print(f"\nSummary: {completed}/{total} successful, {failed} failed")
+        success_rate = (
+            (completed / (completed + failed)) * 100 if (completed + failed) > 0 else 0
+        )
+
+        self.console.print(
+            f"\n[bold]Summary:[/bold] {completed}/{total} successful, {failed} failed"
+        )
+        self.console.print(f"[bold]Success Rate:[/bold] {success_rate:.1f}%")
+
+    def reset_cursor(self):
+        """Reset cursor and stop live display - used for cleanup on interruption"""
+        if self.quiet:
+            return
+
+        try:
+            if self.live:
+                self.live.stop()
+            self.console.show_cursor()
+        except Exception:
+            pass  # Ignore errors during cleanup
+
+    def _create_progress_bar(self, progress, width=20):
+        """Create a text-based progress bar"""
+        filled = int(width * progress / 100)
+        bar = "█" * filled + "░" * (width - filled)
+        return f"[{bar}]"
 
 
 class CopyManager:
@@ -362,6 +452,9 @@ class CopyManager:
         | WORKSPACE/PROJ     | N/A                  | Copies all experiments |
         | WORKSPACE/PROJ/EXP | N/A                  | Copies experiment      |
         """
+        global _current_copy_manager
+        _current_copy_manager = self
+
         self.api = API()
         self.debug = debug
         # Calculate default number of workers based on CPU count, similar to download command
@@ -377,6 +470,11 @@ class CopyManager:
         self.progress_ui = ProgressUI(
             quiet=debug
         )  # Show UI by default, hide when debug=True
+
+        # Register signal handler for cursor reset on interruption
+        if not debug:  # Only register signal handler when not in debug mode
+            signal.signal(signal.SIGINT, _signal_handler)
+
         self._start_upload_workers()
 
     def _start_upload_workers(self):
@@ -394,7 +492,7 @@ class CopyManager:
                 if task is None:  # Shutdown signal
                     break
 
-                experiment_id, archive_path, settings = task
+                experiment_id, name, archive_path, settings = task
 
                 # Get file size for progress calculation
                 try:
@@ -449,6 +547,7 @@ class CopyManager:
                             "url": url,
                             "status": "completed",
                             "error": None,
+                            "name": name,
                         }
                 except Exception as e:
                     # Update status to failed
@@ -472,17 +571,18 @@ class CopyManager:
                     print(f"Upload worker error: {e}")
                 continue
 
-    def _queue_upload(self, experiment_id, archive_path, settings):
+    def _queue_upload(self, experiment_id, name, archive_path, settings):
         """Queue an upload task for background processing"""
         with self.upload_lock:
             self.upload_results[experiment_id] = {
                 "url": None,
                 "status": "queued",
                 "error": None,
+                "name": name,
             }
         # Update progress UI to show queued status
         self.progress_ui.update_upload_status(experiment_id, "queued")
-        self.upload_queue.put((experiment_id, archive_path, settings))
+        self.upload_queue.put((experiment_id, name, archive_path, settings))
 
     def wait_for_uploads(self):
         """Wait for all queued uploads to complete"""
@@ -504,6 +604,14 @@ class CopyManager:
             self.upload_queue.put(None)  # Shutdown signal
         for thread in self.upload_threads:
             thread.join(timeout=5)
+
+    def cleanup(self):
+        """Cleanup resources and reset signal handler"""
+        global _current_copy_manager
+        if _current_copy_manager == self:
+            _current_copy_manager = None
+        # Restore default signal handler
+        signal.signal(signal.SIGINT, signal.default_int_handler)
 
     def copy(self, source, destination, symlink, ignore, debug, sync):
         """ """
@@ -739,7 +847,12 @@ class CopyManager:
                 print(f"Queuing upload for {archive_path} ({size_mb:.1f} MB)")
             except (OSError, TypeError):
                 print(f"Queuing upload for {archive_path} (size unknown)")
-        self._queue_upload(experiment.id, archive_path, self.api.config)
+        self._queue_upload(
+            experiment.id,
+            f"{workspace_dst}/{project_dst}/{experiment.name}",
+            archive_path,
+            self.api.config,
+        )
 
     def log_metadata(self, experiment, filename):
         if self.debug:
