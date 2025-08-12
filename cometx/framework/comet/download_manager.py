@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+import urllib
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, List, Optional
@@ -1167,6 +1168,14 @@ class DownloadManager:
                 with open(filepath, "w") as f:
                     f.write(output)
 
+    def submit_task_direct(self, task):
+        if self.queue is None:
+            # Do it now:
+            task()
+        else:
+            # add to queue
+            self.queue.submit(task)
+
     def submit_task(self, file_path, experiment, method_name, args, kwargs):
         def task():
             method = getattr(experiment, method_name)
@@ -1175,12 +1184,7 @@ class DownloadManager:
                 with open(file_path, "wb+") as f:
                     f.write(results)
 
-        if self.queue is None:
-            # Do it now:
-            task()
-        else:
-            # add to queue
-            self.queue.submit(task)
+        self.submit_task_direct(task)
 
     def end(self):
         if self.queue is not None:
@@ -1241,6 +1245,12 @@ class DownloadManager:
                 self.summary["assets"] += 1
                 path, filename = os.path.split(file_path)
                 os.makedirs(path, exist_ok=True)
+
+            if asset["remote"]:
+                self.submit_task_direct(
+                    lambda: self.download_asset(experiment, asset["fileName"])
+                )
+            else:
                 self.submit_task(
                     file_path, experiment, "get_asset", [asset["assetId"]], {}
                 )
@@ -1275,9 +1285,18 @@ class DownloadManager:
                     self.summary["assets"] += 1
                     path, filename = os.path.split(file_path)
                     os.makedirs(path, exist_ok=True)
-                    raw = experiment.get_asset(asset["assetId"])
-                    with open(file_path, "wb+") as f:
-                        f.write(raw)
+
+                    if asset["remote"]:
+                        if asset["link"].startswith("http"):
+                            urllib.request.urlretrieve(asset["link"], file_path)
+                        else:
+                            print(
+                                f"I don't know how to download {asset['link']} remote asset; skipping"
+                            )
+                    else:
+                        raw = experiment.get_asset(asset["assetId"])
+                        with open(file_path, "wb+") as f:
+                            f.write(raw)
 
     def download_experiment(self, experiment, top_level=True):
         # type: (APIExperiment, Optional[bool]) -> None
