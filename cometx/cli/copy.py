@@ -67,21 +67,15 @@ import glob
 import io
 import json
 import os
-import queue
 import re
-
-# Progress UI imports
-import signal
 import sys
 import tempfile
-import threading
-import time
 import urllib.parse
 import zipfile
-from datetime import datetime, timedelta
 
 from comet_ml import APIExperiment, Artifact, Experiment, OfflineExperiment
 from comet_ml._typing import TemporaryFilePath
+from comet_ml.utils import compress_git_patch
 from comet_ml.file_uploader import GitPatchUploadProcessor
 from comet_ml.messages import (
     GitMetadataMessage,
@@ -92,32 +86,12 @@ from comet_ml.messages import (
     SystemDetailsMessage,
 )
 from comet_ml.offline_utils import write_experiment_meta_file
-from comet_ml.utils import compress_git_patch
-from rich.console import Console
-from rich.live import Live
-from rich.panel import Panel
-from rich.table import Table
 
 from ..api import API
 from ..utils import remove_extra_slashes
 from .copy_utils import upload_single_offline_experiment
 
 ADDITIONAL_ARGS = False
-
-# Global variable to track current CopyManager instance for signal handling
-_current_copy_manager = None
-
-
-def _signal_handler(signum, frame):
-    """Signal handler to reset cursor on interruption"""
-    global _current_copy_manager
-    if _current_copy_manager and hasattr(_current_copy_manager, "progress_ui"):
-        try:
-            _current_copy_manager.progress_ui.reset_cursor()
-        except Exception:
-            pass  # Ignore errors during cleanup
-    # Re-raise KeyboardInterrupt to allow normal handling
-    raise KeyboardInterrupt()
 
 
 class OfflineExperiment(OfflineExperiment):
@@ -166,10 +140,13 @@ def get_parser_arguments(parser):
         default=[],
     )
     parser.add_argument(
-        "--debug",
-        help="Provide debug info",
-        action="store_true",
+        "--debug", help="If given, allow debugging", default=False, action="store_true"
+    )
+    parser.add_argument(
+        "--quiet",
+        help="If given, don't display update info",
         default=False,
+        action="store_true",
     )
     parser.add_argument(
         "--symlink",
@@ -183,39 +160,21 @@ def get_parser_arguments(parser):
         default=False,
         action="store_true",
     )
-    parser.add_argument(
-        "-j",
-        "--parallel",
-        help="The number of threads to use for parallel uploading; default (None) is based on CPUs",
-        type=int,
-        default=None,
-    )
 
 
 def copy(parsed_args, remaining=None):
     # Called via `cometx copy ...`
     try:
-        copy_manager = CopyManager(
-            max_concurrent_uploads=parsed_args.parallel, debug=parsed_args.debug
-        )
+        copy_manager = CopyManager()
         copy_manager.copy(
             parsed_args.COMET_SOURCE,
             parsed_args.COMET_DESTINATION,
             parsed_args.symlink,
             parsed_args.ignore,
             parsed_args.debug,
+            parsed_args.quiet,
             parsed_args.sync,
         )
-
-        # Wait for all uploads to complete
-        copy_manager.wait_for_uploads()
-
-        # Shutdown upload workers
-        copy_manager.shutdown_upload_workers()
-
-        # Cleanup resources
-        copy_manager.cleanup()
-
         if parsed_args.debug:
             print("finishing...")
 
@@ -223,22 +182,12 @@ def copy(parsed_args, remaining=None):
         if parsed_args.debug:
             raise
         else:
-            # Reset cursor and stop any live displays
-            try:
-                if hasattr(copy_manager, "progress_ui"):
-                    copy_manager.progress_ui.reset_cursor()
-            except Exception:
-                pass  # Ignore errors during cleanup
             print("Canceled by CONTROL+C")
     except Exception as exc:
         if parsed_args.debug:
             raise
         else:
             print("ERROR: " + str(exc))
-    finally:
-        # Always cleanup resources
-        if "copy_manager" in locals():
-            copy_manager.cleanup()
 
 
 def get_query_dict(url):
@@ -250,265 +199,8 @@ def get_query_dict(url):
     return {key: values[0] for key, values in query.items()}
 
 
-class ProgressUI:
-    """Progress UI for displaying upload progress with multiple concurrent uploads using rich"""
-
-    def __init__(self, quiet=False, max_workers=None):
-        self.quiet = quiet
-        self.console = Console()
-        self.lock = threading.Lock()
-        self.upload_status = {}  # experiment_id -> status info
-        self.worker_status = {}  # worker_id -> current task info
-        self.worker_mapping = {}  # actual_worker_id -> sequential_number
-        self.next_worker_number = 1
-        self.max_workers = max_workers
-        self.start_time = None
-        self.live = None
-
-    def start(self):
-        """Start the progress display"""
-        if self.quiet:
-            return
-        self.start_time = datetime.now()
-        self.live = Live("", console=self.console, refresh_per_second=4)
-        self.live.start()
-        self.console.print("Starting upload process...")
-
-    def update_upload_status(
-        self,
-        experiment_id,
-        status,
-        url=None,
-        error=None,
-        progress=None,
-        name=None,
-        worker_id=None,
-    ):
-        """Update the status of an upload"""
-        with self.lock:
-            # Map worker_id to sequential number if not already mapped
-            sequential_worker_id = None
-            if worker_id is not None:
-                if worker_id not in self.worker_mapping:
-                    self.worker_mapping[worker_id] = self.next_worker_number
-                    self.next_worker_number += 1
-                sequential_worker_id = self.worker_mapping[worker_id]
-
-            self.upload_status[experiment_id] = {
-                "status": status,
-                "url": url,
-                "error": error,
-                "progress": progress,
-                "name": name,
-                "worker_id": sequential_worker_id,
-                "last_update": datetime.now(),
-            }
-
-            # Update worker status using sequential worker ID
-            if sequential_worker_id is not None:
-                if status == "uploading":
-                    self.worker_status[sequential_worker_id] = {
-                        "experiment_id": experiment_id,
-                        "name": name,
-                        "progress": progress,
-                        "status": status,
-                    }
-                elif status in ["completed", "failed"]:
-                    # Keep completed/failed status visible for 1 second before clearing
-                    self.worker_status[sequential_worker_id] = {
-                        "experiment_id": experiment_id,
-                        "name": name,
-                        "progress": 100 if status == "completed" else progress,
-                        "status": status,
-                        "completion_time": datetime.now(),
-                    }
-        self._redraw()
-
-    def _redraw(self):
-        """Redraw the progress display"""
-        if self.quiet or not self.live:
-            return
-
-        # Clean up completed/failed tasks that have been visible for more than 1 second
-        current_time = datetime.now()
-        workers_to_remove = []
-        for worker_id, worker_info in self.worker_status.items():
-            if worker_info.get("status") in ["completed", "failed"]:
-                completion_time = worker_info.get("completion_time")
-                if (
-                    completion_time
-                    and (current_time - completion_time).total_seconds() >= 1.0
-                ):
-                    workers_to_remove.append(worker_id)
-
-        for worker_id in workers_to_remove:
-            del self.worker_status[worker_id]
-
-        # Calculate statistics
-        total = len(self.upload_status)
-        uploading = sum(
-            1 for info in self.upload_status.values() if info["status"] == "uploading"
-        )
-        completed = sum(
-            1 for info in self.upload_status.values() if info["status"] == "completed"
-        )
-        failed = sum(
-            1 for info in self.upload_status.values() if info["status"] == "failed"
-        )
-
-        # Create header panel
-        elapsed = datetime.now() - self.start_time if self.start_time else timedelta(0)
-        header_text = f"Upload Progress - Elapsed: {elapsed.total_seconds():.1f}s"
-        stats_text = f"Total: {total} | Uploading: {uploading} | Completed: {completed} | Failed: {failed}"
-
-        header_panel = Panel(
-            f"{header_text}\n{stats_text}",
-            title="[bold blue]Upload Status[/bold blue]",
-            border_style="blue",
-        )
-
-        # Create table for worker status (showing what each process is working on)
-        table = Table(show_header=True, header_style="bold magenta", expand=True)
-        table.add_column("Worker", style="cyan", width=8, no_wrap=True)
-        table.add_column("Status", style="cyan", width=8, no_wrap=True)
-        table.add_column("Experiment Name", style="green", min_width=20)
-        table.add_column("Progress Bar", style="yellow", width=25, no_wrap=True)
-        table.add_column("Percentage", style="yellow", width=10, no_wrap=True)
-
-        # Show worker status (what each process is working on)
-        # Get all worker IDs that have been used (active + waiting)
-        active_workers = set(self.worker_status.keys())
-
-        # Show all workers sorted by worker ID (1 to N)
-        if self.max_workers:
-            for worker_id in range(1, self.max_workers + 1):
-                if worker_id in active_workers:
-                    # Show active worker with progress
-                    worker_info = self.worker_status[worker_id]
-                    status = worker_info.get("status", "uploading")
-
-                    # Set appropriate status icon
-                    if status == "uploading":
-                        status_icon = "🔄"
-                    elif status == "completed":
-                        status_icon = "✅"
-                    elif status == "failed":
-                        status_icon = "❌"
-                    else:
-                        status_icon = "❓"
-
-                    display_name = worker_info.get(
-                        "name", worker_info.get("experiment_id", "Unknown")
-                    )
-                    progress = worker_info.get("progress", 0)
-                    progress_bar = self._create_progress_bar(progress, 20)
-                    percentage_text = (
-                        f"{progress:.1f}%" if progress is not None else "0%"
-                    )
-
-                    table.add_row(
-                        f"{worker_id}",
-                        status_icon,
-                        display_name,
-                        progress_bar,
-                        percentage_text,
-                    )
-                else:
-                    # Show waiting worker
-                    table.add_row(
-                        f"{worker_id}",
-                        "⏸️",
-                        "[bold blue]Waiting for tasks...[/bold blue]",
-                        "",
-                        "",
-                    )
-        else:
-            # Fallback when we don't have max_workers info
-            table.add_row("N/A", "❓", "No worker info available", "", "")
-
-        # Create layout using rich Group
-        from rich.console import Group
-
-        layout = Group(header_panel, table)
-
-        # Update the live display
-        self.live.update(layout)
-
-    def finish(self):
-        """Finish the progress display and show final results"""
-        if self.quiet:
-            return
-
-        # Clear all worker status to show final "Waiting for tasks..." state
-        with self.lock:
-            self.worker_status.clear()
-
-        # Do one final redraw to show all workers as waiting
-        if self.live:
-            self._redraw()
-            # Give a brief moment to see the final state
-            time.sleep(0.5)
-            self.live.stop()
-            # Ensure cursor is visible after stopping live display
-            self.console.show_cursor()
-
-        self.console.print("\n[bold green]Upload Process Complete![/bold green]")
-        self.console.print("=" * 80)
-
-        # Show final results
-        for i, (exp_id, info) in enumerate(self.upload_status.items(), 1):
-            display_name = info.get("name", exp_id)
-            if info["status"] == "completed":
-                if info["url"]:
-                    self.console.print(
-                        f"{i:3d}. ✅ [bold magenta]{display_name}[/bold magenta] -> {info['url']}"
-                    )
-                else:
-                    self.console.print(
-                        f"{i:3d}. ❌️  {display_name} -> [red]error in copy[red]"
-                    )
-            else:
-                self.console.print(f"{i:3d}. ❌ {display_name} -> {info['error']}")
-
-        # Summary
-        total = len(self.upload_status)
-        completed = sum(
-            1 for info in self.upload_status.values() if info["status"] == "completed"
-        )
-        failed = sum(
-            1 for info in self.upload_status.values() if info["status"] == "failed"
-        )
-
-        success_rate = (
-            (completed / (completed + failed)) * 100 if (completed + failed) > 0 else 0
-        )
-
-        self.console.print(
-            f"\n[bold]Summary:[/bold] {completed}/{total} successful, {failed} failed"
-        )
-        self.console.print(f"[bold]Success Rate:[/bold] {success_rate:.1f}%")
-
-    def reset_cursor(self):
-        """Reset cursor and stop live display - used for cleanup on interruption"""
-        if self.quiet:
-            return
-
-        try:
-            if self.live:
-                self.live.stop()
-            self.console.show_cursor()
-        except Exception:
-            pass  # Ignore errors during cleanup
-
-    def _create_progress_bar(self, progress, width=20):
-        """Create a text-based progress bar"""
-        filled = int(width * progress / 100)
-        bar = "█" * filled + "░" * (width - filled)
-        return f"[{bar}]"
-
-
 class CopyManager:
-    def __init__(self, max_concurrent_uploads=None, debug=False):
+    def __init__(self):
         """
         | Destination:       | WORKSPACE            | WORKSPACE/PROJECT      |
         | Source (below)     |                      |                        |
@@ -517,265 +209,13 @@ class CopyManager:
         | WORKSPACE/PROJ     | N/A                  | Copies all experiments |
         | WORKSPACE/PROJ/EXP | N/A                  | Copies experiment      |
         """
-        global _current_copy_manager
-        _current_copy_manager = self
-
         self.api = API()
-        self.debug = debug
-        # Calculate default number of workers based on CPU count, similar to download command
-        self.max_concurrent_uploads = (
-            min(32, os.cpu_count() + 4)
-            if max_concurrent_uploads is None
-            else max_concurrent_uploads
-        )
-        self.upload_queue = queue.Queue()
-        self.upload_results = {}
-        self.upload_lock = threading.Lock()
-        self.upload_threads = []
-        self.progress_ui = ProgressUI(
-            quiet=debug, max_workers=self.max_concurrent_uploads
-        )  # Show UI by default, hide when debug=True
 
-        # Register signal handler for cursor reset on interruption
-        if not debug:  # Only register signal handler when not in debug mode
-            signal.signal(signal.SIGINT, _signal_handler)
-
-        self._start_upload_workers()
-
-    def _start_upload_workers(self):
-        """Start background worker threads for handling uploads"""
-        for i in range(self.max_concurrent_uploads):
-            thread = threading.Thread(
-                target=self._upload_worker, args=(i,), daemon=True
-            )
-            thread.start()
-            self.upload_threads.append(thread)
-
-    def _upload_worker(self, worker_id):
-        """Worker thread that processes upload tasks from the queue"""
-        while True:
-            try:
-                task = self.upload_queue.get(timeout=1)
-                if task is None:  # Shutdown signal
-                    break
-
-                experiment_id, name, archive_path, settings = task
-
-                # Get file size for debug logging
-                try:
-                    file_size = os.path.getsize(archive_path)
-                    if self.debug:
-                        size_mb = file_size / (1024 * 1024)
-                        print(
-                            f"Worker {worker_id} uploading {experiment_id}: {size_mb:.1f} MB"
-                        )
-                except (OSError, TypeError):
-                    if self.debug:
-                        print(
-                            f"Worker {worker_id} uploading {experiment_id}: size unknown"
-                        )
-
-                # Update status to uploading
-                self.progress_ui.update_upload_status(
-                    experiment_id,
-                    "uploading",
-                    progress=0,
-                    name=name,
-                    worker_id=worker_id,
-                )
-
-                try:
-                    # Start progress updates in a separate thread to avoid blocking the upload
-                    progress_stop_event = threading.Event()
-                    progress_thread = threading.Thread(
-                        target=self._update_progress_periodically,
-                        args=(experiment_id, name, worker_id, progress_stop_event),
-                        daemon=True,
-                    )
-                    progress_thread.start()
-
-                    # Perform the actual upload (this is the real work)
-                    url = upload_single_offline_experiment(
-                        offline_archive_path=archive_path,
-                        settings=settings,
-                        force_upload=False,
-                    )
-
-                    # Stop progress updates and wait for thread to finish
-                    progress_stop_event.set()
-                    progress_thread.join(
-                        timeout=1.0
-                    )  # Wait max 1 second for thread to finish
-
-                    # Update status to completed with 100% progress
-                    self.progress_ui.update_upload_status(
-                        experiment_id,
-                        "completed",
-                        url=url,
-                        progress=100,
-                        name=name,
-                        worker_id=worker_id,
-                    )
-
-                    with self.upload_lock:
-                        self.upload_results[experiment_id] = {
-                            "url": url,
-                            "status": "completed",
-                            "error": None,
-                            "name": name,
-                        }
-                except Exception as e:
-                    # Stop progress updates if they were started
-                    if "progress_stop_event" in locals():
-                        progress_stop_event.set()
-                        if "progress_thread" in locals():
-                            progress_thread.join(timeout=1.0)
-
-                    # Update status to failed
-                    self.progress_ui.update_upload_status(
-                        experiment_id,
-                        "failed",
-                        error=str(e),
-                        name=name,
-                        worker_id=worker_id,
-                    )
-
-                    with self.upload_lock:
-                        self.upload_results[experiment_id] = {
-                            "url": None,
-                            "status": "failed",
-                            "error": str(e),
-                        }
-                finally:
-                    self.upload_queue.task_done()
-
-            except queue.Empty:
-                continue
-            except Exception as e:
-                if self.debug:
-                    print(f"Upload worker {worker_id} error: {e}")
-                continue
-
-    def _update_progress_periodically(self, experiment_id, name, worker_id, stop_event):
-        """Update progress periodically without blocking the main upload thread"""
-        start_time = time.time()
-
-        while not stop_event.is_set():
-            # Update progress every 0.5 seconds
-            if stop_event.wait(timeout=0.5):
-                break
-
-            # Check if upload has completed (status changed from uploading)
-            current_status = self._get_current_status(experiment_id)
-            if current_status != "uploading":
-                # Upload completed, jump to 100%
-                self.progress_ui.update_upload_status(
-                    experiment_id,
-                    current_status,
-                    progress=100,
-                    name=name,
-                    worker_id=worker_id,
-                )
-                break
-
-            current_time = time.time()
-            elapsed_time = current_time - start_time
-
-            # Calculate a more realistic progress based on time elapsed
-            # This assumes uploads typically take 5-30 seconds depending on size
-            # We'll show progress that accelerates over time to be more realistic
-            if elapsed_time < 2.0:
-                # First 2 seconds: 0-20%
-                progress = min(20, (elapsed_time / 2.0) * 20)
-            elif elapsed_time < 8.0:
-                # 2-8 seconds: 20-70%
-                progress = 20 + ((elapsed_time - 2.0) / 6.0) * 50
-            elif elapsed_time < 15.0:
-                # 8-15 seconds: 70-90%
-                progress = 70 + ((elapsed_time - 8.0) / 7.0) * 20
-            else:
-                # After 15 seconds: 90-95% (slow crawl to completion)
-                progress = min(95, 90 + ((elapsed_time - 15.0) / 10.0) * 5)
-
-            # Only update if progress has increased significantly (avoid too many updates)
-            current_progress = self._get_current_progress(experiment_id)
-            if progress - current_progress >= 3.0:  # Update every ~3% progress
-                self.progress_ui.update_upload_status(
-                    experiment_id,
-                    "uploading",
-                    progress=progress,
-                    name=name,
-                    worker_id=worker_id,
-                )
-
-    def _get_current_progress(self, experiment_id):
-        """Get the current progress for an experiment"""
-        with self.progress_ui.lock:
-            if experiment_id in self.progress_ui.upload_status:
-                return self.progress_ui.upload_status[experiment_id].get("progress", 0)
-        return 0
-
-    def _get_current_status(self, experiment_id):
-        """Get the current status for an experiment"""
-        with self.progress_ui.lock:
-            if experiment_id in self.progress_ui.upload_status:
-                return self.progress_ui.upload_status[experiment_id].get(
-                    "status", "unknown"
-                )
-        return "unknown"
-
-    def _queue_upload(self, experiment_id, name, archive_path, settings):
-        """Queue an upload task for background processing"""
-        with self.upload_lock:
-            self.upload_results[experiment_id] = {
-                "url": None,
-                "status": "queued",
-                "error": None,
-                "name": name,
-            }
-
-        # Start progress UI if this is the first upload
-        if len(self.upload_results) == 1:
-            self.progress_ui.start()
-
-        # Update progress UI to show queued status (no worker_id yet since it's queued)
-        self.progress_ui.update_upload_status(experiment_id, "queued", name=name)
-        self.upload_queue.put((experiment_id, name, archive_path, settings))
-
-    def wait_for_uploads(self):
-        """Wait for all queued uploads to complete"""
-        total_uploads = len(self.upload_results)
-
-        if total_uploads > 0:
-            # Start the progress UI if not already started
-            if not self.progress_ui.live:
-                self.progress_ui.start()
-
-            # Wait for all tasks to finish
-            self.upload_queue.join()
-
-            # Finish the progress UI
-            self.progress_ui.finish()
-
-    def shutdown_upload_workers(self):
-        """Shutdown upload worker threads"""
-        for _ in self.upload_threads:
-            self.upload_queue.put(None)  # Shutdown signal
-        for thread in self.upload_threads:
-            thread.join(timeout=5)
-
-    def cleanup(self):
-        """Cleanup resources and reset signal handler"""
-        global _current_copy_manager
-        if _current_copy_manager == self:
-            _current_copy_manager = None
-        # Restore default signal handler
-        signal.signal(signal.SIGINT, signal.default_int_handler)
-
-    def copy(self, source, destination, symlink, ignore, debug, sync):
+    def copy(self, source, destination, symlink, ignore, debug, quiet, sync):
         """ """
         self.ignore = ignore
         self.debug = debug
+        self.quiet = quiet
         self.sync = sync
         self.copied_reports = False
         comet_destination = remove_extra_slashes(destination)
@@ -820,45 +260,13 @@ class CopyManager:
 
         # For checking if the project_dst exists below:
         projects = self.api.get_projects(workspace_dst)
-
-        # First, count total experiments to gather for progress bar
-        if not self.debug:
-            print("Gathering experiments for copy queue...")
-            total_experiments = 0
-            for experiment_folder in self.get_experiment_folders(
-                workspace_src, project_src, experiment_src
-            ):
-                # Normalize path separators for cross-platform compatibility
-                normalized_path = experiment_folder.replace("\\", "/")
-                if normalized_path.count("/") >= 2:
-                    folder_workspace, folder_project, folder_experiment = (
-                        normalized_path.rsplit("/", 2)
-                    )
-                else:
-                    continue
-                if folder_experiment in ["project_metadata.json"]:
-                    continue
-                total_experiments += 1
-
-            if total_experiments == 0:
-                print("No experiments found to copy.")
-                return
-            elif total_experiments == 1:
-                print("Found 1 experiment to consider copying.")
-            else:
-                print(f"Found {total_experiments} experiments to consider copying.")
-            print("Examining...")
-
-        # Now process experiments
         for experiment_folder in self.get_experiment_folders(
             workspace_src, project_src, experiment_src
         ):
             # Normalize path separators for cross-platform compatibility
             normalized_path = experiment_folder.replace("\\", "/")
             if normalized_path.count("/") >= 2:
-                folder_workspace, folder_project, folder_experiment = (
-                    normalized_path.rsplit("/", 2)
-                )
+                folder_workspace, folder_project, folder_experiment = normalized_path.rsplit("/", 2)
             else:
                 print("Unknown folder: %r; ignoring" % experiment_folder)
                 continue
@@ -890,9 +298,8 @@ class CopyManager:
                 )
                 experiment = APIExperiment(previous_experiment=experiment_src)
                 experiment.create_symlink(temp_project_dst)
-                symlink_url = f"{self.api._get_url_server()}/{workspace_dst}/{temp_project_dst}/{experiment_src}"
                 print(
-                    f"    New symlink created: [link={symlink_url}]{symlink_url}[/link]"
+                    f"    New symlink created: {self.api._get_url_server()}/{workspace_dst}/{temp_project_dst}/{experiment_src}"
                 )
             elif "experiments" not in self.ignore:
                 self.copy_experiment_to(
@@ -904,7 +311,7 @@ class CopyManager:
         Create an experiment in destination workspace
         and project, and return an Experiment.
         """
-        if self.debug:
+        if not self.quiet:
             print("Creating experiment...")
 
         ExperimentClass = OfflineExperiment if offline else Experiment
@@ -978,12 +385,12 @@ class CopyManager:
                         )
                         break
                     line = fp.readline()
+        print(f"Copying from {title} to {workspace_dst}/{project_dst}...")
+
         # Copy other project-level items to an experiment:
         if "reports" not in self.ignore and not self.copied_reports:
             experiment = None
-            workspace_src, project_src, _ = experiment_folder.replace("\\", "/").split(
-                "/"
-            )
+            workspace_src, project_src, _ = experiment_folder.replace("\\", "/").split("/")
             reports = os.path.join(workspace_src, project_src, "reports", "*")
             for filename in glob.glob(reports):
                 if filename.endswith("reports_metadata.jsonl"):
@@ -1007,18 +414,12 @@ class CopyManager:
                     workspace_dst, project_dst, experiment_name
                 )
                 if experiment is not None:
-                    if self.debug:
-                        print("    Experiment exists; skipping due to --sync")
+                    print("    Experiment exists; skipping due to --sync")
                     return
                 else:
-                    if self.debug:
-                        print("   Experiment doesn't exist on destination; copying...")
+                    print("   Experiment doesn't exist on destination; copying...")
             else:
-                if self.debug:
-                    print("    Can't sync because source has no name; copying...")
-
-        if self.debug:
-            print(f"Copying from {title} to {workspace_dst}/{project_dst}...")
+                print("    Can't sync because source has no name; copying...")
 
         experiment = self.create_experiment(workspace_dst, project_dst)
         # copy experiment_folder stuff to experiment
@@ -1026,26 +427,24 @@ class CopyManager:
         self.log_all(experiment, experiment_folder)
         experiment.end()
 
-        archive_path = os.path.join(
-            experiment.offline_directory,
-            experiment._get_offline_archive_file_name(),
+        print(
+            f"Uploading {experiment.offline_directory}/{experiment._get_offline_archive_file_name()}"
         )
-        if self.debug:
-            try:
-                file_size = os.path.getsize(archive_path)
-                size_mb = file_size / (1024 * 1024)
-                print(f"Queuing upload for {archive_path} ({size_mb:.1f} MB)")
-            except (OSError, TypeError):
-                print(f"Queuing upload for {archive_path} (size unknown)")
-        self._queue_upload(
-            experiment.id,
-            f"{workspace_dst}/{project_dst}/{experiment_name or experiment.id}",
-            archive_path,
-            self.api.config,
+        url = upload_single_offline_experiment(
+            offline_archive_path=os.path.join(
+                experiment.offline_directory,
+                experiment._get_offline_archive_file_name(),
+            ),
+            settings=self.api.config,
+            force_upload=False,
         )
+        if url:
+            print("Experiment copied to: %s" % url)
+        else:
+            print("ERROR: this experiment failed to copy")
 
     def log_metadata(self, experiment, filename):
-        if self.debug:
+        if not self.quiet:
             with experiment.context_manager("ignore"):
                 print("log_metadata...")
         if os.path.exists(filename):
@@ -1058,7 +457,7 @@ class CopyManager:
             OfflineExperiment.STOP_TIME = metadata.get("endTimeMillis")
 
     def log_system_details(self, experiment, filename):
-        if self.debug:
+        if not self.quiet:
             with experiment.context_manager("ignore"):
                 print("log_system_details...")
         if os.path.exists(filename):
@@ -1084,7 +483,7 @@ class CopyManager:
             experiment._enqueue_message(message)
 
     def log_graph(self, experiment, filename):
-        if self.debug:
+        if not self.quiet:
             with experiment.context_manager("ignore"):
                 print("log_graph...")
         if os.path.exists(filename):
@@ -1293,10 +692,13 @@ class CopyManager:
             asset_map[old_asset_id] = result["assetId"]
         elif asset_type == "video":
             name = os.path.basename(filename)
-            binary_io = open(filename, "rb")
-            result = experiment.log_video(
-                binary_io, name=log_as_filename or name, step=step, epoch=epoch
-            )  # done!
+            #binary_io = open(filename, "rb")
+            result = experiment.log_video(filename, name=log_as_filename or name, step=step, epoch=epoch)
+            # result = experiment.log_video(
+            #     binary_io, name=log_as_filename or name, step=step, epoch=epoch
+            # )  # done!
+            if result is None:
+                print(f"DEBUG: Video logging failed - old_asset_id={old_asset_id}, result={result}")
             asset_map[old_asset_id] = result["assetId"]
         elif asset_type == "model-element":
             name = os.path.basename(filename)
@@ -1314,7 +716,7 @@ class CopyManager:
             asset_map[old_asset_id] = result["assetId"]
 
     def log_assets(self, experiment, path, assets_metadata):
-        if self.debug:
+        if not self.quiet:
             with experiment.context_manager("ignore"):
                 print("log_assets...")
         # Create mapping from old asset id to new asset id
@@ -1358,7 +760,7 @@ class CopyManager:
 
     def log_code(self, experiment, filename):
         """ """
-        if self.debug:
+        if not self.quiet:
             with experiment.context_manager("ignore"):
                 print("log_code...")
         if os.path.exists(filename):
@@ -1371,7 +773,7 @@ class CopyManager:
         """
         Requirements (pip packages)
         """
-        if self.debug:
+        if not self.quiet:
             with experiment.context_manager("ignore"):
                 print("log_requirements...")
         if os.path.exists(filename):
@@ -1386,7 +788,7 @@ class CopyManager:
     def log_metrics(self, experiment, filename):
         """ """
         if os.path.exists(filename):
-            if self.debug:
+            if not self.quiet:
                 with experiment.context_manager("ignore"):
                     print("log_metrics %s..." % filename)
 
@@ -1413,7 +815,7 @@ class CopyManager:
         """ """
         summary_filename = os.path.join(folder, "metrics_summary.jsonl")
         if os.path.exists(summary_filename):
-            if self.debug:
+            if not self.quiet:
                 with experiment.context_manager("ignore"):
                     print("log_metrics from %s..." % summary_filename)
 
@@ -1434,7 +836,7 @@ class CopyManager:
 
     def log_parameters(self, experiment, filename):
         """ """
-        if self.debug:
+        if not self.quiet:
             with experiment.context_manager("ignore"):
                 print("log_parameters...")
         if os.path.exists(filename):
@@ -1449,7 +851,7 @@ class CopyManager:
 
     def log_others(self, experiment, filename):
         """ """
-        if self.debug:
+        if not self.quiet:
             with experiment.context_manager("ignore"):
                 print("log_others...")
         if os.path.exists(filename):
@@ -1461,7 +863,7 @@ class CopyManager:
 
     def log_output(self, experiment, output_file):
         """ """
-        if self.debug:
+        if not self.quiet:
             with experiment.context_manager("ignore"):
                 print("log_output...")
         if os.path.exists(output_file):
@@ -1473,7 +875,7 @@ class CopyManager:
                 experiment._enqueue_message(message)
 
     def log_html(self, experiment, filename):
-        if self.debug:
+        if not self.quiet:
             with experiment.context_manager("ignore"):
                 print("log_html...")
         if os.path.exists(filename):
