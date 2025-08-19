@@ -1161,7 +1161,10 @@ class CopyManager:
                 step,
                 log_as_filename,
             )
-            asset_map[old_asset_id] = result["assetId"]
+            if result is None:
+                print(f"ERROR: Unable to log asset {log_as_filename}; skipping")
+            else:
+                asset_map[old_asset_id] = result["assetId"]
 
     def _log_asset(
         self, experiment, path, asset_type, log_filename, assets_metadata, asset_map
@@ -1255,7 +1258,12 @@ class CopyManager:
                 step,
                 log_as_filename or log_filename,
             )
-            asset_map[old_asset_id] = result["assetId"]
+            if result is None:
+                print(
+                    f"ERROR: Unable to log asset {log_as_filename or log_filename}; skipping"
+                )
+            else:
+                asset_map[old_asset_id] = result["assetId"]
         elif asset_type == "datagrid":
             self.update_datagrid_contents(
                 experiment,
@@ -1290,7 +1298,12 @@ class CopyManager:
                 step,
                 log_as_filename or log_filename,
             )
-            asset_map[old_asset_id] = result["assetId"]
+            if result is None:
+                print(
+                    f"ERROR: Unable to log asset {log_as_filename or log_filename}; skipping"
+                )
+            else:
+                asset_map[old_asset_id] = result["assetId"]
         elif asset_type == "video":
             name = os.path.basename(filename)
             binary_io = open(filename, "rb")
@@ -1311,7 +1324,12 @@ class CopyManager:
                 step,
                 log_as_filename or log_filename,
             )
-            asset_map[old_asset_id] = result["assetId"]
+            if result is None:
+                print(
+                    f"ERROR: Unable to log asset {log_as_filename or log_filename}; skipping"
+                )
+            else:
+                asset_map[old_asset_id] = result["assetId"]
 
     def log_assets(self, experiment, path, assets_metadata):
         if self.debug:
