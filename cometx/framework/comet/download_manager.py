@@ -31,7 +31,7 @@ except ImportError:
     from cometx.utils import ProgressBar
 
 from comet_ml.api import APIExperiment
-from comet_ml.artifact_helpers.artifact_getter import get_artifact
+from comet_ml.artifacts.artifact_getter import get_artifact
 from comet_ml.config import get_config
 from comet_ml.summary import Summary
 
