@@ -180,6 +180,8 @@ cometx copy examples:
 ```
 cometx copy SOURCE DESTINATION
 cometx copy --symlink SOURCE DESTINATION
+cometx copy --path /base/path SOURCE DESTINATION
+cometx copy --path ~/Downloads SOURCE DESTINATION
 ```
 
 where SOURCE is:
@@ -232,6 +234,23 @@ Not all combinations are possible:
 * `--quiet` - If given, don't display update info
 * `--symlink` - Instead of copying, create a link to an experiment in a project
 * `--sync` - Check to see if experiment name has been created first; if so, skip
+* `--path PATH` - Path to prepend to workspace_src when accessing files (supports ~ for home directory)
+
+### Using --path
+
+The `--path` option allows you to specify a base directory where your workspace folders are located. This is useful when your downloaded experiments are stored in a specific directory structure.
+
+Examples:
+```bash
+# Copy from experiments in /data/experiments/workspace
+cometx copy --path /data/experiments workspace dest-workspace
+
+# Copy from experiments in your home directory
+cometx copy --path ~ workspace dest-workspace
+
+# Copy from experiments in Downloads folder
+cometx copy --path ~/Downloads workspace dest-workspace
+```
 
 For more information, `cometx copy --help`
 

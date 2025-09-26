@@ -190,13 +190,21 @@ def get_parser_arguments(parser):
         type=int,
         default=None,
     )
+    parser.add_argument(
+        "--path",
+        help="Path to prepend to workspace_src when accessing files (supports ~ for home directory)",
+        type=str,
+        default=None,
+    )
 
 
 def copy(parsed_args, remaining=None):
     # Called via `cometx copy ...`
     try:
         copy_manager = CopyManager(
-            max_concurrent_uploads=parsed_args.parallel, debug=parsed_args.debug
+            max_concurrent_uploads=parsed_args.parallel,
+            debug=parsed_args.debug,
+            path=parsed_args.path,
         )
         copy_manager.copy(
             parsed_args.COMET_SOURCE,
@@ -508,7 +516,7 @@ class ProgressUI:
 
 
 class CopyManager:
-    def __init__(self, max_concurrent_uploads=None, debug=False):
+    def __init__(self, max_concurrent_uploads=None, debug=False, path=None):
         """
         | Destination:       | WORKSPACE            | WORKSPACE/PROJECT      |
         | Source (below)     |                      |                        |
@@ -522,6 +530,7 @@ class CopyManager:
 
         self.api = API()
         self.debug = debug
+        self.path = path
         # Calculate default number of workers based on CPU count, similar to download command
         self.max_concurrent_uploads = (
             min(32, os.cpu_count() + 4)
@@ -541,6 +550,13 @@ class CopyManager:
             signal.signal(signal.SIGINT, _signal_handler)
 
         self._start_upload_workers()
+
+    def _get_path(self, workspace_src, project_src, *items):
+        """Get the full path, prepending self.path if provided and joining all components"""
+        if self.path:
+            expanded_path = os.path.expanduser(self.path)
+            return os.path.join(expanded_path, workspace_src, project_src, *items)
+        return os.path.join(workspace_src, project_src, *items)
 
     def _start_upload_workers(self):
         """Start background worker threads for handling uploads"""
@@ -812,7 +828,7 @@ class CopyManager:
         if project_src == "panels":
             # experiment_src may be "*" or filename
             for filename in glob.glob(
-                os.path.join(workspace_src, project_src, experiment_src)
+                self._get_path(workspace_src, project_src, experiment_src)
             ):
                 print("Uploading panel zip: %r to %r..." % (filename, workspace_dst))
                 self.api.upload_panel_zip(workspace_dst, filename)
@@ -870,7 +886,7 @@ class CopyManager:
 
             # Next, check if the project_dst exists:
             if temp_project_dst not in projects:
-                project_metadata_path = os.path.join(
+                project_metadata_path = self._get_path(
                     workspace_src, project_src, "project_metadata.json"
                 )
                 if os.path.exists(project_metadata_path):
@@ -896,7 +912,11 @@ class CopyManager:
                 )
             elif "experiments" not in self.ignore:
                 self.copy_experiment_to(
-                    experiment_folder, workspace_dst, temp_project_dst
+                    experiment_folder,
+                    workspace_dst,
+                    temp_project_dst,
+                    workspace_src,
+                    folder_project,
                 )
 
     def create_experiment(self, workspace_dst, project_dst, offline=True):
@@ -953,7 +973,8 @@ class CopyManager:
         return experiment
 
     def get_experiment_folders(self, workspace_src, project_src, experiment_src):
-        for path in glob.iglob(f"{workspace_src}/{project_src}/{experiment_src}"):
+        full_path = self._get_path(workspace_src, project_src, experiment_src)
+        for path in glob.iglob(full_path):
             if any(
                 [path.endswith("~"), path.endswith(".json"), path.endswith(".jsonl")]
             ):
@@ -961,7 +982,9 @@ class CopyManager:
             else:
                 yield path
 
-    def copy_experiment_to(self, experiment_folder, workspace_dst, project_dst):
+    def copy_experiment_to(
+        self, experiment_folder, workspace_dst, project_dst, workspace_src, project_src
+    ):
         title = experiment_folder
         experiment_name = None
         # See if there is a name:
@@ -981,10 +1004,7 @@ class CopyManager:
         # Copy other project-level items to an experiment:
         if "reports" not in self.ignore and not self.copied_reports:
             experiment = None
-            workspace_src, project_src, _ = experiment_folder.replace("\\", "/").split(
-                "/"
-            )
-            reports = os.path.join(workspace_src, project_src, "reports", "*")
+            reports = self._get_path(workspace_src, project_src, "reports", "*")
             for filename in glob.glob(reports):
                 if filename.endswith("reports_metadata.jsonl"):
                     continue
