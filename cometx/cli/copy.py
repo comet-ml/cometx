@@ -1542,7 +1542,7 @@ class CopyManager:
 
     def log_git_patch(self, experiment, filename):
         if os.path.exists(filename):
-            with open(filename) as fp:
+            with open(filename, "rb") as fp:
                 git_patch = fp.read()
 
             _, zip_path = compress_git_patch(git_patch)
