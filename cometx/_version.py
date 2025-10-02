@@ -12,5 +12,5 @@
 #  the express permission of Comet ML Inc.
 # *******************************************************
 
-version_info = (2, 6, 1)
+version_info = (2, 6, 2)
 __version__ = ".".join(map(str, version_info))

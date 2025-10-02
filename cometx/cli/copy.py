@@ -1182,7 +1182,9 @@ class CopyManager:
                 log_as_filename,
             )
             if result is None:
-                print(f"ERROR: Unable to log asset {log_as_filename}; skipping")
+                print(
+                    f"ERROR: Unable to log asset {log_as_filename or file_path}; skipping"
+                )
             else:
                 asset_map[old_asset_id] = result["assetId"]
 
@@ -1215,7 +1217,10 @@ class CopyManager:
 
         if asset_type == "notebook":
             result = experiment.log_notebook(filename)  # done!
-            asset_map[old_asset_id] = result["assetId"]
+            if result is None:
+                print(f"ERROR: Unable to log {asset_type} asset {filename}; skipping")
+            else:
+                asset_map[old_asset_id] = result["assetId"]
         elif asset_type == "embeddings":
             # This will come after contained assets
             with open(filename) as fp:
@@ -1280,7 +1285,7 @@ class CopyManager:
             )
             if result is None:
                 print(
-                    f"ERROR: Unable to log asset {log_as_filename or log_filename}; skipping"
+                    f"ERROR: Unable to log {asset_type} asset {log_as_filename or log_filename}; skipping"
                 )
             else:
                 asset_map[old_asset_id] = result["assetId"]
@@ -1320,7 +1325,7 @@ class CopyManager:
             )
             if result is None:
                 print(
-                    f"ERROR: Unable to log asset {log_as_filename or log_filename}; skipping"
+                    f"ERROR: Unable to log {asset_type} asset {log_as_filename or log_filename}; skipping"
                 )
             else:
                 asset_map[old_asset_id] = result["assetId"]
@@ -1330,11 +1335,19 @@ class CopyManager:
             result = experiment.log_video(
                 binary_io, name=log_as_filename or name, step=step, epoch=epoch
             )  # done!
-            asset_map[old_asset_id] = result["assetId"]
+            if result is None:
+                print(
+                    f"ERROR: Unable to log {asset_type} asset {log_as_filename or name}; skipping"
+                )
+            else:
+                asset_map[old_asset_id] = result["assetId"]
         elif asset_type == "model-element":
             name = os.path.basename(filename)
             result = experiment.log_model(name, filename)
-            asset_map[old_asset_id] = result["assetId"]
+            if result is None:
+                print(f"ERROR: Unable to log {asset_type} asset {name}; skipping")
+            else:
+                asset_map[old_asset_id] = result["assetId"]
         else:
             result = self._log_asset_filename(
                 experiment,
@@ -1346,7 +1359,7 @@ class CopyManager:
             )
             if result is None:
                 print(
-                    f"ERROR: Unable to log asset {log_as_filename or log_filename}; skipping"
+                    f"ERROR: Unable to log {asset_type} asset {log_as_filename or log_filename}; skipping"
                 )
             else:
                 asset_map[old_asset_id] = result["assetId"]
