@@ -16,6 +16,7 @@ Examples:
 
     cometx download
     cometx copy
+    cometx count
     cometx log
     cometx list
     cometx reproduce
@@ -39,6 +40,7 @@ from . import (
     admin,
     config,
     copy,
+    count,
     delete_assets,
     download,
     list_command,
@@ -84,9 +86,7 @@ def main(raw_args=sys.argv[1:]):
         default=False,
     )
     parser.add_argument("--api-key", help="Set the COMET_API_KEY", type=str)
-    parser.add_argument(
-        "--url-override", help="Set the COMET_URL_OVERRIDE", type=str
-    )
+    parser.add_argument("--url-override", help="Set the COMET_URL_OVERRIDE", type=str)
 
     # Add subparsers to the same parser
     subparsers = parser.add_subparsers()
@@ -99,6 +99,7 @@ def main(raw_args=sys.argv[1:]):
     add_subparser(subparsers, log, "log")
     add_subparser(subparsers, delete_assets, "delete-assets")
     add_subparser(subparsers, list_command, "list")
+    add_subparser(subparsers, count, "count")
     add_subparser(subparsers, reproduce, "reproduce")
     add_subparser(subparsers, config, "config")
     add_subparser(subparsers, smoke_test, "smoke-test")
