@@ -77,21 +77,6 @@ def get_parser_arguments(parser):
     )
 
     parser.add_argument(
-        "--base-url",
-        default=None,
-        help="Base URL for Comet deployment (default: https://www.comet.com)",
-    )
-
-    parser.add_argument(
-        "--api-key",
-        default=None,
-        help=(
-            "API key (default: reads from .comet_api_key file or "
-            "COMET_API_KEY env var)"
-        ),
-    )
-
-    parser.add_argument(
         "--limit",
         type=int,
         default=None,
