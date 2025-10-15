@@ -338,6 +338,108 @@ class CometResourceCounter:
             "experiments": {"total_count": 0, "by_project": {}, "error": None},
         }
 
+        # Get workspaces
+        all_workspaces = self.api.get_workspaces()
+        results["workspaces"]["total_count"] = len(all_workspaces)
+
+        # Apply limit if specified
+        if limit is not None and limit < len(all_workspaces):
+            workspaces = all_workspaces[:limit]
+            results["workspaces"]["limited"] = True
+            print(
+                f"\n⚠️  Limiting to first {limit} of {len(all_workspaces)} workspaces",
+                flush=True,
+            )
+        else:
+            workspaces = all_workspaces
+
+        results["workspaces"]["count"] = len(workspaces)
+        results["workspaces"]["names"] = workspaces
+
+        # Count projects, artifacts, and experiments for each workspace
+        total_projects = 0
+        total_artifacts = 0
+        total_experiments = 0
+
+        print(
+            f"\n🔍 Counting all resources for {len(workspaces)} workspaces...",
+            flush=True,
+        )
+        print("=" * 70, flush=True)
+
+        for i, workspace in enumerate(workspaces, 1):
+            try:
+                print(
+                    f"\n🏢 [{i}/{len(workspaces)}] Workspace: {workspace}", flush=True
+                )
+
+                # Count projects
+                projects = self.api.get_projects(workspace)
+                project_count = len(projects) if projects else 0
+                results["projects"]["by_workspace"][workspace] = project_count
+                total_projects += project_count
+                print(f"  📁 Projects: {project_count}", flush=True)
+
+                # Count artifacts
+                try:
+                    print(f"  📦 Counting artifacts...", end=" ", flush=True)
+                    artifacts = self.api.get_registry_model_names(workspace)
+                    artifact_count = len(artifacts) if artifacts else 0
+                    results["artifacts"]["by_workspace"][workspace] = artifact_count
+                    total_artifacts += artifact_count
+                    print(f"📦 {artifact_count} artifact(s)")
+                except Exception as e:
+                    print(f"❌ ERROR: {str(e)[:40]}")
+                    results["artifacts"]["by_workspace"][workspace] = 0
+
+                # Count experiments for each project
+                workspace_experiments = 0
+                if projects:
+                    for j, project_name in enumerate(projects, 1):
+                        try:
+                            print(
+                                f"    🧪 [{j}/{project_count}] {project_name}...",
+                                end=" ",
+                                flush=True,
+                            )
+
+                            # Get experiments for this project
+                            experiments = self.api.get_experiments(
+                                workspace, project_name
+                            )
+                            exp_count = len(experiments) if experiments else 0
+
+                            project_key = f"{workspace}/{project_name}"
+                            results["experiments"]["by_project"][
+                                project_key
+                            ] = exp_count
+                            workspace_experiments += exp_count
+                            total_experiments += exp_count
+
+                            print(f"🧪 {exp_count} experiment(s)")
+
+                        except Exception as e:
+                            print(f"❌ ERROR: {str(e)[:40]}")
+                            project_key = f"{workspace}/{project_name}"
+                            results["experiments"]["by_project"][project_key] = 0
+
+                print(
+                    f"  🧪 Total experiments in workspace: {workspace_experiments}",
+                    flush=True,
+                )
+
+            except Exception as e:
+                print(f"  ❌ ERROR: {str(e)[:50]}")
+                results["projects"]["by_workspace"][workspace] = 0
+                results["artifacts"]["by_workspace"][workspace] = 0
+
+        results["projects"]["total_count"] = total_projects
+        results["artifacts"]["total_count"] = total_artifacts
+        results["experiments"]["total_count"] = total_experiments
+
+        print("\n" + "=" * 70, flush=True)
+        print("✅ Counting complete!", flush=True)
+
         return results
 
 
