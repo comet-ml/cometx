@@ -41,6 +41,7 @@ for ML management.
 * [cometx admin](#cometx-admin)
 * [cometx config](#cometx-config)
 * [cometx copy](#cometx-copy)
+* [cometx count](#cometx-count)
 * [cometx delete-assets](#cometx-delete-assets)
 * [cometx download](#cometx-download)
 * [cometx list](#cometx-list)
@@ -90,6 +91,37 @@ cometx list
 * `--debug` - Provide debug info
 
 For more information, `cometx list --help`
+
+## cometx count
+
+This command is used to:
+
+* count the number of workspaces you are a member of
+* count the number of projects in workspaces
+* count the number of experiments in projects
+* count the number of artifacts in workspaces
+
+cometx count examples:
+
+```
+cometx count
+cometx count --workspaces-only
+cometx count --with-projects
+cometx count --with-experiments
+cometx count --count-all
+cometx count --limit 10
+```
+
+### Flags
+
+* `--workspaces-only` - Count only workspaces (fastest)
+* `--with-projects` - Count workspaces and projects (default)
+* `--with-experiments` - Count workspaces, projects, and experiments (slowest, most detailed)
+* `--count-all` - Count everything: workspaces, projects, artifacts, and experiments (most comprehensive)
+* `--limit LIMIT` - Process only the first N workspaces (useful for testing)
+* `--debug` - Provide debug info
+
+For more information, `cometx count --help`
 
 ## cometx download
 
