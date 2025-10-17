@@ -383,8 +383,10 @@ class CometResourceCounter:
                 # Count artifacts
                 try:
                     print(f"  📦 Counting artifacts...", end=" ", flush=True)
-                    artifacts = self.api.get_registry_model_names(workspace)
-                    artifact_count = len(artifacts) if artifacts else 0
+                    artifacts_response = self.api.get_artifact_list(workspace)
+                    # get_artifact_list returns a dict like {'artifacts': [...]}
+                    artifact_list = artifacts_response.get('artifacts', []) if artifacts_response else []
+                    artifact_count = len(artifact_list)
                     results["artifacts"]["by_workspace"][workspace] = artifact_count
                     total_artifacts += artifact_count
                     print(f"📦 {artifact_count} artifact(s)")
