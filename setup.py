@@ -51,6 +51,8 @@ setup_args = dict(
         "six",
         "requests",
         "tqdm",
+        "matplotlib",
+        "webbrowser",
     ],
     extras_require={
         "all": [

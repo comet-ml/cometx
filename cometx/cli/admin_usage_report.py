@@ -18,7 +18,9 @@ cometx admin usage-report WORKSPACE/PROJECT
 
 """
 
+import os
 import warnings
+import webbrowser
 from collections import defaultdict
 from datetime import datetime
 
@@ -31,9 +33,6 @@ warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
 
 def open_pdf(pdf_path):
     """Open PDF file using the default system application"""
-    import os
-    import webbrowser
-
     if os.path.exists(pdf_path):
         webbrowser.open(f"file://{os.path.abspath(pdf_path)}")
         print(f"Opening PDF: {pdf_path}")
