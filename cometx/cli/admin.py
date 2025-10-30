@@ -15,6 +15,7 @@
 To perform admin functions
 
 cometx admin chargeback-report
+cometx admin usage-report WORKSPACE/PROJECT
 
 """
 
@@ -23,13 +24,17 @@ import json
 import sys
 from urllib.parse import urlparse
 
+from comet_ml import API
+
+from .admin_usage_report import generate_usage_report
+
 ADDITIONAL_ARGS = False
 
 
 def get_parser_arguments(parser):
     parser.add_argument(
         "ACTION",
-        help="The admin action to perform (chargeback-report)",
+        help="The admin action to perform (chargeback-report, usage-report)",
         type=str,
     )
     parser.add_argument(
@@ -41,6 +46,13 @@ def get_parser_arguments(parser):
         default=None,
     )
     parser.add_argument(
+        "WORKSPACE_PROJECT",
+        nargs="?",
+        help="The WORKSPACE/PROJECT to run usage report for (required for usage-report action)",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--host",
         help="Override the HOST URL",
         type=str,
@@ -48,12 +60,16 @@ def get_parser_arguments(parser):
     parser.add_argument(
         "--debug", help="If given, allow debugging", default=False, action="store_true"
     )
+    parser.add_argument(
+        "--no-open",
+        help="Don't automatically open the generated PDF file",
+        default=False,
+        action="store_true",
+    )
 
 
 def admin(parsed_args, remaining=None):
     # Called via `cometx admin ...`
-    from comet_ml import API
-
     try:
         api = API()
 
@@ -93,9 +109,22 @@ def admin(parsed_args, remaining=None):
             with open(filename, "w") as fp:
                 fp.write(json.dumps(response.json()))
             print("Chargeback report is saved in %r" % filename)
+        elif parsed_args.ACTION == "usage-report":
+            # For usage-report, the workspace/project is passed as YEAR_MONTH argument
+            workspace_project = parsed_args.YEAR_MONTH or parsed_args.WORKSPACE_PROJECT
+            if not workspace_project:
+                print("ERROR: WORKSPACE/PROJECT is required for usage-report action")
+                print("Usage: cometx admin usage-report WORKSPACE/PROJECT")
+                return
+            try:
+                generate_usage_report(api, workspace_project, parsed_args.no_open)
+
+            except Exception as e:
+                print("ERROR: " + str(e))
+                return
         else:
             print(
-                "Unknown action %r; should be one of these: 'chargeback-report'"
+                "Unknown action %r; should be one of these: 'chargeback-report', 'usage-report'"
                 % parsed_args.ACTION
             )
 
