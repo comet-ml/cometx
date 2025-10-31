@@ -54,7 +54,6 @@ setup_args = dict(
         "requests",
         "tqdm",
         "matplotlib",
-        "webbrowser",
         "streamlit",
     ],
     extras_require={

@@ -32,4 +32,3 @@ six
 streamlit
 syrupy>=4.0.0
 tqdm
-webbrowser
