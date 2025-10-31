@@ -46,7 +46,9 @@ setup_args = dict(
     long_description=long_description,
     long_description_content_type="text/markdown",
     install_requires=[
+        "pillow>=11.1.0",
         "comet_ml>=3.49.1",
+        "reportlab",
         "rich>=13.0.0",
         "six",
         "requests",
@@ -56,7 +58,6 @@ setup_args = dict(
     ],
     extras_require={
         "all": [
-            "pillow>=11.1.0",
             "opik",
             "comet_mpm",
             "numpy",
@@ -66,7 +67,6 @@ setup_args = dict(
             "ipywidgets",
             "markdown",
             "IPython",
-            "wandb",
         ],
     },
     packages=[

@@ -15,7 +15,8 @@
 To perform admin functions
 
 cometx admin chargeback-report
-cometx admin usage-report WORKSPACE/PROJECT
+cometx admin usage-report WORKSPACE [WORKSPACE ...]
+cometx admin usage-report WORKSPACE/PROJECT [WORKSPACE/PROJECT ...]
 
 """
 
@@ -31,27 +32,20 @@ from .admin_usage_report import generate_usage_report
 ADDITIONAL_ARGS = False
 
 
+def add_global_arguments(parser):
+    """Add global arguments that are available for all commands."""
+    parser.add_argument("--api-key", help="Set the COMET_API_KEY", type=str)
+    parser.add_argument("--url-override", help="Set the COMET_URL_OVERRIDE", type=str)
+
+
 def get_parser_arguments(parser):
-    parser.add_argument(
-        "ACTION",
-        help="The admin action to perform (chargeback-report, usage-report)",
-        type=str,
-    )
-    parser.add_argument(
-        "YEAR_MONTH",
-        nargs="?",
-        help="(deprecated) The YEAR-MONTH to run report for, eg 2024-09",
-        metavar="YEAR-MONTH",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "WORKSPACE_PROJECT",
-        nargs="?",
-        help="The WORKSPACE/PROJECT to run usage report for (required for usage-report action)",
-        type=str,
-        default=None,
-    )
+    # Add global arguments to the main admin parser so they can appear anywhere in the command line
+    # (e.g., "cometx admin --api-key KEY usage-report" or "cometx admin usage-report --api-key KEY")
+    # The top-level parser will consume them first, but having them here ensures they're accepted
+    # and shown in help if they appear after "admin"
+    add_global_arguments(parser)
+
+    # Add common arguments that apply to all admin subcommands
     parser.add_argument(
         "--host",
         help="Override the HOST URL",
@@ -60,11 +54,57 @@ def get_parser_arguments(parser):
     parser.add_argument(
         "--debug", help="If given, allow debugging", default=False, action="store_true"
     )
-    parser.add_argument(
+
+    # Create subparsers for different admin actions
+    subparsers = parser.add_subparsers(
+        dest="ACTION",
+        help="The admin action to perform",
+        required=True,
+    )
+
+    # chargeback-report subcommand
+    chargeback_parser = subparsers.add_parser(
+        "chargeback-report",
+        help="Generate a chargeback report",
+    )
+    # Add global arguments to subparser so they show in help
+    add_global_arguments(chargeback_parser)
+    chargeback_parser.add_argument(
+        "YEAR_MONTH",
+        nargs="?",
+        help="(deprecated) The YEAR-MONTH to run report for, eg 2024-09",
+        metavar="YEAR-MONTH",
+        type=str,
+        default=None,
+    )
+
+    # usage-report subcommand
+    usage_parser = subparsers.add_parser(
+        "usage-report",
+        help="Generate a usage report for one or more workspaces/projects",
+        description="Generate usage reports with experiment counts by month for one or more workspaces/projects.",
+    )
+    # Add global arguments to subparser so they show in help
+    add_global_arguments(usage_parser)
+    usage_parser.add_argument(
+        "WORKSPACE_PROJECT",
+        nargs="+",
+        help="One or more WORKSPACE or WORKSPACE/PROJECT to run usage report for",
+        metavar="WORKSPACE",
+        type=str,
+    )
+    usage_parser.add_argument(
         "--no-open",
         help="Don't automatically open the generated PDF file",
         default=False,
         action="store_true",
+    )
+    usage_parser.add_argument(
+        "--max-experiments-per-chart",
+        help="Maximum number of workspaces/projects per chart (default: 5). If more are provided, multiple charts will be generated.",
+        type=int,
+        default=5,
+        metavar="N",
     )
 
 
@@ -74,7 +114,6 @@ def admin(parsed_args, remaining=None):
         api = API()
 
         if parsed_args.ACTION == "chargeback-report":
-
             if parsed_args.host is not None:
                 admin_url = parsed_args.host
             else:
@@ -110,23 +149,20 @@ def admin(parsed_args, remaining=None):
                 fp.write(json.dumps(response.json()))
             print("Chargeback report is saved in %r" % filename)
         elif parsed_args.ACTION == "usage-report":
-            # For usage-report, the workspace/project is passed as YEAR_MONTH argument
-            workspace_project = parsed_args.YEAR_MONTH or parsed_args.WORKSPACE_PROJECT
-            if not workspace_project:
-                print("ERROR: WORKSPACE/PROJECT is required for usage-report action")
-                print("Usage: cometx admin usage-report WORKSPACE/PROJECT")
-                return
-            try:
-                generate_usage_report(api, workspace_project, parsed_args.no_open)
+            # WORKSPACE_PROJECT is now required (nargs="+") so we always have at least one
+            workspace_projects = parsed_args.WORKSPACE_PROJECT
 
+            try:
+                generate_usage_report(
+                    api,
+                    workspace_projects,
+                    no_open=parsed_args.no_open,
+                    max_datasets_per_chart=parsed_args.max_experiments_per_chart,
+                    debug=parsed_args.debug,
+                )
             except Exception as e:
                 print("ERROR: " + str(e))
                 return
-        else:
-            print(
-                "Unknown action %r; should be one of these: 'chargeback-report', 'usage-report'"
-                % parsed_args.ACTION
-            )
 
     except KeyboardInterrupt:
         if parsed_args.debug:

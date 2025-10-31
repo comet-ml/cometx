@@ -14,8 +14,6 @@ matplotlib
 mock>=4.0.0
 numpy
 opik>=1.0.0
-
-# Optional dependencies for full functionality
 pillow>=11.1.0
 
 # Testing dependencies
@@ -23,6 +21,7 @@ pytest>=7.0.0
 pytest-asyncio>=0.20.0
 pytest-cov>=4.0.0
 pytest-env>=1.0.0
+reportlab>=4.0.0
 requests
 responses>=0.20.0
 respx>=0.20.0
