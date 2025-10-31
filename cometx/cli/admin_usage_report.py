@@ -48,27 +48,7 @@ from reportlab.platypus import (
     SimpleDocTemplate,
     Spacer,
 )
-
-try:
-    from tqdm import tqdm
-except ImportError:
-    # Fallback if tqdm is not available
-    def tqdm(iterable=None, desc=None, total=None, disable=False):
-        if iterable is None:
-
-            class FakeProgressBar:
-                def __enter__(self):
-                    return self
-
-                def __exit__(self, *args):
-                    pass
-
-                def update(self, n=1):
-                    pass
-
-            return FakeProgressBar()
-        return iterable
-
+from tqdm import tqdm
 
 # Suppress matplotlib warnings about non-GUI backend
 warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
@@ -196,10 +176,14 @@ def generate_experiment_chart(api, workspace, project, debug=False):
     metric_data = api.get_metrics_for_chart(experiment_keys, metric_names)
     for experiment_key in metric_data:
         for metric in metric_data[experiment_key]["metrics"]:
-            print(metric["metricName"])
-            print(metric["values"])
-            print(metric["timestamps"])
-            print(metric["durations"])
+            # there is also metric["timestamp"] milliseconds to put into month bin
+            if metric["metricName"].endswith("_utilization"):
+                print(
+                    "    metric:",
+                    metric["metricName"],
+                    "max utilization:",
+                    max(metric["values"]),
+                )
 
     # Group experiments by month/year based on startTimeMillis
     monthly_counts = defaultdict(int)
