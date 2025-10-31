@@ -30,6 +30,7 @@ import warnings
 import webbrowser
 from collections import defaultdict
 from datetime import datetime
+from urllib.parse import urlparse
 from xml.sax.saxutils import escape
 
 import matplotlib.cm as cm
@@ -64,12 +65,34 @@ def debug_print(debug, *args, **kwargs):
         print(*args, **kwargs)
 
 
+def extract_website_name(base_url):
+    """
+    Extract website name (domain) from base_url.
+
+    Example:
+        'https://www.comet.com/api/rest/v2/' -> 'www.comet.com'
+        'https://app.comet.ml/api/rest/v2/' -> 'app.comet.ml'
+
+    Args:
+        base_url: Full URL string
+
+    Returns:
+        str: Domain name (e.g., 'www.comet.com') or 'Unknown' if parsing fails
+    """
+    try:
+        parsed = urlparse(base_url)
+        return parsed.netloc or "Unknown"
+    except Exception:
+        return "Unknown"
+
+
 def add_chart_to_flowables(
     flowables,
     png_file,
     workspace_project=None,
     chart_num=None,
     total_charts=None,
+    chart_type="experiments",
     debug=False,
 ):
     """
@@ -81,6 +104,8 @@ def add_chart_to_flowables(
         workspace_project: Optional workspace/project string for title
         chart_num: Optional chart number (1-based)
         total_charts: Optional total number of charts
+        chart_type: Type of chart - "experiments", "gpu", or "memory"
+        debug: If True, print debug information
     """
     if os.path.exists(png_file):
         # Add title if we have workspace_project info
@@ -95,10 +120,35 @@ def add_chart_to_flowables(
                 alignment=1,  # Center alignment
             )
             # Build title with chart number if available
-            if chart_num is not None and total_charts is not None and total_charts > 1:
-                title = f"Experiments by Month ({chart_num} of {total_charts})"
+            if chart_type == "experiments":
+                if (
+                    chart_num is not None
+                    and total_charts is not None
+                    and total_charts > 1
+                ):
+                    title = f"Experiments by Month ({chart_num} of {total_charts})"
+                else:
+                    title = "Experiments by Month"
+            elif chart_type == "gpu":
+                if (
+                    chart_num is not None
+                    and total_charts is not None
+                    and total_charts > 1
+                ):
+                    title = f"GPU Utilization by Month ({chart_num} of {total_charts})"
+                else:
+                    title = "GPU Utilization by Month"
+            elif chart_type == "memory":
+                if (
+                    chart_num is not None
+                    and total_charts is not None
+                    and total_charts > 1
+                ):
+                    title = f"GPU Memory Utilization by Month ({chart_num} of {total_charts})"
+                else:
+                    title = "GPU Memory Utilization by Month"
             else:
-                title = "Experiments by Month"
+                title = workspace_project
             flowables.append(Paragraph(escape(title), title_style))
             flowables.append(Spacer(1, 0.2 * inch))
 
@@ -165,39 +215,154 @@ def generate_experiment_chart(api, workspace, project, debug=False):
     experiments = project_data["experiments"]
     debug_print(debug, f"Found {len(experiments)} experiments for {workspace_project}")
 
-    # Get GPU data:
+    # Get GPU data: collect utilization metrics for each GPU separately
     column_data = api._client.get_project_columns(workspace, project)
     experiment_keys = [exp["experimentKey"] for exp in experiments]
-    metric_names = [
-        item["name"]
-        for item in column_data["columns"]
-        if item["name"].startswith("sys.gpu")
-    ]
-    metric_data = api.get_metrics_for_chart(experiment_keys, metric_names)
-    for experiment_key in metric_data:
-        for metric in metric_data[experiment_key]["metrics"]:
-            # there is also metric["timestamp"] milliseconds to put into month bin
-            if metric["metricName"].endswith("_utilization"):
-                print(
-                    "    metric:",
-                    metric["metricName"],
-                    "max utilization:",
-                    max(metric["values"]),
-                )
+
+    # Find GPU metric names (memory and utilization)
+    # Format: sys.gpu.0.gpu_utilization, sys.gpu.0.memory_utilization, sys.gpu.1.gpu_utilization, etc.
+    gpu_metric_names = []
+    if column_data and "columns" in column_data:
+        gpu_metric_names = [
+            item["name"]
+            for item in column_data["columns"]
+            if item["name"].startswith("sys.gpu")
+            and (
+                item["name"].endswith(".gpu_utilization")
+                or item["name"].endswith(".memory_utilization")
+            )
+        ]
+
+    # Dictionary to store max GPU utilization per experiment per GPU
+    # Key: experiment_key, Value: {gpu_number: {"gpu_utilization": max, "memory_utilization": max}}
+    experiment_gpu_data = {}
+
+    # Helper function to extract GPU number from metric name
+    # e.g., "sys.gpu.0.gpu_utilization" -> 0
+    def extract_gpu_number(metric_name):
+        """Extract GPU number from metric name like sys.gpu.0.gpu_utilization"""
+        try:
+            # Split by '.' and find the number after "gpu"
+            parts = metric_name.split(".")
+            if "gpu" in parts:
+                gpu_idx = parts.index("gpu")
+                if gpu_idx + 1 < len(parts):
+                    return int(parts[gpu_idx + 1])
+        except (ValueError, IndexError):
+            pass
+        return None
+
+    if gpu_metric_names and experiment_keys:
+        try:
+            metric_data = api.get_metrics_for_chart(experiment_keys, gpu_metric_names)
+
+            for experiment_key in metric_data:
+                if experiment_key not in experiment_gpu_data:
+                    experiment_gpu_data[experiment_key] = {}
+
+                for metric in metric_data[experiment_key].get("metrics", []):
+                    metric_name = metric["metricName"]
+                    values = metric.get("values", [])
+
+                    if values:
+                        max_value = max(values)
+                        gpu_num = extract_gpu_number(metric_name)
+
+                        if gpu_num is not None:
+                            if gpu_num not in experiment_gpu_data[experiment_key]:
+                                experiment_gpu_data[experiment_key][gpu_num] = {
+                                    "gpu_utilization": None,
+                                    "memory_utilization": None,
+                                }
+
+                            if metric_name.endswith(".gpu_utilization"):
+                                # GPU utilization
+                                if (
+                                    experiment_gpu_data[experiment_key][gpu_num][
+                                        "gpu_utilization"
+                                    ]
+                                    is None
+                                ):
+                                    experiment_gpu_data[experiment_key][gpu_num][
+                                        "gpu_utilization"
+                                    ] = max_value
+                                else:
+                                    experiment_gpu_data[experiment_key][gpu_num][
+                                        "gpu_utilization"
+                                    ] = max(
+                                        experiment_gpu_data[experiment_key][gpu_num][
+                                            "gpu_utilization"
+                                        ],
+                                        max_value,
+                                    )
+                            elif metric_name.endswith(".memory_utilization"):
+                                # GPU memory utilization
+                                if (
+                                    experiment_gpu_data[experiment_key][gpu_num][
+                                        "memory_utilization"
+                                    ]
+                                    is None
+                                ):
+                                    experiment_gpu_data[experiment_key][gpu_num][
+                                        "memory_utilization"
+                                    ] = max_value
+                                else:
+                                    experiment_gpu_data[experiment_key][gpu_num][
+                                        "memory_utilization"
+                                    ] = max(
+                                        experiment_gpu_data[experiment_key][gpu_num][
+                                            "memory_utilization"
+                                        ],
+                                        max_value,
+                                    )
+        except Exception as e:
+            debug_print(debug, f"Error collecting GPU metrics: {e}")
+            # Continue without GPU data
+            experiment_gpu_data = {}
 
     # Group experiments by month/year based on startTimeMillis
     monthly_counts = defaultdict(int)
+    # Track GPU utilization by month - average across all GPUs per experiment
+    # Structure: month -> [avg_max_gpu_util_per_exp, ...] or month -> [avg_max_memory_util_per_exp, ...]
+    monthly_gpu_utilizations = defaultdict(
+        list
+    )  # month -> [avg_utilizations across all GPUs per experiment]
+    monthly_memory_utilizations = defaultdict(
+        list
+    )  # month -> [avg_utilizations across all GPUs per experiment]
     # Track run times for statistics
     total_run_time_seconds = 0
     run_time_count = 0
 
     for exp in experiments:
+        exp_key = exp.get("experimentKey")
         if "startTimeMillis" in exp and exp["startTimeMillis"]:
             # Convert milliseconds to seconds, then to datetime
             start_time = datetime.fromtimestamp(exp["startTimeMillis"] / 1000)
             # Format as YYYY-MM for grouping
             month_key = start_time.strftime("%Y-%m")
             monthly_counts[month_key] += 1
+
+            # Track GPU utilization for this experiment - average across all GPUs
+            if exp_key and exp_key in experiment_gpu_data:
+                # Collect all GPU utilizations for this experiment
+                gpu_utils = []
+                memory_utils = []
+
+                for gpu_num, gpu_data in experiment_gpu_data[exp_key].items():
+                    if gpu_data["gpu_utilization"] is not None:
+                        gpu_utils.append(gpu_data["gpu_utilization"])
+                    if gpu_data["memory_utilization"] is not None:
+                        memory_utils.append(gpu_data["memory_utilization"])
+
+                # Calculate average across all GPUs for this experiment
+                if gpu_utils:
+                    avg_gpu_util = sum(gpu_utils) / len(gpu_utils)
+                    monthly_gpu_utilizations[month_key].append(avg_gpu_util)
+
+                if memory_utils:
+                    avg_memory_util = sum(memory_utils) / len(memory_utils)
+                    monthly_memory_utilizations[month_key].append(avg_memory_util)
 
             # Calculate run time if both start and end times are available
             if "endTimeMillis" in exp and exp["endTimeMillis"]:
@@ -235,6 +400,26 @@ def generate_experiment_chart(api, workspace, project, debug=False):
     # Fill in counts for all months (0 for months with no experiments)
     counts = [monthly_counts[month] for month in complete_months]
 
+    # Calculate average GPU utilization per month
+    # For each month, average the experiment-level averages (which are already averages across all GPUs)
+    avg_gpu_utilizations = []
+    avg_memory_utilizations = []
+
+    for month in complete_months:
+        gpu_utils = monthly_gpu_utilizations.get(month, [])
+        memory_utils = monthly_memory_utilizations.get(month, [])
+
+        if gpu_utils:
+            # Average of experiment-level averages (each experiment avg is across all its GPUs)
+            avg_gpu_utilizations.append(sum(gpu_utils) / len(gpu_utils))
+        else:
+            avg_gpu_utilizations.append(None)
+
+        if memory_utils:
+            avg_memory_utilizations.append(sum(memory_utils) / len(memory_utils))
+        else:
+            avg_memory_utilizations.append(None)
+
     # Display summary statistics (only in debug mode)
     debug_print(debug, f"\nSummary for {workspace_project}:")
     debug_print(debug, f"Total experiments: {sum(counts)}")
@@ -244,6 +429,14 @@ def generate_experiment_chart(api, workspace, project, debug=False):
         debug, f"Months with zero experiments: {sum(1 for c in counts if c == 0)}"
     )
     debug_print(debug, f"Average experiments per month: {sum(counts)/len(counts):.1f}")
+
+    # Debug GPU stats
+    gpu_months_with_data = sum(1 for u in avg_gpu_utilizations if u is not None)
+    memory_months_with_data = sum(1 for u in avg_memory_utilizations if u is not None)
+    debug_print(debug, f"Months with GPU utilization data: {gpu_months_with_data}")
+    debug_print(
+        debug, f"Months with memory utilization data: {memory_months_with_data}"
+    )
 
     return {
         "total_experiments": sum(counts),
@@ -256,6 +449,11 @@ def generate_experiment_chart(api, workspace, project, debug=False):
         "total_run_time_seconds": total_run_time_seconds,
         "run_time_count": run_time_count,
         "experiments": experiments,  # Store raw experiments for statistics
+        # GPU utilization data - combined across all GPUs
+        "monthly_gpu_utilizations": dict(monthly_gpu_utilizations),
+        "monthly_memory_utilizations": dict(monthly_memory_utilizations),
+        "avg_gpu_utilizations": avg_gpu_utilizations,  # List aligned with complete_months
+        "avg_memory_utilizations": avg_memory_utilizations,  # List aligned with complete_months
     }
 
 
@@ -495,15 +693,217 @@ def create_combined_chart_from_data(
     # Add grid for better readability
     ax.grid(True, alpha=0.3, linestyle="-", linewidth=0.5, axis="y")
 
-    # Add legend
-    ax.legend(loc="upper left", fontsize=10, framealpha=0.9)
+    # Add legend below the chart
+    ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.1),
+        ncol=min(len(aligned_data), 3),  # Arrange in up to 3 columns
+        fontsize=10,
+        framealpha=0.9,
+    )
 
-    # Adjust layout to prevent label cutoff
-    plt.tight_layout()
+    # Adjust layout to prevent label cutoff and make room for legend
+    plt.tight_layout(rect=[0, 0.05, 1, 1])
 
     # Save the chart as PNG
     plt.savefig(png_filename, dpi=300, bbox_inches="tight")
     debug_print(debug, f"Combined bar chart saved as: {png_filename}")
+
+    plt.close()
+
+    return png_filename
+
+
+def create_combined_gpu_chart_from_data(
+    data_list, png_filename=None, date_range=None, utilization_type="gpu", debug=False
+):
+    """
+    Create a combined bar chart from multiple experiment datasets showing GPU utilization per GPU.
+
+    Args:
+        data_list: List of dictionaries with experiment data (from generate_experiment_chart)
+        png_filename: Optional filename for the PNG. If not provided, generates a default name.
+        date_range: Optional tuple (start_month, end_month) as strings in "YYYY-MM" format.
+                    If provided, all datasets will be aligned to this date range.
+                    If None, the date range is calculated from the datasets.
+        utilization_type: "gpu" for GPU utilization or "memory" for memory utilization
+        debug: If True, print debug information
+
+    Returns:
+        str: The filename of the saved PNG chart, or None if no data
+    """
+    if not data_list:
+        return None
+
+    # Filter out empty data - check for GPU data
+    data_list = [
+        d
+        for d in data_list
+        if d
+        and d.get("complete_months")
+        and d.get(f"avg_{utilization_type}_utilizations")
+    ]
+
+    if not data_list:
+        debug_print(
+            debug, f"No valid GPU {utilization_type} utilization data to create chart"
+        )
+        return None
+
+    if png_filename is None:
+        workspace_projects = [d.get("workspace_project", "Unknown") for d in data_list]
+        filename_parts = [wp.replace("/", "_") for wp in workspace_projects]
+        util_type_name = "gpu" if utilization_type == "gpu" else "memory"
+        png_filename = f"gpu_{util_type_name}_utilization_report_combined_{'_'.join(filename_parts[:3])}.png"
+        if len(filename_parts) > 3:
+            png_filename = png_filename.replace(
+                ".png", f"_and_{len(filename_parts)-3}_more.png"
+            )
+
+    # Determine the date range to use
+    if date_range:
+        # Use provided date range
+        overall_start = datetime.strptime(date_range[0], "%Y-%m")
+        overall_end = datetime.strptime(date_range[1], "%Y-%m")
+    else:
+        # Find the complete date range across all datasets
+        all_date_ranges = [
+            data.get("date_range") for data in data_list if data.get("date_range")
+        ]
+        if not all_date_ranges:
+            debug_print(debug, "No date ranges found in data")
+            return None
+
+        # Find the earliest start and latest end date
+        start_dates = [datetime.strptime(dr[0], "%Y-%m") for dr in all_date_ranges]
+        end_dates = [datetime.strptime(dr[1], "%Y-%m") for dr in all_date_ranges]
+        overall_start = min(start_dates)
+        overall_end = max(end_dates)
+
+    # Generate complete list of months from overall start to end
+    all_months = []
+    current_date = overall_start
+    while current_date <= overall_end:
+        month_key = current_date.strftime("%Y-%m")
+        all_months.append(month_key)
+        # Move to next month
+        if current_date.month == 12:
+            current_date = current_date.replace(year=current_date.year + 1, month=1)
+        else:
+            current_date = current_date.replace(month=current_date.month + 1)
+
+    if not all_months:
+        debug_print(debug, "No months found in data")
+        return None
+
+    # For each dataset, align utilization data to the complete month list
+    aligned_data = []
+    for data in data_list:
+        complete_months = data.get("complete_months", [])
+        utilizations = data.get(f"avg_{utilization_type}_utilizations", [])
+
+        # Create a mapping from month to utilization
+        month_to_util = dict(zip(complete_months, utilizations))
+
+        # Align to all_months
+        aligned_utils = [month_to_util.get(month, None) for month in all_months]
+
+        aligned_data.append(
+            {
+                "workspace_project": data.get("workspace_project", "Unknown"),
+                "utilizations": aligned_utils,
+            }
+        )
+
+    # Create figure
+    fig, ax = plt.subplots(figsize=(14, 8))
+
+    # Generate distinct colors for each project
+    chart_colors = cm.tab10(range(len(aligned_data)))
+
+    # Set up bar positions for grouped bars
+    num_projects = len(aligned_data)
+    num_months = len(all_months)
+    bar_width = 0.8 / num_projects if num_projects > 1 else 0.8
+    x_positions = range(num_months)
+
+    # Create grouped bars
+    bars_list = []
+    for i, data in enumerate(aligned_data):
+        # Calculate x offset for each group of bars
+        offset = (i - (num_projects - 1) / 2) * bar_width
+        x_pos = [x + offset for x in x_positions]
+
+        # Convert None to 0 for plotting
+        plot_values = [float(u) if u is not None else 0.0 for u in data["utilizations"]]
+
+        bars = ax.bar(
+            x_pos,
+            plot_values,
+            width=bar_width,
+            label=data["workspace_project"],
+            color=chart_colors[i],
+            alpha=0.7,
+            edgecolor="black",
+            linewidth=0.5,
+        )
+        bars_list.append(bars)
+
+        # Add value labels on bars (only for non-zero values)
+        for bar, value in zip(bars, data["utilizations"]):
+            if value is not None and value > 0:
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 1,
+                    f"{value:.1f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=8,
+                    fontweight="bold",
+                )
+
+    # Customize the chart
+    util_type_display = "GPU" if utilization_type == "gpu" else "Memory"
+    ax.set_title(
+        f"Average Max {util_type_display} Utilization by Month - Combined Projects",
+        fontsize=16,
+        fontweight="bold",
+        pad=20,
+    )
+    ax.set_xlabel("Month", fontsize=14)
+    ax.set_ylabel(f"Average Max {util_type_display} Utilization (%)", fontsize=14)
+
+    # Set x-axis labels - show every Nth month to avoid crowding
+    step = max(1, num_months // 20)  # Show about 20 labels max
+    x_ticks = range(0, num_months, step)
+    x_labels = [all_months[i] for i in x_ticks]
+    ax.set_xticks(x_ticks)
+    ax.set_xticklabels(x_labels, rotation=45, ha="right")
+
+    # Add grid for better readability
+    ax.grid(True, alpha=0.3, linestyle="-", linewidth=0.5, axis="y")
+
+    # Set y-axis to show percentages (0-100)
+    ax.set_ylim(0, 100)
+
+    # Add legend below the chart
+    ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.1),
+        ncol=min(len(aligned_data), 3),  # Arrange in up to 3 columns
+        fontsize=10,
+        framealpha=0.9,
+    )
+
+    # Adjust layout to prevent label cutoff and make room for legend
+    plt.tight_layout(rect=[0, 0.05, 1, 1])
+
+    # Save the chart as PNG
+    plt.savefig(png_filename, dpi=300, bbox_inches="tight")
+    debug_print(
+        debug,
+        f"Combined {utilization_type} utilization bar chart saved as: {png_filename}",
+    )
 
     plt.close()
 
@@ -529,7 +929,7 @@ def format_time(seconds):
 
 
 def add_statistics_to_flowables(
-    flowables, all_results, workspace_projects_input, debug=False
+    flowables, all_results, workspace_projects_input, website_name=None, debug=False
 ):
     """
     Create statistics content and add it to the list of flowables for ReportLab.
@@ -538,6 +938,8 @@ def add_statistics_to_flowables(
         flowables: List of ReportLab flowables to append to
         all_results: List of dictionaries with experiment data
         workspace_projects_input: List of workspace/project strings that were requested
+        website_name: Optional website name (domain) to display in the title
+        debug: If True, print debug information
     """
     if not all_results:
         return
@@ -626,8 +1028,33 @@ def add_statistics_to_flowables(
         total_run_time_seconds / run_time_count if run_time_count > 0 else 0
     )
 
-    # Title
-    flowables.append(Paragraph("Usage Report - Summary Statistics", title_style))
+    # Calculate GPU utilization statistics
+    all_gpu_utilizations = []
+    all_memory_utilizations = []
+    for result in all_results:
+        gpu_utils = result.get("avg_gpu_utilizations", [])
+        memory_utils = result.get("avg_memory_utilizations", [])
+        # Collect all non-None values
+        all_gpu_utilizations.extend([u for u in gpu_utils if u is not None])
+        all_memory_utilizations.extend([u for u in memory_utils if u is not None])
+
+    avg_gpu_utilization = (
+        sum(all_gpu_utilizations) / len(all_gpu_utilizations)
+        if all_gpu_utilizations
+        else None
+    )
+    avg_memory_utilization = (
+        sum(all_memory_utilizations) / len(all_memory_utilizations)
+        if all_memory_utilizations
+        else None
+    )
+
+    # Title - display on two separate centered lines
+    flowables.append(
+        Paragraph(escape("Usage Report - Summary Statistics"), title_style)
+    )
+    if website_name:
+        flowables.append(Paragraph(escape(website_name), title_style))
     flowables.append(Spacer(1, 0.3 * inch))
 
     # Overall Statistics section
@@ -695,6 +1122,25 @@ def add_statistics_to_flowables(
             )
         )
 
+    # Add GPU utilization statistics
+    if avg_gpu_utilization is not None:
+        flowables.append(
+            Paragraph(
+                escape(f"Average GPU Utilization: {avg_gpu_utilization:.1f}%"),
+                body_style,
+            )
+        )
+
+    if avg_memory_utilization is not None:
+        flowables.append(
+            Paragraph(
+                escape(
+                    f"Average GPU Memory Utilization: {avg_memory_utilization:.1f}%"
+                ),
+                body_style,
+            )
+        )
+
     flowables.append(Spacer(1, 0.2 * inch))
 
     # Breakdown section
@@ -705,6 +1151,18 @@ def add_statistics_to_flowables(
         exp_count = result.get("total_experiments", 0)
         run_time = result.get("total_run_time_seconds", 0)
         run_time_exp_count = result.get("run_time_count", 0)
+
+        # Calculate GPU utilization statistics for this workspace/project
+        gpu_utils = result.get("avg_gpu_utilizations", [])
+        memory_utils = result.get("avg_memory_utilizations", [])
+        # Collect all non-None values
+        gpu_values = [u for u in gpu_utils if u is not None]
+        memory_values = [u for u in memory_utils if u is not None]
+
+        avg_gpu_util = sum(gpu_values) / len(gpu_values) if gpu_values else None
+        avg_memory_util = (
+            sum(memory_values) / len(memory_values) if memory_values else None
+        )
 
         # Use KeepTogether to prevent breaking a workspace/project across pages
         workspace_content = [
@@ -727,6 +1185,23 @@ def add_statistics_to_flowables(
                         indent_body_style,
                     )
                 )
+
+        # Add GPU utilization statistics if available
+        if avg_gpu_util is not None:
+            workspace_content.append(
+                Paragraph(
+                    escape(f"Average GPU Utilization: {avg_gpu_util:.1f}%"),
+                    indent_body_style,
+                )
+            )
+
+        if avg_memory_util is not None:
+            workspace_content.append(
+                Paragraph(
+                    escape(f"Average GPU Memory Utilization: {avg_memory_util:.1f}%"),
+                    indent_body_style,
+                )
+            )
 
         flowables.append(KeepTogether(workspace_content))
         flowables.append(Spacer(1, 0.1 * inch))
@@ -926,9 +1401,20 @@ def generate_usage_report(
         # Build list of flowables (content elements)
         flowables = []
 
+        # Extract website name from API base_url
+        try:
+            base_url = api._client.base_url
+            website_name = extract_website_name(base_url)
+        except Exception:
+            website_name = None
+
         # Add statistics content first
         add_statistics_to_flowables(
-            flowables, all_results, workspace_projects, debug=debug
+            flowables,
+            all_results,
+            workspace_projects,
+            website_name=website_name,
+            debug=debug,
         )
 
         # Add charts (with page breaks between them if multiple)
@@ -959,8 +1445,142 @@ def generate_usage_report(
                 workspace_projects_str,
                 chart_num=chart_idx + 1,
                 total_charts=len(chart_info),
+                chart_type="experiments",
                 debug=debug,
             )
+
+        # Generate GPU utilization charts if data is available
+        # Check if any results have GPU data
+        has_gpu_data = any(
+            r.get("avg_gpu_utilizations")
+            and any(u is not None for u in r.get("avg_gpu_utilizations", []))
+            for r in all_results
+        )
+        has_memory_data = any(
+            r.get("avg_memory_utilizations")
+            and any(u is not None for u in r.get("avg_memory_utilizations", []))
+            for r in all_results
+        )
+
+        # Generate GPU utilization charts
+        if has_gpu_data:
+            # Generate GPU utilization charts for each chunk (same chunks as experiment charts)
+            gpu_chart_info = []
+            with tqdm(
+                total=len(chart_chunks), desc="Generating GPU utilization charts"
+            ) as pbar:
+                for i, chunk in enumerate(chart_chunks):
+                    # Generate filename for this chart
+                    if len(chart_chunks) > 1:
+                        workspace_projects_chunk = [
+                            r.get("workspace_project", "Unknown") for r in chunk
+                        ]
+                        filename_parts = [
+                            wp.replace("/", "_") for wp in workspace_projects_chunk
+                        ]
+                        chunk_filename = f"gpu_utilization_chart_{i+1}_of_{len(chart_chunks)}_{'_'.join(filename_parts[:2])}.png"
+                        if len(filename_parts) > 2:
+                            chunk_filename = chunk_filename.replace(
+                                ".png", f"_and_{len(filename_parts)-2}_more.png"
+                            )
+                    else:
+                        chunk_filename = None  # Use default naming
+
+                    # Create GPU utilization chart with consistent date range
+                    gpu_chart_filename = create_combined_gpu_chart_from_data(
+                        chunk,
+                        png_filename=chunk_filename,
+                        date_range=overall_date_range,
+                        utilization_type="gpu",
+                        debug=debug,
+                    )
+                    if gpu_chart_filename:
+                        gpu_chart_info.append((gpu_chart_filename, i))
+                    pbar.update(1)
+
+            # Add GPU utilization charts to PDF
+            for chart_idx, (chart_filename, chunk_idx) in enumerate(gpu_chart_info):
+                flowables.append(PageBreak())
+                chunk = chart_chunks[chunk_idx]
+                if len(gpu_chart_info) > 1:
+                    workspace_projects_str = ", ".join(
+                        [r.get("workspace_project", "Unknown") for r in chunk]
+                    )
+                    workspace_projects_str = f"Chart {chart_idx+1} of {len(gpu_chart_info)}: {workspace_projects_str}"
+                else:
+                    workspace_projects_str = ", ".join(
+                        [r.get("workspace_project", "Unknown") for r in chunk]
+                    )
+
+                add_chart_to_flowables(
+                    flowables,
+                    chart_filename,
+                    workspace_projects_str,
+                    chart_num=chart_idx + 1,
+                    total_charts=len(gpu_chart_info),
+                    chart_type="gpu",
+                    debug=debug,
+                )
+
+        # Generate GPU memory utilization charts
+        if has_memory_data:
+            # Generate memory utilization charts for each chunk
+            memory_chart_info = []
+            with tqdm(
+                total=len(chart_chunks), desc="Generating GPU memory utilization charts"
+            ) as pbar:
+                for i, chunk in enumerate(chart_chunks):
+                    # Generate filename for this chart
+                    if len(chart_chunks) > 1:
+                        workspace_projects_chunk = [
+                            r.get("workspace_project", "Unknown") for r in chunk
+                        ]
+                        filename_parts = [
+                            wp.replace("/", "_") for wp in workspace_projects_chunk
+                        ]
+                        chunk_filename = f"gpu_memory_utilization_chart_{i+1}_of_{len(chart_chunks)}_{'_'.join(filename_parts[:2])}.png"
+                        if len(filename_parts) > 2:
+                            chunk_filename = chunk_filename.replace(
+                                ".png", f"_and_{len(filename_parts)-2}_more.png"
+                            )
+                    else:
+                        chunk_filename = None  # Use default naming
+
+                    # Create memory utilization chart with consistent date range
+                    memory_chart_filename = create_combined_gpu_chart_from_data(
+                        chunk,
+                        png_filename=chunk_filename,
+                        date_range=overall_date_range,
+                        utilization_type="memory",
+                        debug=debug,
+                    )
+                    if memory_chart_filename:
+                        memory_chart_info.append((memory_chart_filename, i))
+                    pbar.update(1)
+
+            # Add memory utilization charts to PDF
+            for chart_idx, (chart_filename, chunk_idx) in enumerate(memory_chart_info):
+                flowables.append(PageBreak())
+                chunk = chart_chunks[chunk_idx]
+                if len(memory_chart_info) > 1:
+                    workspace_projects_str = ", ".join(
+                        [r.get("workspace_project", "Unknown") for r in chunk]
+                    )
+                    workspace_projects_str = f"Chart {chart_idx+1} of {len(memory_chart_info)}: {workspace_projects_str}"
+                else:
+                    workspace_projects_str = ", ".join(
+                        [r.get("workspace_project", "Unknown") for r in chunk]
+                    )
+
+                add_chart_to_flowables(
+                    flowables,
+                    chart_filename,
+                    workspace_projects_str,
+                    chart_num=chart_idx + 1,
+                    total_charts=len(memory_chart_info),
+                    chart_type="memory",
+                    debug=debug,
+                )
 
         # Build the PDF
         debug_print(debug, "Building PDF...")
