@@ -164,9 +164,14 @@ Examples:
     usage_report_description = """Generate a usage report with experiment counts and statistics for one or more workspaces/projects.
 
 Arguments:
-    WORKSPACE_PROJECT (required, one or more)
+    WORKSPACE_PROJECT (optional, one or more)
         One or more WORKSPACE or WORKSPACE/PROJECT to run usage report for.
         If WORKSPACE is provided without a project, all projects in that workspace will be included.
+        Not needed when using --app flag.
+
+Options:
+    --app
+        Launch interactive Streamlit web app instead of generating PDF.
 
 Output:
     Generates a PDF report containing:
@@ -175,11 +180,17 @@ Output:
     - GPU utilization charts (if GPU data is available)
     - GPU memory utilization charts (if GPU data is available)
 
+    With --app, launches an interactive web interface where you can:
+    - Select workspace and project from dropdowns
+    - View statistics and charts interactively
+    - Change time units and regenerate reports
+
 Examples:
     cometx admin usage-report my-workspace
     cometx admin usage-report my-workspace/project1 my-workspace/project2
     cometx admin usage-report workspace1 workspace2 --units week
     cometx admin usage-report workspace --units day --no-open
+    cometx admin usage-report --app
 """
     usage_parser = subparsers.add_parser(
         "usage-report",
@@ -191,10 +202,16 @@ Examples:
     add_global_arguments(usage_parser)
     usage_parser.add_argument(
         "WORKSPACE_PROJECT",
-        nargs="+",
-        help="One or more WORKSPACE or WORKSPACE/PROJECT to run usage report for",
+        nargs="*",
+        help="One or more WORKSPACE or WORKSPACE/PROJECT to run usage report for (not needed with --app)",
         metavar="WORKSPACE",
         type=str,
+    )
+    usage_parser.add_argument(
+        "--app",
+        help="Launch interactive Streamlit web app instead of generating PDF",
+        default=False,
+        action="store_true",
     )
     usage_parser.add_argument(
         "--no-open",
@@ -259,21 +276,56 @@ def admin(parsed_args, remaining=None):
                 fp.write(json.dumps(response.json()))
             print("Chargeback report is saved in %r" % filename)
         elif parsed_args.ACTION == "usage-report":
-            # WORKSPACE_PROJECT is now required (nargs="+") so we always have at least one
-            workspace_projects = parsed_args.WORKSPACE_PROJECT
+            if parsed_args.app:
+                # Launch Streamlit app
+                import os
+                import sys
 
-            try:
-                generate_usage_report(
-                    api,
-                    workspace_projects,
-                    no_open=parsed_args.no_open,
-                    max_datasets_per_chart=parsed_args.max_experiments_per_chart,
-                    units=parsed_args.units,
-                    debug=parsed_args.debug,
-                )
-            except Exception as e:
-                print("ERROR: " + str(e))
-                return
+                # Set environment variables if --api-key or --url-override were provided
+                if parsed_args.api_key:
+                    os.environ["COMET_API_KEY"] = parsed_args.api_key
+                if parsed_args.url_override:
+                    os.environ["COMET_URL_OVERRIDE"] = parsed_args.url_override
+
+                # Run the Streamlit app using streamlit's CLI
+                try:
+                    import streamlit.web.cli as stcli
+
+                    # Get the path to admin_app.py
+                    admin_app_path = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)), "admin_app.py"
+                    )
+
+                    # Launch streamlit with the app
+                    sys.argv = ["streamlit", "run", admin_app_path]
+                    stcli.main()
+                except Exception as e:
+                    print(f"ERROR launching Streamlit app: {e}")
+                    if parsed_args.debug:
+                        raise
+                    return
+            else:
+                # Generate PDF report
+                workspace_projects = parsed_args.WORKSPACE_PROJECT
+
+                if not workspace_projects:
+                    print(
+                        "ERROR: At least one workspace/project is required when not using --app"
+                    )
+                    return
+
+                try:
+                    generate_usage_report(
+                        api,
+                        workspace_projects,
+                        no_open=parsed_args.no_open,
+                        max_datasets_per_chart=parsed_args.max_experiments_per_chart,
+                        units=parsed_args.units,
+                        debug=parsed_args.debug,
+                    )
+                except Exception as e:
+                    print("ERROR: " + str(e))
+                    return
 
     except KeyboardInterrupt:
         if parsed_args.debug:

@@ -588,12 +588,20 @@ def generate_experiment_chart(api, workspace, project, units="month", debug=Fals
     run_time_count = 0
     # Track unique users
     unique_users = set()
+    # Track actual earliest and latest experiment dates (not time keys)
+    earliest_date = None
+    latest_date = None
 
     for exp in experiments:
         exp_key = exp.get("experimentKey")
         if "startTimeMillis" in exp and exp["startTimeMillis"]:
             # Convert milliseconds to seconds, then to datetime
             start_time = datetime.fromtimestamp(exp["startTimeMillis"] / 1000)
+            # Track earliest and latest dates
+            if earliest_date is None or start_time < earliest_date:
+                earliest_date = start_time
+            if latest_date is None or start_time > latest_date:
+                latest_date = start_time
             # Format based on time unit for grouping
             time_key = format_time_key(start_time, units)
             time_unit_counts[time_key] += 1
@@ -635,23 +643,181 @@ def generate_experiment_chart(api, workspace, project, units="month", debug=Fals
         debug_print(debug, "No experiments with valid start times found")
         return {}
 
-    # Create a complete range of time units from first to last experiment
-    all_time_keys = sorted(time_unit_counts.keys())
-    if not all_time_keys:
-        debug_print(debug, f"No valid {units} found")
+    if earliest_date is None or latest_date is None:
+        debug_print(debug, "No valid experiment dates found")
         return {}
 
-    # Generate all time units between first and last
-    start_date = parse_time_key(all_time_keys[0], units)
-    end_date = parse_time_key(all_time_keys[-1], units)
+    # Debug: show all time keys that have experiments
+    debug_print(
+        debug,
+        f"Time keys with experiments ({units}): {sorted(time_unit_counts.keys())}",
+    )
+    debug_print(debug, f"Number of unique time keys: {len(time_unit_counts)}")
+
+    # Generate all time units from the earliest experiment date to the latest
+    # We use the actual dates to ensure we show the complete date range.
+    # For weeks: if experiments span multiple months, they should span multiple weeks
+    start_time_key = format_time_key(earliest_date, units)
+    end_time_key = format_time_key(latest_date, units)
+
+    # If both dates map to the same time key, but we expect them to span more time
+    # (e.g., experiments span 2 months but map to same week), we need to expand the range
+    if start_time_key == end_time_key:
+        # Calculate the date difference
+        date_diff = (latest_date - earliest_date).days
+
+        # Special case: if grouping by week but dates span multiple months,
+        # we should show all weeks in those months, not just the week with experiments
+        if units == "week":
+            # Check if dates span multiple months
+            earliest_month_key = format_time_key(earliest_date, "month")
+            latest_month_key = format_time_key(latest_date, "month")
+
+            if earliest_month_key != latest_month_key:
+                # Dates span multiple months - generate weeks from start of earliest month to end of latest month
+                # Start from the first day of the earliest month
+                earliest_month_start = datetime(
+                    earliest_date.year, earliest_date.month, 1
+                )
+                # End at the last day of the latest month
+                if latest_date.month == 12:
+                    latest_month_end = datetime(latest_date.year + 1, 1, 1) - timedelta(
+                        days=1
+                    )
+                else:
+                    latest_month_end = datetime(
+                        latest_date.year, latest_date.month + 1, 1
+                    ) - timedelta(days=1)
+
+                # Find the Monday of the week containing the start of the earliest month
+                earliest_year, earliest_week, earliest_weekday = (
+                    earliest_month_start.isocalendar()
+                )
+                days_to_monday = earliest_weekday - 1
+                earliest_monday = earliest_month_start - timedelta(days=days_to_monday)
+                start_time_key = format_time_key(earliest_monday, units)
+
+                # Find the Monday of the week containing the end of the latest month
+                latest_year, latest_week, latest_weekday = (
+                    latest_month_end.isocalendar()
+                )
+                days_to_monday = latest_weekday - 1
+                latest_monday = latest_month_end - timedelta(days=days_to_monday)
+                end_time_key = format_time_key(latest_monday, units)
+
+                debug_print(
+                    debug,
+                    f"Expanded week range to cover months {earliest_month_key} to {latest_month_key}",
+                )
+            elif date_diff >= 7:
+                # If dates are at least 7 days apart, they should span multiple weeks
+                # Even if they're in the same ISO week (which can happen at week boundaries),
+                # we should generate multiple weeks based on the actual date span
+
+                # Find the Monday of the week containing earliest_date
+                earliest_year, earliest_week, earliest_weekday = (
+                    earliest_date.isocalendar()
+                )
+                days_to_monday = (
+                    earliest_weekday - 1
+                )  # Monday is 1, subtract 1 to get days back to Monday
+                earliest_monday = earliest_date - timedelta(days=days_to_monday)
+                start_time_key = format_time_key(earliest_monday, units)
+
+                # Find the Monday of the week containing latest_date
+                latest_year, latest_week, latest_weekday = latest_date.isocalendar()
+                days_to_monday = latest_weekday - 1
+                latest_monday = latest_date - timedelta(days=days_to_monday)
+                end_time_key = format_time_key(latest_monday, units)
+
+                # Calculate how many weeks apart (for debug)
+                if earliest_year == latest_year:
+                    weeks_apart = latest_week - earliest_week
+                else:
+                    weeks_apart = date_diff // 7
+
+                debug_print(
+                    debug, f"Expanded week range: dates are {date_diff} days apart"
+                )
+                debug_print(
+                    debug,
+                    f"Earliest Monday: {earliest_monday}, Latest Monday: {latest_monday}",
+                )
+                debug_print(
+                    debug,
+                    f"New start key: {start_time_key}, New end key: {end_time_key}",
+                )
+        elif len(time_unit_counts) > 1:
+            # Use the actual time keys from experiments
+            all_experiment_time_keys = sorted(time_unit_counts.keys())
+            start_time_key = all_experiment_time_keys[0]
+            end_time_key = all_experiment_time_keys[-1]
+            debug_print(
+                debug,
+                f"Date range maps to same {units} but experiments span multiple {units}, using experiment time keys",
+            )
+
+    debug_print(debug, f"Earliest experiment date: {earliest_date}")
+    debug_print(debug, f"Latest experiment date: {latest_date}")
+    debug_print(debug, f"Date difference: {(latest_date - earliest_date).days} days")
+    debug_print(debug, f"Start time key ({units}): {start_time_key}")
+    debug_print(debug, f"End time key ({units}): {end_time_key}")
+    debug_print(debug, f"Time keys with experiments: {sorted(time_unit_counts.keys())}")
 
     complete_time_keys = []
-    current_key = all_time_keys[0]
-    while True:
-        complete_time_keys.append(current_key)
-        if current_key == all_time_keys[-1]:
+    current_key = start_time_key
+    max_iterations = 10000  # Safety limit to prevent infinite loops
+    iteration = 0
+    seen_keys = set()  # Track seen keys to prevent infinite loops
+
+    while iteration < max_iterations:
+        # Prevent infinite loops by checking if we've seen this key before
+        if current_key in seen_keys:
+            debug_print(
+                debug,
+                f"Warning: Loop detected, already seen key {current_key}, breaking",
+            )
             break
-        current_key = get_next_time_key(current_key, units)
+        seen_keys.add(current_key)
+
+        complete_time_keys.append(current_key)
+
+        # If we've reached the end key, stop
+        if current_key == end_time_key:
+            break
+
+        next_key = get_next_time_key(current_key, units)
+
+        # Safety check: if next_key is the same as current_key, we're stuck
+        if next_key == current_key:
+            debug_print(
+                debug,
+                f"Warning: get_next_time_key returned same key {current_key}, breaking",
+            )
+            break
+
+        current_key = next_key
+        iteration += 1
+
+    if iteration >= max_iterations:
+        debug_print(
+            debug,
+            f"Warning: Reached max iterations ({max_iterations}) generating time keys",
+        )
+
+    debug_print(
+        debug,
+        f"Generated {len(complete_time_keys)} time keys: {complete_time_keys[:10]}{'...' if len(complete_time_keys) > 10 else ''}",
+    )
+
+    # Additional check: if we only generated one time key but we have experiments spanning multiple time units
+    # (e.g., 2 months but only 1 week), this indicates a bug
+    if len(complete_time_keys) == 1 and len(time_unit_counts) > 1:
+        debug_print(
+            debug,
+            f"WARNING: Only generated 1 time key but found {len(time_unit_counts)} time keys with experiments!",
+        )
+        debug_print(debug, f"This suggests a bug in time range generation.")
 
     # Fill in counts for all time units (0 for time units with no experiments)
     counts = [time_unit_counts[key] for key in complete_time_keys]
