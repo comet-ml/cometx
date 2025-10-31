@@ -12,11 +12,77 @@
 #      Team. All rights reserved.
 # ****************************************
 """
-To perform admin functions
+Perform admin functions for Comet.
 
-cometx admin chargeback-report
-cometx admin usage-report WORKSPACE [WORKSPACE ...]
-cometx admin usage-report WORKSPACE/PROJECT [WORKSPACE/PROJECT ...]
+Commands:
+    chargeback-report
+        Generate a chargeback report from the Comet server.
+
+        Usage:
+            cometx admin chargeback-report [YEAR-MONTH]
+
+        Arguments:
+            YEAR-MONTH (optional, deprecated)
+                The YEAR-MONTH to run report for, eg 2024-09.
+                If not provided, generates a report for all available periods.
+
+        Output:
+            Saves a JSON file: comet-chargeback-report.json (or comet-chargeback-report-{YEAR-MONTH}.json)
+
+    usage-report
+        Generate a usage report with experiment counts and statistics for one or more workspaces/projects.
+
+        Usage:
+            cometx admin usage-report WORKSPACE [WORKSPACE ...]
+            cometx admin usage-report WORKSPACE/PROJECT [WORKSPACE/PROJECT ...]
+
+        Arguments:
+            WORKSPACE_PROJECT (required, one or more)
+                One or more WORKSPACE or WORKSPACE/PROJECT to run usage report for.
+                If WORKSPACE is provided without a project, all projects in that workspace will be included.
+
+        Options:
+            --units {month,week,day,hour}
+                Time unit for grouping experiments (default: month)
+                - month: Group by month (YYYY-MM format)
+                - week: Group by ISO week (YYYY-WW format)
+                - day: Group by day (YYYY-MM-DD format)
+                - hour: Group by hour (YYYY-MM-DD-HH format)
+
+            --max-experiments-per-chart N
+                Maximum number of workspaces/projects per chart (default: 5).
+                If more workspaces/projects are provided, multiple charts will be generated.
+
+            --no-open
+                Don't automatically open the generated PDF file after generation.
+
+        Output:
+            Generates a PDF report containing:
+            - Summary statistics (total experiments, users, run times, GPU utilization)
+            - Experiment count charts by time unit
+            - GPU utilization charts (if GPU data is available)
+            - GPU memory utilization charts (if GPU data is available)
+
+Global Options (available for all commands):
+    --api-key KEY
+        Set the COMET_API_KEY for authentication.
+
+    --url-override URL
+        Set the COMET_URL_OVERRIDE for custom Comet server.
+
+    --host URL
+        Override the HOST URL.
+
+    --debug
+        Enable debug output for troubleshooting.
+
+Examples:
+    cometx admin chargeback-report
+    cometx admin chargeback-report 2024-09
+    cometx admin usage-report my-workspace
+    cometx admin usage-report my-workspace/project1 my-workspace/project2
+    cometx admin usage-report workspace1 workspace2 --units week
+    cometx admin usage-report workspace --units day --no-open
 
 """
 
@@ -63,9 +129,25 @@ def get_parser_arguments(parser):
     )
 
     # chargeback-report subcommand
+    chargeback_description = """Generate a chargeback report from the Comet server.
+
+Arguments:
+    YEAR-MONTH (optional, deprecated)
+        The YEAR-MONTH to run report for, eg 2024-09.
+        If not provided, generates a report for all available periods.
+
+Output:
+    Saves a JSON file: comet-chargeback-report.json (or comet-chargeback-report-{YEAR-MONTH}.json)
+
+Examples:
+    cometx admin chargeback-report
+    cometx admin chargeback-report 2024-09
+"""
     chargeback_parser = subparsers.add_parser(
         "chargeback-report",
         help="Generate a chargeback report",
+        description=chargeback_description,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     # Add global arguments to subparser so they show in help
     add_global_arguments(chargeback_parser)
@@ -79,10 +161,31 @@ def get_parser_arguments(parser):
     )
 
     # usage-report subcommand
+    usage_report_description = """Generate a usage report with experiment counts and statistics for one or more workspaces/projects.
+
+Arguments:
+    WORKSPACE_PROJECT (required, one or more)
+        One or more WORKSPACE or WORKSPACE/PROJECT to run usage report for.
+        If WORKSPACE is provided without a project, all projects in that workspace will be included.
+
+Output:
+    Generates a PDF report containing:
+    - Summary statistics (total experiments, users, run times, GPU utilization)
+    - Experiment count charts by time unit
+    - GPU utilization charts (if GPU data is available)
+    - GPU memory utilization charts (if GPU data is available)
+
+Examples:
+    cometx admin usage-report my-workspace
+    cometx admin usage-report my-workspace/project1 my-workspace/project2
+    cometx admin usage-report workspace1 workspace2 --units week
+    cometx admin usage-report workspace --units day --no-open
+"""
     usage_parser = subparsers.add_parser(
         "usage-report",
         help="Generate a usage report for one or more workspaces/projects",
-        description="Generate usage reports with experiment counts by month for one or more workspaces/projects.",
+        description=usage_report_description,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     # Add global arguments to subparser so they show in help
     add_global_arguments(usage_parser)
@@ -103,8 +206,15 @@ def get_parser_arguments(parser):
         "--max-experiments-per-chart",
         help="Maximum number of workspaces/projects per chart (default: 5). If more are provided, multiple charts will be generated.",
         type=int,
-        default=5,
+        default=None,
         metavar="N",
+    )
+    usage_parser.add_argument(
+        "--units",
+        help="Time unit for grouping experiments (default: month)",
+        choices=["month", "week", "day", "hour"],
+        default="month",
+        type=str,
     )
 
 
@@ -158,6 +268,7 @@ def admin(parsed_args, remaining=None):
                     workspace_projects,
                     no_open=parsed_args.no_open,
                     max_datasets_per_chart=parsed_args.max_experiments_per_chart,
+                    units=parsed_args.units,
                     debug=parsed_args.debug,
                 )
             except Exception as e:

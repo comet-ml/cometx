@@ -14,7 +14,7 @@
 """
 Usage report functionality for admin commands
 
-Generate usage reports with experiment counts by month for one or more workspaces/projects.
+Generate usage reports with experiment counts by time unit (month, week, day, or hour) for one or more workspaces/projects.
 Multiple workspaces/projects are combined into a single chart with a legend.
 
 Examples:
@@ -22,14 +22,56 @@ Examples:
     cometx admin usage-report WORKSPACE WORKSPACE
     cometx admin usage-report WORKSPACE/PROJECT WORKSPACE/PROJECT
     cometx admin usage-report WORKSPACE WORKSPACE/PROJECT
+    cometx admin usage-report WORKSPACE --units week
+    cometx admin usage-report WORKSPACE --units day --max-experiments-per-chart 10
+    cometx admin usage-report WORKSPACE/PROJECT --no-open
+
+Options:
+    WORKSPACE_PROJECT (required, one or more)
+        One or more WORKSPACE or WORKSPACE/PROJECT to run usage report for.
+        If WORKSPACE is provided without a project, all projects in that workspace will be included.
+
+    --units {month,week,day,hour}
+        Time unit for grouping experiments (default: month).
+        - month: Group by month (YYYY-MM format)
+        - week: Group by ISO week (YYYY-WW format)
+        - day: Group by day (YYYY-MM-DD format)
+        - hour: Group by hour (YYYY-MM-DD-HH format)
+
+    --max-experiments-per-chart N
+        Maximum number of workspaces/projects per chart (default: 100).
+        If more workspaces/projects are provided, multiple charts will be generated.
+
+    --no-open
+        Don't automatically open the generated PDF file after generation.
+
+    --debug
+        Enable debug output for troubleshooting.
+
+    --api-key KEY
+        Set the COMET_API_KEY for authentication.
+
+    --url-override URL
+        Set the COMET_URL_OVERRIDE for custom Comet server.
+
+    --host URL
+        Override the HOST URL.
+
+Output:
+    Generates a PDF report containing:
+    - Summary statistics (total experiments, users, run times, GPU utilization)
+    - Experiment count charts by time unit
+    - GPU utilization charts (if GPU data is available)
+    - GPU memory utilization charts (if GPU data is available)
 
 """
 
+import json
 import os
 import warnings
 import webbrowser
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import urlparse
 from xml.sax.saxutils import escape
 
@@ -56,7 +98,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
 
 # Maximum number of datasets (workspaces/projects) per chart
 # If more datasets are provided, multiple charts will be generated
-MAX_DATASETS_PER_CHART = 5
+MAX_DATASETS_PER_CHART = 100
 
 
 def debug_print(debug, *args, **kwargs):
@@ -86,6 +128,131 @@ def extract_website_name(base_url):
         return "Unknown"
 
 
+def format_time_key(dt, unit):
+    """
+    Format a datetime object as a time key based on the specified unit.
+
+    Args:
+        dt: datetime object
+        unit: One of "month", "week", "day", "hour"
+
+    Returns:
+        str: Formatted time key
+    """
+    if unit == "month":
+        return dt.strftime("%Y-%m")
+    elif unit == "week":
+        # ISO week format: YYYY-WW
+        year, week, _ = dt.isocalendar()
+        return f"{year}-W{week:02d}"
+    elif unit == "day":
+        return dt.strftime("%Y-%m-%d")
+    elif unit == "hour":
+        return dt.strftime("%Y-%m-%d-%H")
+    else:
+        raise ValueError(f"Unknown unit: {unit}")
+
+
+def parse_time_key(time_key, unit):
+    """
+    Parse a time key string back to a datetime object.
+
+    Args:
+        time_key: Time key string (e.g., "2024-01", "2024-W01", "2024-01-01", "2024-01-01-12")
+        unit: One of "month", "week", "day", "hour"
+
+    Returns:
+        datetime: Parsed datetime object
+    """
+    if unit == "month":
+        return datetime.strptime(time_key, "%Y-%m")
+    elif unit == "week":
+        # Parse ISO week format: YYYY-WW
+        year_str, week_str = time_key.split("-W")
+        year = int(year_str)
+        week = int(week_str)
+        # Create datetime for January 4th of the year (which is always in week 1)
+        jan4 = datetime(year, 1, 4)
+        # Get the Monday of week 1
+        days_since_monday = jan4.weekday()
+        week1_monday = jan4 - timedelta(days=days_since_monday)
+        # Add weeks to get to the target week
+        target_monday = week1_monday + timedelta(weeks=(week - 1))
+        return target_monday
+    elif unit == "day":
+        return datetime.strptime(time_key, "%Y-%m-%d")
+    elif unit == "hour":
+        return datetime.strptime(time_key, "%Y-%m-%d-%H")
+    else:
+        raise ValueError(f"Unknown unit: {unit}")
+
+
+def get_next_time_key(time_key, unit):
+    """
+    Get the next time key after the given one.
+
+    Args:
+        time_key: Current time key string
+        unit: One of "month", "week", "day", "hour"
+
+    Returns:
+        str: Next time key
+    """
+    dt = parse_time_key(time_key, unit)
+    if unit == "month":
+        if dt.month == 12:
+            next_dt = dt.replace(year=dt.year + 1, month=1)
+        else:
+            next_dt = dt.replace(month=dt.month + 1)
+    elif unit == "week":
+        next_dt = dt + timedelta(weeks=1)
+    elif unit == "day":
+        next_dt = dt + timedelta(days=1)
+    elif unit == "hour":
+        next_dt = dt + timedelta(hours=1)
+    else:
+        raise ValueError(f"Unknown unit: {unit}")
+    return format_time_key(next_dt, unit)
+
+
+def get_unit_label(unit):
+    """
+    Get a human-readable label for a time unit.
+
+    Args:
+        unit: One of "month", "week", "day", "hour"
+
+    Returns:
+        str: Label (e.g., "Month", "Week", "Day", "Hour")
+    """
+    labels = {
+        "month": "Month",
+        "week": "Week",
+        "day": "Day",
+        "hour": "Hour",
+    }
+    return labels.get(unit, unit.capitalize())
+
+
+def get_unit_label_plural(unit):
+    """
+    Get a human-readable plural label for a time unit.
+
+    Args:
+        unit: One of "month", "week", "day", "hour"
+
+    Returns:
+        str: Plural label (e.g., "Months", "Weeks", "Days", "Hours")
+    """
+    labels = {
+        "month": "Months",
+        "week": "Weeks",
+        "day": "Days",
+        "hour": "Hours",
+    }
+    return labels.get(unit, unit.capitalize() + "s")
+
+
 def add_chart_to_flowables(
     flowables,
     png_file,
@@ -93,6 +260,7 @@ def add_chart_to_flowables(
     chart_num=None,
     total_charts=None,
     chart_type="experiments",
+    time_unit="month",
     debug=False,
 ):
     """
@@ -105,6 +273,7 @@ def add_chart_to_flowables(
         chart_num: Optional chart number (1-based)
         total_charts: Optional total number of charts
         chart_type: Type of chart - "experiments", "gpu", or "memory"
+        time_unit: Time unit for the chart ("month", "week", "day", or "hour")
         debug: If True, print debug information
     """
     if os.path.exists(png_file):
@@ -119,6 +288,8 @@ def add_chart_to_flowables(
                 spaceAfter=12,
                 alignment=1,  # Center alignment
             )
+            # Get unit label for titles
+            unit_label = get_unit_label(time_unit)
             # Build title with chart number if available
             if chart_type == "experiments":
                 if (
@@ -126,27 +297,29 @@ def add_chart_to_flowables(
                     and total_charts is not None
                     and total_charts > 1
                 ):
-                    title = f"Experiments by Month ({chart_num} of {total_charts})"
+                    title = (
+                        f"Experiments by {unit_label} ({chart_num} of {total_charts})"
+                    )
                 else:
-                    title = "Experiments by Month"
+                    title = f"Experiments by {unit_label}"
             elif chart_type == "gpu":
                 if (
                     chart_num is not None
                     and total_charts is not None
                     and total_charts > 1
                 ):
-                    title = f"GPU Utilization by Month ({chart_num} of {total_charts})"
+                    title = f"GPU Utilization by {unit_label} ({chart_num} of {total_charts})"
                 else:
-                    title = "GPU Utilization by Month"
+                    title = f"GPU Utilization by {unit_label}"
             elif chart_type == "memory":
                 if (
                     chart_num is not None
                     and total_charts is not None
                     and total_charts > 1
                 ):
-                    title = f"GPU Memory Utilization by Month ({chart_num} of {total_charts})"
+                    title = f"GPU Memory Utilization by {unit_label} ({chart_num} of {total_charts})"
                 else:
-                    title = "GPU Memory Utilization by Month"
+                    title = f"GPU Memory Utilization by {unit_label}"
             else:
                 title = workspace_project
             flowables.append(Paragraph(escape(title), title_style))
@@ -178,9 +351,16 @@ def add_chart_to_flowables(
         debug_print(debug, f"Added chart {png_file} to PDF")
 
 
-def generate_experiment_chart(api, workspace, project, debug=False):
+def generate_experiment_chart(api, workspace, project, units="month", debug=False):
     """
     Collect experiment data for a workspace/project.
+
+    Args:
+        api: Comet API instance
+        workspace: Workspace name
+        project: Project name
+        units: Time unit for grouping ("month", "week", "day", or "hour")
+        debug: If True, print debug information
 
     Returns a dictionary with the collected data, ready for chart generation.
     Does not generate any charts.
@@ -252,17 +432,77 @@ def generate_experiment_chart(api, workspace, project, debug=False):
             pass
         return None
 
+    # Track total GPU duration (in milliseconds) for all gpu_utilization metrics
+    total_gpu_duration_ms = 0
+
     if gpu_metric_names and experiment_keys:
         try:
             metric_data = api.get_metrics_for_chart(experiment_keys, gpu_metric_names)
+
+            # Debug: inspect the structure of metric_data
+            if debug and metric_data:
+                first_key = list(metric_data.keys())[0] if metric_data else None
+                if first_key:
+                    debug_print(debug, f"Sample experiment key structure: {first_key}")
+                    debug_print(
+                        debug,
+                        f"Sample experiment data keys: {list(metric_data[first_key].keys())}",
+                    )
+                    if (
+                        "metrics" in metric_data[first_key]
+                        and metric_data[first_key]["metrics"]
+                    ):
+                        sample_metric = metric_data[first_key]["metrics"][0]
+                        debug_print(
+                            debug,
+                            f"Sample metric structure keys: {list(sample_metric.keys())}",
+                        )
 
             for experiment_key in metric_data:
                 if experiment_key not in experiment_gpu_data:
                     experiment_gpu_data[experiment_key] = {}
 
+                # Check if duration exists at experiment level (alternative structure)
+                experiment_duration = metric_data[experiment_key].get("duration", None)
+                if debug and experiment_duration is not None:
+                    debug_print(
+                        debug,
+                        f"Found experiment-level duration for {experiment_key}: {experiment_duration}",
+                    )
+
                 for metric in metric_data[experiment_key].get("metrics", []):
                     metric_name = metric["metricName"]
                     values = metric.get("values", [])
+
+                    # Extract duration from durations array
+                    # durations array contains duration between timesteps, so sum them all
+                    # Also check for single duration field as fallback
+                    durations = metric.get("durations", [])
+                    if durations:
+                        # Sum all durations to get total duration (durations are intervals between timesteps)
+                        duration = sum(durations) if durations else 0
+                    else:
+                        # Fallback to single duration field
+                        duration = metric.get("duration", 0)
+                        # Also check alternative field names
+                        if duration == 0:
+                            duration = metric.get("durationMs", 0)
+                        if duration == 0:
+                            duration = metric.get("duration_ms", 0)
+                        if duration == 0:
+                            duration = metric.get("time", 0)
+
+                    # Debug: log gpu_utilization metrics and their duration
+                    if metric_name.endswith(".gpu_utilization") and debug:
+                        durations_preview = (
+                            f"[{durations[0]}, {durations[1]}, ... {durations[-1]}]"
+                            if len(durations) > 2
+                            else str(durations)
+                        )
+                        debug_print(
+                            debug,
+                            f"GPU metric {metric_name}: duration={duration} ms (sum of {len(durations)} intervals from durations array: {durations_preview}), has_values={bool(values)}",
+                        )
 
                     if values:
                         max_value = max(values)
@@ -295,6 +535,19 @@ def generate_experiment_chart(api, workspace, project, debug=False):
                                         ],
                                         max_value,
                                     )
+                                # Sum duration for gpu_utilization metrics
+                                # duration is the sum of all duration intervals from the durations array
+                                if duration is not None and duration > 0:
+                                    total_gpu_duration_ms += duration
+                                    debug_print(
+                                        debug,
+                                        f"Added {duration} ms for {metric_name} (total now: {total_gpu_duration_ms} ms)",
+                                    )
+                                elif debug:
+                                    debug_print(
+                                        debug,
+                                        f"Skipping duration for {metric_name}: duration={duration} (None or <= 0)",
+                                    )
                             elif metric_name.endswith(".memory_utilization"):
                                 # GPU memory utilization
                                 if (
@@ -320,28 +573,30 @@ def generate_experiment_chart(api, workspace, project, debug=False):
             # Continue without GPU data
             experiment_gpu_data = {}
 
-    # Group experiments by month/year based on startTimeMillis
-    monthly_counts = defaultdict(int)
-    # Track GPU utilization by month - average across all GPUs per experiment
-    # Structure: month -> [avg_max_gpu_util_per_exp, ...] or month -> [avg_max_memory_util_per_exp, ...]
-    monthly_gpu_utilizations = defaultdict(
+    # Group experiments by time unit based on startTimeMillis
+    time_unit_counts = defaultdict(int)
+    # Track GPU utilization by time unit - average across all GPUs per experiment
+    # Structure: time_key -> [avg_max_gpu_util_per_exp, ...] or time_key -> [avg_max_memory_util_per_exp, ...]
+    time_unit_gpu_utilizations = defaultdict(
         list
-    )  # month -> [avg_utilizations across all GPUs per experiment]
-    monthly_memory_utilizations = defaultdict(
+    )  # time_key -> [avg_utilizations across all GPUs per experiment]
+    time_unit_memory_utilizations = defaultdict(
         list
-    )  # month -> [avg_utilizations across all GPUs per experiment]
+    )  # time_key -> [avg_utilizations across all GPUs per experiment]
     # Track run times for statistics
     total_run_time_seconds = 0
     run_time_count = 0
+    # Track unique users
+    unique_users = set()
 
     for exp in experiments:
         exp_key = exp.get("experimentKey")
         if "startTimeMillis" in exp and exp["startTimeMillis"]:
             # Convert milliseconds to seconds, then to datetime
             start_time = datetime.fromtimestamp(exp["startTimeMillis"] / 1000)
-            # Format as YYYY-MM for grouping
-            month_key = start_time.strftime("%Y-%m")
-            monthly_counts[month_key] += 1
+            # Format based on time unit for grouping
+            time_key = format_time_key(start_time, units)
+            time_unit_counts[time_key] += 1
 
             # Track GPU utilization for this experiment - average across all GPUs
             if exp_key and exp_key in experiment_gpu_data:
@@ -358,11 +613,11 @@ def generate_experiment_chart(api, workspace, project, debug=False):
                 # Calculate average across all GPUs for this experiment
                 if gpu_utils:
                     avg_gpu_util = sum(gpu_utils) / len(gpu_utils)
-                    monthly_gpu_utilizations[month_key].append(avg_gpu_util)
+                    time_unit_gpu_utilizations[time_key].append(avg_gpu_util)
 
                 if memory_utils:
                     avg_memory_util = sum(memory_utils) / len(memory_utils)
-                    monthly_memory_utilizations[month_key].append(avg_memory_util)
+                    time_unit_memory_utilizations[time_key].append(avg_memory_util)
 
             # Calculate run time if both start and end times are available
             if "endTimeMillis" in exp and exp["endTimeMillis"]:
@@ -372,42 +627,43 @@ def generate_experiment_chart(api, workspace, project, debug=False):
                     total_run_time_seconds += run_time_seconds
                     run_time_count += 1
 
-    if not monthly_counts:
+        # Track unique users (check all experiments, not just those with startTimeMillis)
+        if "userName" in exp and exp["userName"]:
+            unique_users.add(exp["userName"])
+
+    if not time_unit_counts:
         debug_print(debug, "No experiments with valid start times found")
         return {}
 
-    # Create a complete range of months from first to last experiment
-    all_months = sorted(monthly_counts.keys())
-    if not all_months:
-        debug_print(debug, "No valid months found")
+    # Create a complete range of time units from first to last experiment
+    all_time_keys = sorted(time_unit_counts.keys())
+    if not all_time_keys:
+        debug_print(debug, f"No valid {units} found")
         return {}
 
-    # Generate all months between first and last
-    start_date = datetime.strptime(all_months[0], "%Y-%m")
-    end_date = datetime.strptime(all_months[-1], "%Y-%m")
+    # Generate all time units between first and last
+    start_date = parse_time_key(all_time_keys[0], units)
+    end_date = parse_time_key(all_time_keys[-1], units)
 
-    complete_months = []
-    current_date = start_date
-    while current_date <= end_date:
-        month_key = current_date.strftime("%Y-%m")
-        complete_months.append(month_key)
-        # Move to next month
-        if current_date.month == 12:
-            current_date = current_date.replace(year=current_date.year + 1, month=1)
-        else:
-            current_date = current_date.replace(month=current_date.month + 1)
+    complete_time_keys = []
+    current_key = all_time_keys[0]
+    while True:
+        complete_time_keys.append(current_key)
+        if current_key == all_time_keys[-1]:
+            break
+        current_key = get_next_time_key(current_key, units)
 
-    # Fill in counts for all months (0 for months with no experiments)
-    counts = [monthly_counts[month] for month in complete_months]
+    # Fill in counts for all time units (0 for time units with no experiments)
+    counts = [time_unit_counts[key] for key in complete_time_keys]
 
-    # Calculate average GPU utilization per month
-    # For each month, average the experiment-level averages (which are already averages across all GPUs)
+    # Calculate average GPU utilization per time unit
+    # For each time unit, average the experiment-level averages (which are already averages across all GPUs)
     avg_gpu_utilizations = []
     avg_memory_utilizations = []
 
-    for month in complete_months:
-        gpu_utils = monthly_gpu_utilizations.get(month, [])
-        memory_utils = monthly_memory_utilizations.get(month, [])
+    for time_key in complete_time_keys:
+        gpu_utils = time_unit_gpu_utilizations.get(time_key, [])
+        memory_utils = time_unit_memory_utilizations.get(time_key, [])
 
         if gpu_utils:
             # Average of experiment-level averages (each experiment avg is across all its GPUs)
@@ -421,39 +677,71 @@ def generate_experiment_chart(api, workspace, project, debug=False):
             avg_memory_utilizations.append(None)
 
     # Display summary statistics (only in debug mode)
+    unit_label = get_unit_label(unit=units)
+    unit_label_plural = get_unit_label_plural(unit=units)
     debug_print(debug, f"\nSummary for {workspace_project}:")
     debug_print(debug, f"Total experiments: {sum(counts)}")
-    debug_print(debug, f"Date range: {complete_months[0]} to {complete_months[-1]}")
-    debug_print(debug, f"Months with experiments: {sum(1 for c in counts if c > 0)}")
     debug_print(
-        debug, f"Months with zero experiments: {sum(1 for c in counts if c == 0)}"
+        debug, f"Date range: {complete_time_keys[0]} to {complete_time_keys[-1]}"
     )
-    debug_print(debug, f"Average experiments per month: {sum(counts)/len(counts):.1f}")
+    debug_print(
+        debug,
+        f"{unit_label_plural} with experiments: {sum(1 for c in counts if c > 0)}",
+    )
+    debug_print(
+        debug,
+        f"{unit_label_plural} with zero experiments: {sum(1 for c in counts if c == 0)}",
+    )
+    debug_print(
+        debug,
+        f"Average experiments per {unit_label.lower()}: {sum(counts)/len(counts):.1f}",
+    )
 
     # Debug GPU stats
-    gpu_months_with_data = sum(1 for u in avg_gpu_utilizations if u is not None)
-    memory_months_with_data = sum(1 for u in avg_memory_utilizations if u is not None)
-    debug_print(debug, f"Months with GPU utilization data: {gpu_months_with_data}")
+    gpu_time_units_with_data = sum(1 for u in avg_gpu_utilizations if u is not None)
+    memory_time_units_with_data = sum(
+        1 for u in avg_memory_utilizations if u is not None
+    )
     debug_print(
-        debug, f"Months with memory utilization data: {memory_months_with_data}"
+        debug,
+        f"{unit_label_plural} with GPU utilization data: {gpu_time_units_with_data}",
+    )
+    debug_print(
+        debug,
+        f"{unit_label_plural} with memory utilization data: {memory_time_units_with_data}",
+    )
+    debug_print(
+        debug,
+        f"Total GPU duration: {format_gpu_hours(total_gpu_duration_ms)} ({total_gpu_duration_ms} ms)",
     )
 
     return {
         "total_experiments": sum(counts),
-        "monthly_counts": dict(monthly_counts),
-        "complete_monthly_counts": dict(zip(complete_months, counts)),
-        "complete_months": complete_months,
+        "monthly_counts": dict(
+            time_unit_counts
+        ),  # Keep key name for backward compatibility
+        "complete_monthly_counts": dict(
+            zip(complete_time_keys, counts)
+        ),  # Keep key name for backward compatibility
+        "complete_months": complete_time_keys,  # Keep key name for backward compatibility
+        "time_unit": units,  # Store the time unit used
         "counts": counts,
-        "date_range": (complete_months[0], complete_months[-1]),
+        "date_range": (complete_time_keys[0], complete_time_keys[-1]),
         "workspace_project": workspace_project,
         "total_run_time_seconds": total_run_time_seconds,
         "run_time_count": run_time_count,
         "experiments": experiments,  # Store raw experiments for statistics
+        "unique_users": unique_users,  # Set of unique usernames
         # GPU utilization data - combined across all GPUs
-        "monthly_gpu_utilizations": dict(monthly_gpu_utilizations),
-        "monthly_memory_utilizations": dict(monthly_memory_utilizations),
-        "avg_gpu_utilizations": avg_gpu_utilizations,  # List aligned with complete_months
-        "avg_memory_utilizations": avg_memory_utilizations,  # List aligned with complete_months
+        "monthly_gpu_utilizations": dict(
+            time_unit_gpu_utilizations
+        ),  # Keep key name for backward compatibility
+        "monthly_memory_utilizations": dict(
+            time_unit_memory_utilizations
+        ),  # Keep key name for backward compatibility
+        "avg_gpu_utilizations": avg_gpu_utilizations,  # List aligned with complete_time_keys
+        "avg_memory_utilizations": avg_memory_utilizations,  # List aligned with complete_time_keys
+        "total_gpu_duration_ms": total_gpu_duration_ms,  # Total GPU duration in milliseconds
     }
 
 
@@ -472,10 +760,11 @@ def create_chart_from_data(data, png_filename=None, debug=False):
         return None
 
     workspace_project = data.get("workspace_project", "Unknown")
-    complete_months = data.get("complete_months", [])
+    complete_time_keys = data.get("complete_months", [])  # Backward compatibility key
     counts = data.get("counts", [])
+    time_unit = data.get("time_unit", "month")
 
-    if not complete_months or not counts:
+    if not complete_time_keys or not counts:
         debug_print(debug, f"No data to create chart for {workspace_project}")
         return None
 
@@ -490,7 +779,7 @@ def create_chart_from_data(data, png_filename=None, debug=False):
     # Create bars with different colors for zero vs non-zero values
     bar_colors = ["lightcoral" if count == 0 else "steelblue" for count in counts]
     bars = plt.bar(
-        range(len(complete_months)),
+        range(len(complete_time_keys)),
         counts,
         color=bar_colors,
         edgecolor="navy",
@@ -498,20 +787,24 @@ def create_chart_from_data(data, png_filename=None, debug=False):
         width=0.8,
     )
 
+    # Get unit label for chart
+    unit_label = get_unit_label(time_unit)
+
     # Customize the chart
     plt.title(
-        f"Experiment Count by Month - {workspace_project}",
+        f"Experiment Count by {unit_label} - {workspace_project}",
         fontsize=16,
         fontweight="bold",
         pad=20,
     )
-    plt.xlabel("Month", fontsize=14)
+    plt.xlabel(unit_label, fontsize=14)
     plt.ylabel("Number of Experiments", fontsize=14)
 
-    # Set x-axis labels - show every 3rd month to avoid crowding
-    step = max(1, len(complete_months) // 20)  # Show about 20 labels max
-    x_ticks = range(0, len(complete_months), step)
-    x_labels = [complete_months[i] for i in x_ticks]
+    # Set x-axis labels - show every Nth to avoid crowding (adjust based on unit)
+    max_labels = 50 if time_unit == "hour" else 30 if time_unit == "day" else 20
+    step = max(1, len(complete_time_keys) // max_labels)
+    x_ticks = range(0, len(complete_time_keys), step)
+    x_labels = [complete_time_keys[i] for i in x_ticks]
     plt.xticks(x_ticks, x_labels, rotation=45, ha="right")
 
     # Add grid for better readability
@@ -543,7 +836,7 @@ def create_chart_from_data(data, png_filename=None, debug=False):
 
 
 def create_combined_chart_from_data(
-    data_list, png_filename=None, date_range=None, debug=False
+    data_list, png_filename=None, date_range=None, time_unit="month", debug=False
 ):
     """
     Create a combined bar chart from multiple experiment datasets with a legend.
@@ -551,9 +844,11 @@ def create_combined_chart_from_data(
     Args:
         data_list: List of dictionaries with experiment data (from generate_experiment_chart)
         png_filename: Optional filename for the PNG. If not provided, generates a default name.
-        date_range: Optional tuple (start_month, end_month) as strings in "YYYY-MM" format.
+        date_range: Optional tuple (start_key, end_key) as strings in the format for the time_unit.
                     If provided, all datasets will be aligned to this date range.
                     If None, the date range is calculated from the datasets.
+        time_unit: Time unit for grouping ("month", "week", "day", or "hour")
+        debug: If True, print debug information
 
     Returns:
         str: The filename of the saved PNG chart
@@ -583,9 +878,9 @@ def create_combined_chart_from_data(
 
     # Determine the date range to use
     if date_range:
-        # Use provided date range
-        overall_start = datetime.strptime(date_range[0], "%Y-%m")
-        overall_end = datetime.strptime(date_range[1], "%Y-%m")
+        # Use provided date range - parse according to time unit
+        overall_start = parse_time_key(date_range[0], time_unit)
+        overall_end = parse_time_key(date_range[1], time_unit)
     else:
         # Find the complete date range across all datasets
         all_date_ranges = [
@@ -595,33 +890,31 @@ def create_combined_chart_from_data(
             debug_print(debug, "No date ranges found in data")
             return None
 
-        # Find the earliest start and latest end date
-        start_dates = [datetime.strptime(dr[0], "%Y-%m") for dr in all_date_ranges]
-        end_dates = [datetime.strptime(dr[1], "%Y-%m") for dr in all_date_ranges]
+        # Find the earliest start and latest end date - parse according to time unit
+        start_dates = [parse_time_key(dr[0], time_unit) for dr in all_date_ranges]
+        end_dates = [parse_time_key(dr[1], time_unit) for dr in all_date_ranges]
         overall_start = min(start_dates)
         overall_end = max(end_dates)
 
-    # Generate complete list of months from overall start to end
-    all_months = []
-    current_date = overall_start
-    while current_date <= overall_end:
-        month_key = current_date.strftime("%Y-%m")
-        all_months.append(month_key)
-        # Move to next month
-        if current_date.month == 12:
-            current_date = current_date.replace(year=current_date.year + 1, month=1)
-        else:
-            current_date = current_date.replace(month=current_date.month + 1)
+    # Generate complete list of time keys from overall start to end
+    all_time_keys = []
+    current_key = format_time_key(overall_start, time_unit)
+    end_key = format_time_key(overall_end, time_unit)
+    while True:
+        all_time_keys.append(current_key)
+        if current_key == end_key:
+            break
+        current_key = get_next_time_key(current_key, time_unit)
 
-    if not all_months:
-        debug_print(debug, "No months found in data")
+    if not all_time_keys:
+        debug_print(debug, f"No {time_unit}s found in data")
         return None
 
-    # For each dataset, align counts to the complete month list
+    # For each dataset, align counts to the complete time key list
     aligned_data = []
     for data in data_list:
         complete_monthly_counts = data.get("complete_monthly_counts", {})
-        counts = [complete_monthly_counts.get(month, 0) for month in all_months]
+        counts = [complete_monthly_counts.get(key, 0) for key in all_time_keys]
         aligned_data.append(
             {
                 "workspace_project": data.get("workspace_project", "Unknown"),
@@ -637,9 +930,9 @@ def create_combined_chart_from_data(
 
     # Set up bar positions for grouped bars
     num_projects = len(aligned_data)
-    num_months = len(all_months)
+    num_time_units = len(all_time_keys)
     bar_width = 0.8 / num_projects if num_projects > 1 else 0.8
-    x_positions = range(num_months)
+    x_positions = range(num_time_units)
 
     # Create grouped bars
     bars_list = []
@@ -673,20 +966,32 @@ def create_combined_chart_from_data(
                     fontweight="bold",
                 )
 
-    # Customize the chart
+    # Get unit label for chart
+    unit_label = get_unit_label(time_unit)
+
+    # Customize the chart - adjust title based on number of projects
+    if len(aligned_data) == 1:
+        # Single project - show project name
+        project_name = aligned_data[0]["workspace_project"]
+        title = f"Experiment Count by {unit_label} - {project_name}"
+    else:
+        # Multiple projects - show "Combined Projects"
+        title = f"Experiment Count by {unit_label} - Combined Projects"
+
     ax.set_title(
-        "Experiment Count by Month - Combined Projects",
+        title,
         fontsize=16,
         fontweight="bold",
         pad=20,
     )
-    ax.set_xlabel("Month", fontsize=14)
+    ax.set_xlabel(unit_label, fontsize=14)
     ax.set_ylabel("Number of Experiments", fontsize=14)
 
-    # Set x-axis labels - show every Nth month to avoid crowding
-    step = max(1, num_months // 20)  # Show about 20 labels max
-    x_ticks = range(0, num_months, step)
-    x_labels = [all_months[i] for i in x_ticks]
+    # Set x-axis labels - show every Nth to avoid crowding (adjust based on unit)
+    max_labels = 50 if time_unit == "hour" else 30 if time_unit == "day" else 20
+    step = max(1, num_time_units // max_labels)
+    x_ticks = range(0, num_time_units, step)
+    x_labels = [all_time_keys[i] for i in x_ticks]
     ax.set_xticks(x_ticks)
     ax.set_xticklabels(x_labels, rotation=45, ha="right")
 
@@ -696,14 +1001,14 @@ def create_combined_chart_from_data(
     # Add legend below the chart
     ax.legend(
         loc="upper center",
-        bbox_to_anchor=(0.5, -0.1),
+        bbox_to_anchor=(0.5, -0.25),
         ncol=min(len(aligned_data), 3),  # Arrange in up to 3 columns
         fontsize=10,
         framealpha=0.9,
     )
 
     # Adjust layout to prevent label cutoff and make room for legend
-    plt.tight_layout(rect=[0, 0.05, 1, 1])
+    plt.tight_layout(rect=[0, 0.1, 1, 1])
 
     # Save the chart as PNG
     plt.savefig(png_filename, dpi=300, bbox_inches="tight")
@@ -715,7 +1020,12 @@ def create_combined_chart_from_data(
 
 
 def create_combined_gpu_chart_from_data(
-    data_list, png_filename=None, date_range=None, utilization_type="gpu", debug=False
+    data_list,
+    png_filename=None,
+    date_range=None,
+    utilization_type="gpu",
+    time_unit="month",
+    debug=False,
 ):
     """
     Create a combined bar chart from multiple experiment datasets showing GPU utilization per GPU.
@@ -723,10 +1033,11 @@ def create_combined_gpu_chart_from_data(
     Args:
         data_list: List of dictionaries with experiment data (from generate_experiment_chart)
         png_filename: Optional filename for the PNG. If not provided, generates a default name.
-        date_range: Optional tuple (start_month, end_month) as strings in "YYYY-MM" format.
+        date_range: Optional tuple (start_key, end_key) as strings in the format for the time_unit.
                     If provided, all datasets will be aligned to this date range.
                     If None, the date range is calculated from the datasets.
         utilization_type: "gpu" for GPU utilization or "memory" for memory utilization
+        time_unit: Time unit for grouping ("month", "week", "day", or "hour")
         debug: If True, print debug information
 
     Returns:
@@ -762,9 +1073,9 @@ def create_combined_gpu_chart_from_data(
 
     # Determine the date range to use
     if date_range:
-        # Use provided date range
-        overall_start = datetime.strptime(date_range[0], "%Y-%m")
-        overall_end = datetime.strptime(date_range[1], "%Y-%m")
+        # Use provided date range - parse according to time unit
+        overall_start = parse_time_key(date_range[0], time_unit)
+        overall_end = parse_time_key(date_range[1], time_unit)
     else:
         # Find the complete date range across all datasets
         all_date_ranges = [
@@ -774,39 +1085,37 @@ def create_combined_gpu_chart_from_data(
             debug_print(debug, "No date ranges found in data")
             return None
 
-        # Find the earliest start and latest end date
-        start_dates = [datetime.strptime(dr[0], "%Y-%m") for dr in all_date_ranges]
-        end_dates = [datetime.strptime(dr[1], "%Y-%m") for dr in all_date_ranges]
+        # Find the earliest start and latest end date - parse according to time unit
+        start_dates = [parse_time_key(dr[0], time_unit) for dr in all_date_ranges]
+        end_dates = [parse_time_key(dr[1], time_unit) for dr in all_date_ranges]
         overall_start = min(start_dates)
         overall_end = max(end_dates)
 
-    # Generate complete list of months from overall start to end
-    all_months = []
-    current_date = overall_start
-    while current_date <= overall_end:
-        month_key = current_date.strftime("%Y-%m")
-        all_months.append(month_key)
-        # Move to next month
-        if current_date.month == 12:
-            current_date = current_date.replace(year=current_date.year + 1, month=1)
-        else:
-            current_date = current_date.replace(month=current_date.month + 1)
+    # Generate complete list of time keys from overall start to end
+    all_time_keys = []
+    current_key = format_time_key(overall_start, time_unit)
+    end_key = format_time_key(overall_end, time_unit)
+    while True:
+        all_time_keys.append(current_key)
+        if current_key == end_key:
+            break
+        current_key = get_next_time_key(current_key, time_unit)
 
-    if not all_months:
-        debug_print(debug, "No months found in data")
+    if not all_time_keys:
+        debug_print(debug, f"No {time_unit}s found in data")
         return None
 
-    # For each dataset, align utilization data to the complete month list
+    # For each dataset, align utilization data to the complete time key list
     aligned_data = []
     for data in data_list:
-        complete_months = data.get("complete_months", [])
+        complete_time_keys = data.get("complete_months", [])
         utilizations = data.get(f"avg_{utilization_type}_utilizations", [])
 
-        # Create a mapping from month to utilization
-        month_to_util = dict(zip(complete_months, utilizations))
+        # Create a mapping from time key to utilization
+        time_key_to_util = dict(zip(complete_time_keys, utilizations))
 
-        # Align to all_months
-        aligned_utils = [month_to_util.get(month, None) for month in all_months]
+        # Align to all_time_keys
+        aligned_utils = [time_key_to_util.get(key, None) for key in all_time_keys]
 
         aligned_data.append(
             {
@@ -823,9 +1132,9 @@ def create_combined_gpu_chart_from_data(
 
     # Set up bar positions for grouped bars
     num_projects = len(aligned_data)
-    num_months = len(all_months)
+    num_time_units = len(all_time_keys)
     bar_width = 0.8 / num_projects if num_projects > 1 else 0.8
-    x_positions = range(num_months)
+    x_positions = range(num_time_units)
 
     # Create grouped bars
     bars_list = []
@@ -862,21 +1171,33 @@ def create_combined_gpu_chart_from_data(
                     fontweight="bold",
                 )
 
-    # Customize the chart
+    # Get unit label for chart
+    unit_label = get_unit_label(time_unit)
+
+    # Customize the chart - adjust title based on number of projects
     util_type_display = "GPU" if utilization_type == "gpu" else "Memory"
+    if len(aligned_data) == 1:
+        # Single project - show project name
+        project_name = aligned_data[0]["workspace_project"]
+        title = f"Average Max {util_type_display} Utilization by {unit_label} - {project_name}"
+    else:
+        # Multiple projects - show "Combined Projects"
+        title = f"Average Max {util_type_display} Utilization by {unit_label} - Combined Projects"
+
     ax.set_title(
-        f"Average Max {util_type_display} Utilization by Month - Combined Projects",
+        title,
         fontsize=16,
         fontweight="bold",
         pad=20,
     )
-    ax.set_xlabel("Month", fontsize=14)
+    ax.set_xlabel(unit_label, fontsize=14)
     ax.set_ylabel(f"Average Max {util_type_display} Utilization (%)", fontsize=14)
 
-    # Set x-axis labels - show every Nth month to avoid crowding
-    step = max(1, num_months // 20)  # Show about 20 labels max
-    x_ticks = range(0, num_months, step)
-    x_labels = [all_months[i] for i in x_ticks]
+    # Set x-axis labels - show every Nth to avoid crowding (adjust based on unit)
+    max_labels = 50 if time_unit == "hour" else 30 if time_unit == "day" else 20
+    step = max(1, num_time_units // max_labels)
+    x_ticks = range(0, num_time_units, step)
+    x_labels = [all_time_keys[i] for i in x_ticks]
     ax.set_xticks(x_ticks)
     ax.set_xticklabels(x_labels, rotation=45, ha="right")
 
@@ -889,14 +1210,14 @@ def create_combined_gpu_chart_from_data(
     # Add legend below the chart
     ax.legend(
         loc="upper center",
-        bbox_to_anchor=(0.5, -0.1),
+        bbox_to_anchor=(0.5, -0.25),
         ncol=min(len(aligned_data), 3),  # Arrange in up to 3 columns
         fontsize=10,
         framealpha=0.9,
     )
 
     # Adjust layout to prevent label cutoff and make room for legend
-    plt.tight_layout(rect=[0, 0.05, 1, 1])
+    plt.tight_layout(rect=[0, 0.1, 1, 1])
 
     # Save the chart as PNG
     plt.savefig(png_filename, dpi=300, bbox_inches="tight")
@@ -911,25 +1232,42 @@ def create_combined_gpu_chart_from_data(
 
 
 def format_time(seconds):
-    """Format seconds into a human-readable string (days, hours, minutes, seconds)"""
+    """Format seconds into a human-readable string (hours, minutes, seconds)"""
     if seconds < 60:
         return f"{seconds:.1f} seconds"
     elif seconds < 3600:
         minutes = seconds / 60
         return f"{minutes:.1f} minutes"
-    elif seconds < 86400:
+    else:
         hours = seconds / 3600
         return f"{hours:.1f} hours"
+
+
+def format_gpu_hours(milliseconds):
+    """Format milliseconds into GPU hours with appropriate precision"""
+    if milliseconds == 0:
+        return "0 GPU hours"
+    # Convert milliseconds to hours
+    hours = milliseconds / (1000 * 3600)
+    if hours < 0.01:
+        # For very small values, show in minutes
+        minutes = milliseconds / (1000 * 60)
+        return f"{minutes:.2f} GPU minutes"
+    elif hours < 1:
+        # For less than an hour, show with 2 decimal places
+        return f"{hours:.2f} GPU hours"
     else:
-        days = seconds / 86400
-        hours = (seconds % 86400) / 3600
-        if hours > 0:
-            return f"{days:.1f} days, {hours:.1f} hours"
-        return f"{days:.1f} days"
+        # For hours or more, show with 1 decimal place
+        return f"{hours:.1f} GPU hours"
 
 
 def add_statistics_to_flowables(
-    flowables, all_results, workspace_projects_input, website_name=None, debug=False
+    flowables,
+    all_results,
+    workspace_projects_input,
+    website_name=None,
+    time_unit="month",
+    debug=False,
 ):
     """
     Create statistics content and add it to the list of flowables for ReportLab.
@@ -998,28 +1336,30 @@ def add_statistics_to_flowables(
     )
     run_time_count = sum(r.get("run_time_count", 0) for r in all_results)
 
-    # Find date range across all results
+    # Find date range across all results - parse according to time unit
     all_start_dates = []
     all_end_dates = []
     for result in all_results:
         date_range = result.get("date_range")
         if date_range:
-            all_start_dates.append(datetime.strptime(date_range[0], "%Y-%m"))
-            all_end_dates.append(datetime.strptime(date_range[1], "%Y-%m"))
+            all_start_dates.append(parse_time_key(date_range[0], time_unit))
+            all_end_dates.append(parse_time_key(date_range[1], time_unit))
 
     earliest_date = min(all_start_dates) if all_start_dates else None
     latest_date = max(all_end_dates) if all_end_dates else None
 
-    # Find peak month
-    combined_monthly_counts = defaultdict(int)
+    # Find peak time unit
+    combined_time_unit_counts = defaultdict(int)
     for result in all_results:
-        monthly_counts = result.get("monthly_counts", {})
-        for month, count in monthly_counts.items():
-            combined_monthly_counts[month] += count
+        time_unit_counts = result.get(
+            "monthly_counts", {}
+        )  # Backward compatibility key
+        for time_key, count in time_unit_counts.items():
+            combined_time_unit_counts[time_key] += count
 
-    peak_month = (
-        max(combined_monthly_counts.items(), key=lambda x: x[1])
-        if combined_monthly_counts
+    peak_time_unit = (
+        max(combined_time_unit_counts.items(), key=lambda x: x[1])
+        if combined_time_unit_counts
         else None
     )
 
@@ -1049,6 +1389,19 @@ def add_statistics_to_flowables(
         else None
     )
 
+    # Calculate total unique users across all results
+    all_unique_users = set()
+    for result in all_results:
+        unique_users = result.get("unique_users", set())
+        if unique_users:
+            all_unique_users.update(unique_users)
+    total_unique_users = len(all_unique_users)
+
+    # Calculate total GPU hours across all results
+    total_gpu_duration_ms = sum(
+        result.get("total_gpu_duration_ms", 0) for result in all_results
+    )
+
     # Title - display on two separate centered lines
     flowables.append(
         Paragraph(escape("Usage Report - Summary Statistics"), title_style)
@@ -1064,6 +1417,10 @@ def add_statistics_to_flowables(
         Paragraph(
             escape(f"Total Number of Experiments: {total_experiments:,}"), body_style
         )
+    )
+
+    flowables.append(
+        Paragraph(escape(f"Total Number of Users: {total_unique_users:,}"), body_style)
     )
 
     if total_run_time_seconds > 0:
@@ -1090,22 +1447,35 @@ def add_statistics_to_flowables(
             )
 
     if earliest_date and latest_date:
+        # Format date range according to time unit
+        start_key = format_time_key(earliest_date, time_unit)
+        end_key = format_time_key(latest_date, time_unit)
+        unit_label_plural = get_unit_label_plural(time_unit)
         flowables.append(
             Paragraph(
-                escape(
-                    f"Date Range: {earliest_date.strftime('%Y-%m')} to {latest_date.strftime('%Y-%m')}"
-                ),
+                escape(f"Date Range: {start_key} to {end_key}"),
                 body_style,
             )
         )
-        # Calculate span in months
-        months_span = (
-            (latest_date.year - earliest_date.year) * 12
-            + (latest_date.month - earliest_date.month)
-            + 1
-        )
+        # Calculate span in time units
+        if time_unit == "month":
+            span = (
+                (latest_date.year - earliest_date.year) * 12
+                + (latest_date.month - earliest_date.month)
+                + 1
+            )
+        elif time_unit == "week":
+            span = int((latest_date - earliest_date).days / 7) + 1
+        elif time_unit == "day":
+            span = (latest_date - earliest_date).days + 1
+        elif time_unit == "hour":
+            span = int((latest_date - earliest_date).total_seconds() / 3600) + 1
+        else:
+            span = 0
         flowables.append(
-            Paragraph(escape(f"Time Span: {months_span} months"), body_style)
+            Paragraph(
+                escape(f"Time Span: {span} {unit_label_plural.lower()}"), body_style
+            )
         )
 
     flowables.append(
@@ -1114,10 +1484,13 @@ def add_statistics_to_flowables(
         )
     )
 
-    if peak_month:
+    if peak_time_unit:
+        unit_label = get_unit_label(time_unit)
         flowables.append(
             Paragraph(
-                escape(f"Peak Month: {peak_month[0]} ({peak_month[1]:,} experiments)"),
+                escape(
+                    f"Peak {unit_label}: {peak_time_unit[0]} ({peak_time_unit[1]:,} experiments)"
+                ),
                 body_style,
             )
         )
@@ -1141,70 +1514,92 @@ def add_statistics_to_flowables(
             )
         )
 
+    # Add total GPU hours (always show, even if 0)
+    flowables.append(
+        Paragraph(
+            escape(f"Total GPU Hours: {format_gpu_hours(total_gpu_duration_ms)}"),
+            body_style,
+        )
+    )
+
     flowables.append(Spacer(1, 0.2 * inch))
 
-    # Breakdown section
-    flowables.append(Paragraph("Breakdown by Workspace/Project", heading_style))
+    # Breakdown section - only show if there is more than one project
+    if len(all_results) > 1:
+        flowables.append(Paragraph("Breakdown by Workspace/Project", heading_style))
 
-    for i, result in enumerate(all_results):
-        wp = result.get("workspace_project", "Unknown")
-        exp_count = result.get("total_experiments", 0)
-        run_time = result.get("total_run_time_seconds", 0)
-        run_time_exp_count = result.get("run_time_count", 0)
+        for i, result in enumerate(all_results):
+            wp = result.get("workspace_project", "Unknown")
+            exp_count = result.get("total_experiments", 0)
+            run_time = result.get("total_run_time_seconds", 0)
+            run_time_exp_count = result.get("run_time_count", 0)
 
-        # Calculate GPU utilization statistics for this workspace/project
-        gpu_utils = result.get("avg_gpu_utilizations", [])
-        memory_utils = result.get("avg_memory_utilizations", [])
-        # Collect all non-None values
-        gpu_values = [u for u in gpu_utils if u is not None]
-        memory_values = [u for u in memory_utils if u is not None]
+            # Calculate GPU utilization statistics for this workspace/project
+            gpu_utils = result.get("avg_gpu_utilizations", [])
+            memory_utils = result.get("avg_memory_utilizations", [])
+            # Collect all non-None values
+            gpu_values = [u for u in gpu_utils if u is not None]
+            memory_values = [u for u in memory_utils if u is not None]
 
-        avg_gpu_util = sum(gpu_values) / len(gpu_values) if gpu_values else None
-        avg_memory_util = (
-            sum(memory_values) / len(memory_values) if memory_values else None
-        )
-
-        # Use KeepTogether to prevent breaking a workspace/project across pages
-        workspace_content = [
-            Paragraph(escape(f"{wp}:"), bold_body_style),
-            Paragraph(escape(f"Experiments: {exp_count:,}"), indent_body_style),
-        ]
-
-        if run_time > 0:
-            workspace_content.append(
-                Paragraph(
-                    escape(f"Total Run Time: {format_time(run_time)}"),
-                    indent_body_style,
-                )
+            avg_gpu_util = sum(gpu_values) / len(gpu_values) if gpu_values else None
+            avg_memory_util = (
+                sum(memory_values) / len(memory_values) if memory_values else None
             )
-            if run_time_exp_count > 0:
-                avg = run_time / run_time_exp_count
+
+            # Get GPU hours for this workspace/project
+            gpu_duration_ms = result.get("total_gpu_duration_ms", 0)
+
+            # Use KeepTogether to prevent breaking a workspace/project across pages
+            workspace_content = [
+                Paragraph(escape(f"{wp}:"), bold_body_style),
+                Paragraph(escape(f"Experiments: {exp_count:,}"), indent_body_style),
+            ]
+
+            if run_time > 0:
                 workspace_content.append(
                     Paragraph(
-                        escape(f"Average Run Time: {format_time(avg)}"),
+                        escape(f"Total Run Time: {format_time(run_time)}"),
+                        indent_body_style,
+                    )
+                )
+                if run_time_exp_count > 0:
+                    avg = run_time / run_time_exp_count
+                    workspace_content.append(
+                        Paragraph(
+                            escape(f"Average Run Time: {format_time(avg)}"),
+                            indent_body_style,
+                        )
+                    )
+
+            # Add GPU utilization statistics if available
+            if avg_gpu_util is not None:
+                workspace_content.append(
+                    Paragraph(
+                        escape(f"Average GPU Utilization: {avg_gpu_util:.1f}%"),
                         indent_body_style,
                     )
                 )
 
-        # Add GPU utilization statistics if available
-        if avg_gpu_util is not None:
+            if avg_memory_util is not None:
+                workspace_content.append(
+                    Paragraph(
+                        escape(
+                            f"Average GPU Memory Utilization: {avg_memory_util:.1f}%"
+                        ),
+                        indent_body_style,
+                    )
+                )
+
+            # Add GPU hours (always show, even if 0)
             workspace_content.append(
                 Paragraph(
-                    escape(f"Average GPU Utilization: {avg_gpu_util:.1f}%"),
+                    escape(f"Total GPU Hours: {format_gpu_hours(gpu_duration_ms)}"),
                     indent_body_style,
                 )
             )
 
-        if avg_memory_util is not None:
-            workspace_content.append(
-                Paragraph(
-                    escape(f"Average GPU Memory Utilization: {avg_memory_util:.1f}%"),
-                    indent_body_style,
-                )
-            )
-
-        flowables.append(KeepTogether(workspace_content))
-        flowables.append(Spacer(1, 0.1 * inch))
+            flowables.append(KeepTogether(workspace_content))
+            flowables.append(Spacer(1, 0.1 * inch))
 
     # Note: Footer is now drawn on every page via canvas callback, not as a flowable
 
@@ -1221,7 +1616,12 @@ def open_pdf(pdf_path, debug=False):
 
 
 def generate_usage_report(
-    api, workspace_projects, no_open=False, max_datasets_per_chart=None, debug=False
+    api,
+    workspace_projects,
+    no_open=False,
+    max_datasets_per_chart=None,
+    units="month",
+    debug=False,
 ):
     """
     Get usage report for one or more workspace/project combinations.
@@ -1231,6 +1631,8 @@ def generate_usage_report(
         workspace_projects: String or list of strings in format "workspace" or "workspace/project"
         no_open: If True, don't automatically open the generated PDF file
         max_datasets_per_chart: Maximum number of datasets per chart. If None, uses MAX_DATASETS_PER_CHART constant.
+        units: Time unit for grouping experiments ("month", "week", "day", or "hour"). Default is "month".
+        debug: If True, print debug information
 
     Returns:
         dict: The usage report data
@@ -1273,7 +1675,7 @@ def generate_usage_report(
         ) as pbar:
             for workspace, project in workspace_project_pairs:
                 results = generate_experiment_chart(
-                    api, workspace, project, debug=debug
+                    api, workspace, project, units=units, debug=debug
                 )
                 if results:
                     all_results.append(results)
@@ -1300,11 +1702,11 @@ def generate_usage_report(
     # Calculate overall date range across all results (for consistent chart scaling)
     all_date_ranges = [r.get("date_range") for r in all_results if r.get("date_range")]
     if all_date_ranges:
-        start_dates = [datetime.strptime(dr[0], "%Y-%m") for dr in all_date_ranges]
-        end_dates = [datetime.strptime(dr[1], "%Y-%m") for dr in all_date_ranges]
+        start_dates = [parse_time_key(dr[0], units) for dr in all_date_ranges]
+        end_dates = [parse_time_key(dr[1], units) for dr in all_date_ranges]
         overall_date_range = (
-            min(start_dates).strftime("%Y-%m"),
-            max(end_dates).strftime("%Y-%m"),
+            format_time_key(min(start_dates), units),
+            format_time_key(max(end_dates), units),
         )
     else:
         overall_date_range = None
@@ -1350,6 +1752,7 @@ def generate_usage_report(
                 chunk,
                 png_filename=chunk_filename,
                 date_range=overall_date_range,
+                time_unit=units,
                 debug=debug,
             )
             if chart_filename:
@@ -1414,6 +1817,7 @@ def generate_usage_report(
             all_results,
             workspace_projects,
             website_name=website_name,
+            time_unit=units,
             debug=debug,
         )
 
@@ -1446,6 +1850,7 @@ def generate_usage_report(
                 chart_num=chart_idx + 1,
                 total_charts=len(chart_info),
                 chart_type="experiments",
+                time_unit=units,
                 debug=debug,
             )
 
@@ -1492,6 +1897,7 @@ def generate_usage_report(
                         png_filename=chunk_filename,
                         date_range=overall_date_range,
                         utilization_type="gpu",
+                        time_unit=units,
                         debug=debug,
                     )
                     if gpu_chart_filename:
@@ -1519,6 +1925,7 @@ def generate_usage_report(
                     chart_num=chart_idx + 1,
                     total_charts=len(gpu_chart_info),
                     chart_type="gpu",
+                    time_unit=units,
                     debug=debug,
                 )
 
@@ -1552,6 +1959,7 @@ def generate_usage_report(
                         png_filename=chunk_filename,
                         date_range=overall_date_range,
                         utilization_type="memory",
+                        time_unit=units,
                         debug=debug,
                     )
                     if memory_chart_filename:
@@ -1579,6 +1987,7 @@ def generate_usage_report(
                     chart_num=chart_idx + 1,
                     total_charts=len(memory_chart_info),
                     chart_type="memory",
+                    time_unit=units,
                     debug=debug,
                 )
 
