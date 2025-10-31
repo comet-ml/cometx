@@ -29,6 +29,7 @@ rich>=13.0.0
 scikit-learn
 scipy
 six
+streamlit
 syrupy>=4.0.0
 tqdm
 webbrowser
