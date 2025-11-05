@@ -50,7 +50,7 @@ Commands:
                 - hour: Group by hour (YYYY-MM-DD-HH format)
 
             --max-experiments-per-chart N
-                Maximum number of workspaces/projects per chart (default: 5).
+                Maximum number of workspaces/projects per chart (default: 100).
                 If more workspaces/projects are provided, multiple charts will be generated.
 
             --no-open
@@ -221,7 +221,7 @@ Examples:
     )
     usage_parser.add_argument(
         "--max-experiments-per-chart",
-        help="Maximum number of workspaces/projects per chart (default: 5). If more are provided, multiple charts will be generated.",
+        help="Maximum number of workspaces/projects per chart (default: 100). If more are provided, multiple charts will be generated.",
         type=int,
         default=None,
         metavar="N",

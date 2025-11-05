@@ -1,6 +1,6 @@
 # Migrating Projects/Experiments
 
-As described in the [README](README.md), you can instruct `cometx` to
+As described in the [README](https://github.com/comet-ml/cometx/blob/main/README.md), you can instruct `cometx` to
 download data from and copy data to:
 
 * experiment to experiment

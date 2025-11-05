@@ -28,7 +28,10 @@ If your installation does not support Comet Smart Keys, or your host is at an un
 ```shell
 cometx admin chargeback-report --host https://another-url.com
 ```
-The usage report contains the following fields in JSON format:
+
+## chargeback-report
+
+The chargeback report contains the following fields in JSON format:
 
 - **"numberOfUsers":** total user entries in the report
 - **"createdAt":** date the report was generated,
@@ -43,5 +46,75 @@ Each user entry in the report contains:
 - **“suspended”**: boolean flag true/false to indicate if the user has been suspended.
 - **“uiUsageCount”**: Number of UI interactions a user has made.
 - **“uiUsageUpdateTs”**: Timestamp of the last update to uiUsageCount.
-- **“sdkUsageCount”**: Number of SDK interactions a user has made.
-- **“sdkUsageUpdateTs”:** Timestamp of the last update to sdkUsageCount.
+- **"sdkUsageCount"**: Number of SDK interactions a user has made.
+- **"sdkUsageUpdateTs":** Timestamp of the last update to sdkUsageCount.
+
+## usage-report
+
+Generate a usage report with experiment counts and statistics for one or more workspaces/projects.
+
+### Basic Usage
+
+```shell
+cometx admin usage-report WORKSPACE
+cometx admin usage-report WORKSPACE/PROJECT
+cometx admin usage-report WORKSPACE1 WORKSPACE2
+cometx admin usage-report WORKSPACE/PROJECT1 WORKSPACE/PROJECT2
+```
+
+### Interactive Web App
+
+Launch an interactive Streamlit web app to select workspaces and projects from dropdown menus:
+
+```shell
+cometx admin usage-report --app
+```
+
+### Options
+
+- **`--units {month,week,day,hour}`**: Time unit for grouping experiments (default: `month`)
+  - `month`: Group by month (YYYY-MM format)
+  - `week`: Group by ISO week (YYYY-WW format)
+  - `day`: Group by day (YYYY-MM-DD format)
+  - `hour`: Group by hour (YYYY-MM-DD-HH format)
+
+- **`--max-experiments-per-chart N`**: Maximum number of workspaces/projects per chart (default: 100). If more workspaces/projects are provided, multiple charts will be generated.
+
+- **`--no-open`**: Don't automatically open the generated PDF file after generation.
+
+- **`--app`**: Launch interactive Streamlit web app instead of generating PDF.
+
+### Examples
+
+```shell
+# Generate a report for a single workspace
+cometx admin usage-report my-workspace
+
+# Generate a report for multiple projects
+cometx admin usage-report my-workspace/project1 my-workspace/project2
+
+# Generate a report grouped by week instead of month
+cometx admin usage-report workspace1 workspace2 --units week
+
+# Generate a report grouped by day without auto-opening
+cometx admin usage-report workspace --units day --no-open
+
+# Launch interactive web app
+cometx admin usage-report --app
+```
+
+### Output
+
+The usage report generates a PDF file containing:
+
+- **Summary statistics**: Total experiments, users, run times, GPU utilization
+- **Experiment count charts**: Grouped by the specified time unit (month, week, day, or hour)
+- **GPU utilization charts**: If GPU data is available for the experiments
+- **GPU memory utilization charts**: If GPU data is available for the experiments
+
+Multiple workspaces/projects are combined into a single chart with a legend. If more workspaces/projects are provided than the `--max-experiments-per-chart` limit, multiple charts will be generated.
+
+When using the `--app` flag, an interactive web interface is launched where you can:
+- Select workspace and project from dropdowns
+- View statistics and charts interactively
+- Change time units and regenerate reports

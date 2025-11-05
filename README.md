@@ -430,6 +430,7 @@ cometx admin [-h] [--host HOST] [--debug] ACTION [YEAR-MONTH]
 To perform admin functions
 
 cometx admin chargeback-report
+cometx admin usage-report
 
 ### Flags
 
@@ -437,6 +438,8 @@ cometx admin chargeback-report
 * `--debug` - If given, allow debugging
 
 For more information, `cometx admin --help`
+
+> **Note**: For detailed information on admin commands, see [README-ADMIN.md](https://github.com/comet-ml/cometx/blob/main/README-ADMIN.md).
 
 ## cometx smoke-test
 
