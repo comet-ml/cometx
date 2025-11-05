@@ -51,9 +51,10 @@ Each user entry in the report contains:
 
 ## usage-report
 
-Generate a usage report with experiment counts and statistics for one or more workspaces/projects.
+Generate a PDF usage report with experiment counts and statistics for one or more workspaces/projects, or
+start an interactive web application for dynamically creating charts and statistics.
 
-### Basic Usage
+### PDF Generation Basic Usage
 
 ```shell
 cometx admin usage-report WORKSPACE
@@ -70,7 +71,10 @@ Launch an interactive Streamlit web app to select workspaces and projects from d
 cometx admin usage-report --app
 ```
 
-### Options
+<img width="1638" height="839" alt="image" src="https://github.com/user-attachments/assets/abdeab5e-a138-43c9-baab-0a6aa070afb6" />
+
+
+### PDF Generation Options
 
 - **`--units {month,week,day,hour}`**: Time unit for grouping experiments (default: `month`)
   - `month`: Group by month (YYYY-MM format)
