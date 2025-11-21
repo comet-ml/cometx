@@ -424,18 +424,96 @@ For more information, `cometx update --help`
 ## cometx admin
 
 ```
-cometx admin [-h] [--host HOST] [--debug] ACTION [YEAR-MONTH]
+cometx admin [-h] [--host HOST] [--debug] ACTION [ARGUMENTS ...]
 ```
 
 To perform admin functions
 
-cometx admin chargeback-report
-cometx admin usage-report
+### Actions
 
-### Flags
+#### chargeback-report
+
+Generate a chargeback report from the Comet server.
+
+```
+cometx admin chargeback-report [YEAR-MONTH]
+```
+
+**Arguments:**
+* `YEAR-MONTH` (optional, deprecated) - The YEAR-MONTH to run report for, eg 2024-09. If not provided, generates a report for all available periods.
+
+**Output:**
+* Saves a JSON file: `comet-chargeback-report.json` (or `comet-chargeback-report-{YEAR-MONTH}.json`)
+
+**Examples:**
+```
+cometx admin chargeback-report
+<<<<<<< Updated upstream
+cometx admin usage-report
+=======
+cometx admin chargeback-report 2024-09
+```
+>>>>>>> Stashed changes
+
+#### usage-report
+
+Generate a usage report with experiment counts and statistics for one or more workspaces/projects.
+
+```
+cometx admin usage-report WORKSPACE [WORKSPACE ...]
+cometx admin usage-report WORKSPACE/PROJECT [WORKSPACE/PROJECT ...]
+cometx admin usage-report --app
+```
+
+**Arguments:**
+* `WORKSPACE_PROJECT` (required, one or more, unless using `--app`) - One or more `WORKSPACE` or `WORKSPACE/PROJECT` to run usage report for. If `WORKSPACE` is provided without a project, all projects in that workspace will be included.
+
+**Options:**
+* `--units {month,week,day,hour}` - Time unit for grouping experiments (default: month)
+  * `month`: Group by month (YYYY-MM format)
+  * `week`: Group by ISO week (YYYY-WW format)
+  * `day`: Group by day (YYYY-MM-DD format)
+  * `hour`: Group by hour (YYYY-MM-DD-HH format)
+* `--max-experiments-per-chart N` - Maximum number of workspaces/projects per chart (default: 5). If more workspaces/projects are provided, multiple charts will be generated.
+* `--no-open` - Don't automatically open the generated PDF file after generation.
+* `--app` - Launch interactive Streamlit web app instead of generating PDF. When using this option, you don't need to specify workspace/project arguments.
+
+**Output:**
+* **PDF Report** (default): Generates a PDF report containing:
+  * Summary statistics (total experiments, users, run times, GPU utilization)
+  * Experiment count charts by time unit
+  * GPU utilization charts (if GPU data is available)
+  * GPU memory utilization charts (if GPU data is available)
+* **Interactive Web App** (with `--app`): Launches a Streamlit web interface where you can:
+  * Select workspace and project from dropdowns
+  * View statistics and charts interactively
+  * Change time units and regenerate reports
+  * View "All Projects" from a workspace
+
+**Examples:**
+```
+# Generate report for a single workspace
+cometx admin usage-report my-workspace
+
+# Generate report for multiple projects
+cometx admin usage-report my-workspace/project1 my-workspace/project2
+
+# Generate report with weekly grouping
+cometx admin usage-report workspace1 workspace2 --units week
+
+# Generate report with daily grouping, don't auto-open
+cometx admin usage-report workspace --units day --no-open
+
+# Launch interactive web app
+cometx admin usage-report --app
+```
+
+### Global Flags
 
 * `--host HOST` - Override the HOST URL
 * `--debug` - If given, allow debugging
+* `--api-key API_KEY` - Set the COMET_API_KEY
+* `--url-override URL_OVERRIDE` - Set the COMET_URL_OVERRIDE
 
 For more information, `cometx admin --help`
 
