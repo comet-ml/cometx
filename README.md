@@ -508,6 +508,57 @@ cometx admin usage-report workspace --units day --no-open
 cometx admin usage-report --app
 ```
 
+#### gpu-report
+
+Generate a GPU usage report for one or more workspaces/projects with detailed GPU metrics analysis.
+
+```
+cometx admin gpu-report WORKSPACE [WORKSPACE ...] --start-date DATE
+cometx admin gpu-report WORKSPACE/PROJECT [WORKSPACE/PROJECT ...] --start-date DATE
+```
+
+**Arguments:**
+* `WORKSPACE_PROJECT` (required, one or more) - One or more `WORKSPACE` or `WORKSPACE/PROJECT` to run GPU report for. If `WORKSPACE` is provided without a project, all projects in that workspace will be included.
+
+**Options:**
+* `--start-date DATE` (required) - Start date for the report in YYYY-MM-DD format (e.g., `2024-01-01`)
+* `--end-date DATE` (optional) - End date for the report in YYYY-MM-DD format (e.g., `2024-12-31`). If not provided, reports from start-date onwards.
+* `--metrics METRIC [METRIC ...]` (optional) - List of metrics to track. If not provided, uses default GPU metrics:
+  * `sys.gpu.0.gpu_utilization` - GPU utilization percentage
+  * `sys.gpu.0.memory_utilization` - GPU memory utilization percentage
+  * `sys.gpu.0.used_memory` - GPU memory used in GB
+  * `sys.gpu.0.power_usage` - GPU power usage in watts
+  * `sys.gpu.0.temperature` - GPU temperature in Celsius
+* `--open` - Automatically open the generated PDF file after generation.
+
+**Output:**
+* Generates a PDF report containing:
+  * Summary statistics (total experiments, workspaces, metrics tracked)
+  * Breakdown by workspace (if multiple workspaces)
+  * Average metrics by workspace charts (bar charts)
+  * Maximum metrics by month charts (time series line charts with workspace legend)
+* Generates individual PNG chart files for each metric:
+  * `gpu_report_avg_{metric}_by_workspace.png` - Average metric value per workspace
+  * `gpu_report_max_{metric}_by_month.png` - Maximum metric value per month over time
+
+**Examples:**
+```
+# Generate report for a single workspace from a start date
+cometx admin gpu-report my-workspace --start-date 2024-01-01
+
+# Generate report with date range
+cometx admin gpu-report my-workspace --start-date 2024-01-01 --end-date 2024-12-31
+
+# Generate report for multiple projects
+cometx admin gpu-report workspace1/project1 workspace2 --start-date 2024-01-01
+
+# Generate report with custom metrics
+cometx admin gpu-report my-workspace --start-date 2024-01-01 --metrics sys.gpu.0.gpu_utilization sys.gpu.0.memory_utilization
+
+# Generate report and automatically open PDF
+cometx admin gpu-report my-workspace --start-date 2024-01-01 --open
+```
+
 ### Global Flags
 
 * `--host HOST` - Override the HOST URL
