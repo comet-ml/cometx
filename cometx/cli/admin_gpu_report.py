@@ -477,19 +477,45 @@ def create_monthly_max_chart(
         safe_metric = metric_name.replace(".", "_").replace("/", "_")
         png_filename = f"gpu_report_max_{safe_metric}_by_month.png"
 
-    # Collect all unique workspaces and months
+    # Collect all unique workspaces and existing months
     all_workspaces = set()
-    all_months = sorted(data.keys())
+    existing_months = sorted(data.keys())
 
     for month_data in data.values():
         all_workspaces.update(month_data.keys())
 
     all_workspaces = sorted(all_workspaces)
 
-    if not all_workspaces or not all_months:
+    if not all_workspaces or not existing_months:
         if debug:
             print(f"No workspace or month data for metric {metric_name}")
         return None
+
+    # Generate complete list of months from earliest to latest
+    if len(existing_months) > 0:
+        # Parse first and last month
+        start_year, start_month = map(int, existing_months[0].split("-"))
+        end_year, end_month = map(int, existing_months[-1].split("-"))
+
+        # Generate all months between start and end
+        all_months = []
+        current_year = start_year
+        current_month = start_month
+
+        while True:
+            month_key = f"{current_year:04d}-{current_month:02d}"
+            all_months.append(month_key)
+
+            if current_year == end_year and current_month == end_month:
+                break
+
+            # Move to next month
+            current_month += 1
+            if current_month > 12:
+                current_month = 1
+                current_year += 1
+    else:
+        all_months = existing_months
 
     # Create line chart
     fig, ax = plt.subplots(figsize=(14, 8))
@@ -501,7 +527,7 @@ def create_monthly_max_chart(
     for i, workspace in enumerate(all_workspaces):
         values = []
         for month in all_months:
-            value = data[month].get(workspace)
+            value = data.get(month, {}).get(workspace)
             values.append(value if value is not None else None)
 
         ax.plot(
