@@ -90,6 +90,33 @@ Commands:
         Output:
             Returns a dictionary of metrics keyed by experiment key.
 
+    optimizer-report
+        Generate a report for an optimizer instance.
+
+        Usage:
+            cometx admin optimizer-report OPTIMIZER_ID
+            cometx admin optimizer-report OPTIMIZER_ID --app
+
+        Arguments:
+            OPTIMIZER_ID (required)
+                The optimizer instance ID to generate a report for.
+
+        Options:
+            --app
+                Launch interactive Streamlit web app instead of generating JSON file.
+
+        Output:
+            Without --app:
+                Generates a JSON file containing all dashboard/data items:
+                - optimizer-report-{OPTIMIZER_ID}.json
+
+            With --app:
+                Launches an interactive web interface where you can:
+                - View optimizer dashboard with statistics
+                - Filter by status
+                - Navigate through paginated job assignments
+                - View summary statistics
+
 Global Options (available for all commands):
     --api-key KEY
         Set the COMET_API_KEY for authentication.
@@ -113,17 +140,21 @@ Examples:
     cometx admin gpu-report my-workspace --start-date 2024-01-01
     cometx admin gpu-report my-workspace --start-date 2024-01-01 --end-date 2024-12-31
     cometx admin gpu-report workspace1/project1 workspace2 --start-date 2024-01-01 --metrics sys.gpu.0.gpu_utilization
+    cometx admin optimizer-report abc123def456
+    cometx admin optimizer-report abc123def456 --app
 
 """
 
 import argparse
 import json
+import os
 import sys
 from urllib.parse import urlparse
 
 from comet_ml import API
 
 from .admin_gpu_report import main as gpu_report_main
+from .admin_optimizer_report import generate_json_report
 from .admin_usage_report import generate_usage_report
 
 ADDITIONAL_ARGS = False
@@ -347,6 +378,54 @@ Examples:
         action="store_true",
     )
 
+    # optimizer-report subcommand
+    optimizer_report_description = """Generate a report for an optimizer instance.
+
+Arguments:
+    OPTIMIZER_ID (required)
+        The optimizer instance ID to generate a report for.
+
+Options:
+    --app
+        Launch interactive Streamlit web app instead of generating JSON file.
+
+Output:
+    Without --app:
+        Generates a JSON file containing all dashboard/data items:
+        - optimizer-report-{OPTIMIZER_ID}.json
+
+    With --app:
+        Launches an interactive web interface where you can:
+        - View optimizer dashboard with statistics
+        - Filter by status
+        - Navigate through paginated job assignments
+        - View summary statistics
+
+Examples:
+    cometx admin optimizer-report abc123def456
+    cometx admin optimizer-report abc123def456 --app
+"""
+    optimizer_parser = subparsers.add_parser(
+        "optimizer-report",
+        help="Generate a report for an optimizer instance",
+        description=optimizer_report_description,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    # Add global arguments to subparser so they show in help
+    add_global_arguments(optimizer_parser)
+    optimizer_parser.add_argument(
+        "OPTIMIZER_ID",
+        help="The optimizer instance ID to generate a report for",
+        metavar="OPTIMIZER_ID",
+        type=str,
+    )
+    optimizer_parser.add_argument(
+        "--app",
+        help="Launch interactive Streamlit web app instead of generating JSON file",
+        default=False,
+        action="store_true",
+    )
+
 
 def admin(parsed_args, remaining=None):
     # Called via `cometx admin ...`
@@ -391,8 +470,6 @@ def admin(parsed_args, remaining=None):
         elif parsed_args.ACTION == "usage-report":
             if parsed_args.app:
                 # Launch Streamlit app
-                import os
-                import sys
 
                 # Set environment variables if --api-key or --url-override were provided
                 if parsed_args.api_key:
@@ -478,6 +555,76 @@ def admin(parsed_args, remaining=None):
 
                     traceback.print_exc()
                 return
+        elif parsed_args.ACTION == "optimizer-report":
+            optimizer_id = parsed_args.OPTIMIZER_ID
+
+            if parsed_args.app:
+                # Launch Streamlit app
+                # Set environment variables if --api-key or --url-override were provided
+                if parsed_args.api_key:
+                    os.environ["COMET_API_KEY"] = parsed_args.api_key
+                if parsed_args.url_override:
+                    os.environ["COMET_URL_OVERRIDE"] = parsed_args.url_override
+
+                # Run the Streamlit app using streamlit's CLI
+                try:
+                    import streamlit.web.cli as stcli
+
+                    # Get the path to admin_optimizer_report.py
+                    optimizer_app_path = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)),
+                        "admin_optimizer_report.py",
+                    )
+
+                    # Set optimizer ID in environment so the app can access it
+                    # Use COMET_OPTIMIZER_ID if not already set
+                    if "COMET_OPTIMIZER_ID" not in os.environ:
+                        os.environ["COMET_OPTIMIZER_ID"] = optimizer_id
+
+                    # Launch streamlit with the app (Streamlit will automatically open the browser)
+                    sys.argv = ["streamlit", "run", optimizer_app_path]
+                    stcli.main()
+                except Exception as e:
+                    print(f"ERROR launching Streamlit app: {e}")
+                    if parsed_args.debug:
+                        raise
+                    return
+            else:
+                # Generate JSON report
+                try:
+                    # Get API key and optimizer URL from config or arguments
+                    from comet_ml.config import get_config, get_optimizer_address
+
+                    config_obj = get_config()
+
+                    # Get API key from parsed args, config, or environment
+                    api_key = parsed_args.api_key
+                    if not api_key:
+                        try:
+                            api_key = config_obj["comet.api_key"]
+                        except (KeyError, TypeError):
+                            api_key = os.environ.get("COMET_API_KEY")
+
+                    # Get optimizer URL from config
+                    optimizer_url = get_optimizer_address(config_obj)
+
+                    result = generate_json_report(
+                        optimizer_id=optimizer_id,
+                        api_key=api_key,
+                        optimizer_url=optimizer_url,
+                    )
+                    if result:
+                        print(f"\nOptimizer report generated successfully: {result}")
+                    else:
+                        print("ERROR: Failed to generate optimizer report")
+                        return
+                except Exception as e:
+                    print("ERROR: " + str(e))
+                    if parsed_args.debug:
+                        import traceback
+
+                        traceback.print_exc()
+                    return
 
     except KeyboardInterrupt:
         if parsed_args.debug:

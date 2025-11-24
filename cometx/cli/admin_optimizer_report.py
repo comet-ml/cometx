@@ -1,50 +1,13 @@
-#!/usr/bin/env python3
-"""
-Streamlit Dashboard for Comet Optimizer
-
-A comprehensive dashboard for viewing optimizer runs with sorting, filtering,
-and pagination for large datasets.
-
-Usage:
-    streamlit run streamlit_dashboard.py
-"""
-
 import json
+import logging
+import os
+import warnings
 from datetime import datetime
 
 import pandas as pd
 import requests
 import streamlit as st
 from comet_ml.config import get_config, get_optimizer_address
-
-# Page configuration
-st.set_page_config(
-    page_title="Comet Optimizer Dashboard",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-# Custom CSS for better styling
-st.markdown(
-    """
-    <style>
-    .main-header {
-        font-size: 2.5rem;
-        font-weight: 600;
-        color: #667eea;
-        margin-bottom: 1rem;
-    }
-    .metric-card {
-        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-        padding: 1rem;
-        border-radius: 8px;
-        text-align: center;
-    }
-    </style>
-""",
-    unsafe_allow_html=True,
-)
 
 
 def fetch_dashboard_data(
@@ -106,27 +69,213 @@ def get_status_emoji(status):
         return "⚪"
 
 
-def main():
-    # Get configuration from comet_ml.config
-    config = get_config()
-    api_key = config["comet.api_key"]
-    optimizer_url = get_optimizer_address(config)
+def fetch_all_dashboard_data(optimizer_id, api_key, optimizer_url, status_filter=None):
+    """
+    Fetch all dashboard data for an optimizer by paginating through all pages.
+
+    Args:
+        optimizer_id: The optimizer instance ID
+        api_key: API key for authentication
+        optimizer_url: Base URL for the optimizer service
+        status_filter: Optional list of statuses to filter by
+
+    Returns:
+        tuple: (all_data_dict, error_message)
+        - all_data_dict: Dictionary containing all dashboard data and jobs
+        - error_message: None if successful, error string otherwise
+    """
+    all_jobs = []
+    page = 1
+    page_size = 100
+    first_page_data = None
+
+    while True:
+        data, error = fetch_dashboard_data(
+            optimizer_id,
+            api_key,
+            optimizer_url,
+            status_filter=status_filter,
+            page=page,
+            page_size=page_size,
+        )
+
+        if error:
+            return None, error
+
+        if not data or data.get("code") != 200:
+            return None, f"Failed to load data: {data}"
+
+        # Store first page data for metadata
+        if page == 1:
+            first_page_data = data.copy()
+            first_page_data.pop("jobs", None)  # Remove jobs, we'll add all jobs later
+
+        # Collect jobs from this page
+        jobs = data.get("jobs", [])
+        if jobs:
+            all_jobs.extend(jobs)
+
+        # Check if there are more pages
+        pagination = data.get("pagination", {})
+        total_pages = pagination.get("total_pages", 1)
+
+        if page >= total_pages:
+            break
+
+        page += 1
+
+    # Combine all data
+    if first_page_data:
+        first_page_data["jobs"] = all_jobs
+        first_page_data["pagination"] = {
+            "total_jobs": len(all_jobs),
+            "total_pages": 1,  # All jobs are now in one "page"
+            "current_page": 1,
+            "page_size": len(all_jobs),
+        }
+        return first_page_data, None
+
+    return None, "No data retrieved"
+
+
+def generate_json_report(
+    optimizer_id, api_key=None, optimizer_url=None, output_file=None
+):
+    """
+    Generate a JSON report of all dashboard/data items for an optimizer.
+
+    Args:
+        optimizer_id: The optimizer instance ID
+        api_key: Optional API key (uses config if not provided)
+        optimizer_url: Optional optimizer URL (uses config if not provided)
+        output_file: Optional output file path (defaults to optimizer-report-{optimizer_id}.json)
+
+    Returns:
+        str: Path to the generated JSON file, or None on error
+    """
+    # Get configuration if not provided
+    if api_key is None or optimizer_url is None:
+        config = get_config()
+        if api_key is None:
+            try:
+                api_key = config["comet.api_key"]
+            except (KeyError, TypeError):
+                api_key = None
+        if optimizer_url is None:
+            optimizer_url = get_optimizer_address(config)
+
+    if not api_key:
+        print("ERROR: API key is required. Set COMET_API_KEY or use --api-key flag.")
+        return None
+
+    if not optimizer_url:
+        print("ERROR: Optimizer URL is required.")
+        return None
+
+    print(f"Fetching all dashboard data for optimizer {optimizer_id}...")
+
+    # Fetch all data
+    all_data, error = fetch_all_dashboard_data(optimizer_id, api_key, optimizer_url)
+
+    if error:
+        print(f"ERROR: {error}")
+        return None
+
+    # Determine output filename
+    if output_file is None:
+        output_file = f"optimizer-report-{optimizer_id}.json"
+
+    # Write JSON file
+    try:
+        with open(output_file, "w") as f:
+            json.dump(all_data, f, indent=2)
+        print(f"JSON report saved to: {output_file}")
+        return output_file
+    except Exception as e:
+        print(f"ERROR writing JSON file: {e}")
+        return None
+
+
+def run_streamlit_app():
+    """Run the Streamlit app for optimizer dashboard."""
+
+    # Suppress the harmless ScriptRunContext warning from Streamlit's logger
+    # Only set up filters when actually running in Streamlit context
+    class ScriptRunContextFilter(logging.Filter):
+        def filter(self, record):
+            return (
+                "missing ScriptRunContext" not in record.getMessage()
+                and "Session state does not function" not in record.getMessage()
+            )
+
+    # Apply filter to Streamlit loggers
+    streamlit_logger = logging.getLogger(
+        "streamlit.runtime.scriptrunner_utils.script_run_context"
+    )
+    streamlit_logger.addFilter(ScriptRunContextFilter())
+    # Also filter general streamlit warnings
+    logging.getLogger("streamlit").addFilter(ScriptRunContextFilter())
+
+    # Also suppress Python warnings
+    warnings.filterwarnings("ignore", message=".*missing ScriptRunContext.*")
+    warnings.filterwarnings("ignore", message=".*Session state does not function.*")
+
+    # Page configuration - must be first Streamlit call
+    st.set_page_config(
+        page_title="Comet Optimizer Dashboard",
+        page_icon="📊",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+
+    # Custom CSS for better styling
+    st.markdown(
+        """
+        <style>
+        .main-header {
+            font-size: 2.5rem;
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 1rem;
+        }
+        .metric-card {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            padding: 1rem;
+            border-radius: 8px;
+            text-align: center;
+        }
+        </style>
+    """,
+        unsafe_allow_html=True,
+    )
+
+    # Get configuration from comet_ml.config (after Streamlit is initialized)
+    try:
+        config = get_config()
+        api_key = config["comet.api_key"]
+        optimizer_url = get_optimizer_address(config)
+    except Exception as e:
+        st.error(f"Failed to get configuration: {e}")
+        return
 
     # Sidebar for optimizer ID input
     with st.sidebar:
-        st.header("📊 Optimizer Dashboard")
+        st.header("📊 Dashboard Settings")
         st.markdown("---")
 
+        # Get optimizer ID from query params, environment, or user input
+        default_id = st.query_params.get("id", "") or os.environ.get(
+            "COMET_OPTIMIZER_ID", ""
+        )
         optimizer_id = st.text_input(
             "Optimizer ID",
-            value=st.query_params.get("id", ""),
+            value=default_id,
             help="Enter the optimizer instance ID",
         )
 
         st.markdown("---")
         st.markdown("### Configuration")
         st.text(f"Server: {optimizer_url}")
-        st.text(f"API Key: {'*' * 20 if api_key else 'Not set'}")
 
         # Filters
         st.markdown("---")
@@ -456,5 +605,12 @@ def main():
         st.caption(f"🕒 Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 
+def main():
+    """Main entry point for Streamlit app."""
+    run_streamlit_app()
+
+
+# Streamlit will execute this when the file is run
+# Only run if this is being executed by Streamlit
 if __name__ == "__main__":
     main()
