@@ -63,6 +63,33 @@ Commands:
             - GPU utilization charts (if GPU data is available)
             - GPU memory utilization charts (if GPU data is available)
 
+    gpu-report
+        Generate a GPU usage report for one or more workspaces/projects.
+
+        Usage:
+            cometx admin gpu-report WORKSPACE [WORKSPACE ...] --start-date DATE
+            cometx admin gpu-report WORKSPACE/PROJECT [WORKSPACE/PROJECT ...] --start-date DATE
+
+        Arguments:
+            WORKSPACE_PROJECT (required, one or more)
+                One or more WORKSPACE or WORKSPACE/PROJECT to run GPU report for.
+                If WORKSPACE is provided without a project, all projects in that workspace will be included.
+
+        Options:
+            --start-date DATE
+                Start date for the report in YYYY-MM-DD format (required).
+
+            --end-date DATE
+                End date for the report in YYYY-MM-DD format (optional).
+                If not provided, reports from start-date onwards.
+
+            --metrics METRIC [METRIC ...]
+                List of metrics to track (optional).
+                If not provided, uses default GPU metrics.
+
+        Output:
+            Returns a dictionary of metrics keyed by experiment key.
+
 Global Options (available for all commands):
     --api-key KEY
         Set the COMET_API_KEY for authentication.
@@ -83,6 +110,9 @@ Examples:
     cometx admin usage-report my-workspace/project1 my-workspace/project2
     cometx admin usage-report workspace1 workspace2 --units week
     cometx admin usage-report workspace --units day --no-open
+    cometx admin gpu-report my-workspace --start-date 2024-01-01
+    cometx admin gpu-report my-workspace --start-date 2024-01-01 --end-date 2024-12-31
+    cometx admin gpu-report workspace1/project1 workspace2 --start-date 2024-01-01 --metrics sys.gpu.0.gpu_utilization
 
 """
 
@@ -93,6 +123,7 @@ from urllib.parse import urlparse
 
 from comet_ml import API
 
+from .admin_gpu_report import main as gpu_report_main
 from .admin_usage_report import generate_usage_report
 
 ADDITIONAL_ARGS = False
@@ -234,6 +265,88 @@ Examples:
         type=str,
     )
 
+    # gpu-report subcommand
+    gpu_report_description = """Generate a GPU usage report for one or more workspaces/projects.
+
+Arguments:
+    WORKSPACE_PROJECT (required, one or more)
+        One or more WORKSPACE or WORKSPACE/PROJECT to run GPU report for.
+        If WORKSPACE is provided without a project, all projects in that workspace will be included.
+
+Options:
+    --start-date DATE
+        Start date for the report in YYYY-MM-DD format (required).
+
+    --end-date DATE
+        End date for the report in YYYY-MM-DD format (optional).
+        If not provided, reports from start-date onwards.
+
+    --metrics METRIC [METRIC ...]
+        List of metrics to track (optional).
+        If not provided, uses default GPU metrics:
+        - sys.gpu.0.gpu_utilization
+        - sys.gpu.0.memory_utilization
+        - sys.gpu.0.used_memory
+        - sys.gpu.0.power_usage
+        - sys.gpu.0.temperature
+
+    --open
+        Automatically open the generated PDF file after generation.
+
+Output:
+    Generates a PDF report containing:
+    - Summary statistics (total experiments, workspaces, metrics tracked)
+    - Average metrics by workspace charts
+    - Maximum metrics by month charts
+
+Examples:
+    cometx admin gpu-report my-workspace --start-date 2024-01-01
+    cometx admin gpu-report my-workspace --start-date 2024-01-01 --end-date 2024-12-31
+    cometx admin gpu-report workspace1/project1 workspace2 --start-date 2024-01-01
+    cometx admin gpu-report my-workspace --start-date 2024-01-01 --metrics sys.gpu.0.gpu_utilization sys.gpu.0.memory_utilization
+    cometx admin gpu-report my-workspace --start-date 2024-01-01 --open
+"""
+    gpu_parser = subparsers.add_parser(
+        "gpu-report",
+        help="Generate a GPU usage report for one or more workspaces/projects",
+        description=gpu_report_description,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    # Add global arguments to subparser so they show in help
+    add_global_arguments(gpu_parser)
+    gpu_parser.add_argument(
+        "WORKSPACE_PROJECT",
+        nargs="+",
+        help="One or more WORKSPACE or WORKSPACE/PROJECT to run GPU report for",
+        metavar="WORKSPACE",
+        type=str,
+    )
+    gpu_parser.add_argument(
+        "--start-date",
+        help="Start date for the report in YYYY-MM-DD format (required)",
+        type=str,
+        required=True,
+    )
+    gpu_parser.add_argument(
+        "--end-date",
+        help="End date for the report in YYYY-MM-DD format (optional)",
+        type=str,
+        default=None,
+    )
+    gpu_parser.add_argument(
+        "--metrics",
+        help="List of metrics to track (optional, uses defaults if not provided)",
+        nargs="+",
+        type=str,
+        default=None,
+    )
+    gpu_parser.add_argument(
+        "--open",
+        help="Automatically open the generated PDF file after generation",
+        default=False,
+        action="store_true",
+    )
+
 
 def admin(parsed_args, remaining=None):
     # Called via `cometx admin ...`
@@ -326,6 +439,45 @@ def admin(parsed_args, remaining=None):
                 except Exception as e:
                     print("ERROR: " + str(e))
                     return
+        elif parsed_args.ACTION == "gpu-report":
+            workspace_projects = parsed_args.WORKSPACE_PROJECT
+            start_date = parsed_args.start_date
+            end_date = parsed_args.end_date
+            metrics = parsed_args.metrics
+
+            try:
+                result = gpu_report_main(
+                    workspace_projects=workspace_projects,
+                    start_date=start_date,
+                    end_date=end_date,
+                    metrics=metrics,
+                    max_workers=None,  # Use default
+                )
+                if result:
+                    num_experiments = len(result.get("metrics", {}))
+                    num_charts = len(result.get("charts", []))
+                    pdf_file = result.get("pdf_file")
+                    print(
+                        f"\nGPU report completed. Processed {num_experiments} experiments."
+                    )
+                    if num_charts > 0:
+                        print(f"Generated {num_charts} charts:")
+                        for chart_file in result.get("charts", []):
+                            print(f"  - {chart_file}")
+                    if pdf_file:
+                        print(f"PDF report: {pdf_file}")
+                        # Open PDF if --open flag is set
+                        if parsed_args.open:
+                            from .admin_gpu_report import open_pdf
+
+                            open_pdf(pdf_file, debug=parsed_args.debug)
+            except Exception as e:
+                print("ERROR: " + str(e))
+                if parsed_args.debug:
+                    import traceback
+
+                    traceback.print_exc()
+                return
 
     except KeyboardInterrupt:
         if parsed_args.debug:
