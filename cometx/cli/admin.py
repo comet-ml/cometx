@@ -306,7 +306,7 @@ Arguments:
 
 Options:
     --start-date DATE
-        Start date for the report in YYYY-MM-DD format (required).
+        Start date for the report in YYYY-MM-DD format (optional, collects all data if not provided).
 
     --end-date DATE
         End date for the report in YYYY-MM-DD format (optional).
@@ -324,18 +324,35 @@ Options:
     --open
         Automatically open the generated PDF file after generation.
 
+    --app
+        Launch interactive Streamlit web app instead of generating PDF.
+        The JSON file will be generated first and automatically loaded in the app.
+        The app allows you to interactively change aggregation (workspace, project, user),
+        time units (year, month, week, day), and date ranges.
+
 Output:
-    Generates a PDF report containing:
-    - Summary statistics (total experiments, workspaces, metrics tracked)
-    - Average metrics by workspace charts
-    - Maximum metrics by month charts
+    Without --app:
+        Generates a PDF report and JSON file containing:
+        - Summary statistics (total experiments, workspaces, metrics tracked)
+        - Average metrics by workspace charts
+        - Maximum metrics by month charts
+        - JSON file: gpu_report_{workspace_projects}.json
+
+    With --app:
+        Launches an interactive web interface where you can:
+        - Change aggregation (workspace, project, user)
+        - Change time units (year, month, week, day)
+        - Select start and end dates from the data
+        - View charts for each metric
 
 Examples:
+    cometx admin gpu-report my-workspace
     cometx admin gpu-report my-workspace --start-date 2024-01-01
     cometx admin gpu-report my-workspace --start-date 2024-01-01 --end-date 2024-12-31
-    cometx admin gpu-report workspace1/project1 workspace2 --start-date 2024-01-01
-    cometx admin gpu-report my-workspace --start-date 2024-01-01 --metrics sys.gpu.0.gpu_utilization sys.gpu.0.memory_utilization
-    cometx admin gpu-report my-workspace --start-date 2024-01-01 --open
+    cometx admin gpu-report workspace1/project1 workspace2
+    cometx admin gpu-report my-workspace --metrics sys.gpu.0.gpu_utilization sys.gpu.0.memory_utilization
+    cometx admin gpu-report my-workspace --open
+    cometx admin gpu-report my-workspace --app
 """
     gpu_parser = subparsers.add_parser(
         "gpu-report",
@@ -347,16 +364,16 @@ Examples:
     add_global_arguments(gpu_parser)
     gpu_parser.add_argument(
         "WORKSPACE_PROJECT",
-        nargs="+",
+        nargs="*",
         help="One or more WORKSPACE or WORKSPACE/PROJECT to run GPU report for",
         metavar="WORKSPACE",
         type=str,
     )
     gpu_parser.add_argument(
         "--start-date",
-        help="Start date for the report in YYYY-MM-DD format (required)",
+        help="Start date for the report in YYYY-MM-DD format (optional, collects all data if not provided)",
         type=str,
-        required=True,
+        required=False,
     )
     gpu_parser.add_argument(
         "--end-date",
@@ -374,6 +391,12 @@ Examples:
     gpu_parser.add_argument(
         "--open",
         help="Automatically open the generated PDF file after generation",
+        default=False,
+        action="store_true",
+    )
+    gpu_parser.add_argument(
+        "--app",
+        help="Launch interactive Streamlit web app instead of generating PDF",
         default=False,
         action="store_true",
     )
@@ -517,44 +540,127 @@ def admin(parsed_args, remaining=None):
                     print("ERROR: " + str(e))
                     return
         elif parsed_args.ACTION == "gpu-report":
-            workspace_projects = parsed_args.WORKSPACE_PROJECT
+            workspace_projects = parsed_args.WORKSPACE_PROJECT or []
             start_date = parsed_args.start_date
             end_date = parsed_args.end_date
             metrics = parsed_args.metrics
 
-            try:
-                result = gpu_report_main(
-                    workspace_projects=workspace_projects,
-                    start_date=start_date,
-                    end_date=end_date,
-                    metrics=metrics,
-                    max_workers=None,  # Use default
-                )
-                if result:
-                    num_experiments = len(result.get("metrics", {}))
-                    num_charts = len(result.get("charts", []))
-                    pdf_file = result.get("pdf_file")
+            if parsed_args.app:
+                # Require workspace_projects for --app
+                if not workspace_projects:
                     print(
-                        f"\nGPU report completed. Processed {num_experiments} experiments."
+                        "ERROR: At least one workspace/project is required when using --app"
                     )
-                    if num_charts > 0:
-                        print(f"Generated {num_charts} charts:")
-                        for chart_file in result.get("charts", []):
-                            print(f"  - {chart_file}")
-                    if pdf_file:
-                        print(f"PDF report: {pdf_file}")
-                        # Open PDF if --open flag is set
-                        if parsed_args.open:
-                            from .admin_gpu_report import open_pdf
+                    return
 
-                            open_pdf(pdf_file, debug=parsed_args.debug)
-            except Exception as e:
-                print("ERROR: " + str(e))
-                if parsed_args.debug:
-                    import traceback
+                # Generate JSON first
+                json_file_path = None
+                try:
+                    print("Generating GPU report data...")
+                    result = gpu_report_main(
+                        workspace_projects=workspace_projects,
+                        start_date=start_date,
+                        end_date=end_date,
+                        metrics=metrics,
+                        max_workers=None,  # Use default
+                    )
+                    if result:
+                        json_file_path = result.get("json_file")
+                        if json_file_path:
+                            print(f"JSON report saved: {json_file_path}")
+                        else:
+                            print("ERROR: JSON file was not created")
+                            return
+                    else:
+                        print("ERROR: Failed to generate GPU report data")
+                        return
+                except Exception as e:
+                    print(f"ERROR: Could not generate JSON file: {e}")
+                    if parsed_args.debug:
+                        import traceback
 
-                    traceback.print_exc()
-                return
+                        traceback.print_exc()
+                    return
+
+                # Launch Streamlit app
+                # Set environment variables if --api-key or --url-override were provided
+                if parsed_args.api_key:
+                    os.environ["COMET_API_KEY"] = parsed_args.api_key
+                if parsed_args.url_override:
+                    os.environ["COMET_URL_OVERRIDE"] = parsed_args.url_override
+
+                # Run the Streamlit app using streamlit's CLI
+                try:
+                    import tempfile
+
+                    import streamlit.web.cli as stcli
+
+                    # Get the path to admin_gpu_app.py
+                    gpu_app_path = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)), "admin_gpu_app.py"
+                    )
+
+                    # Write JSON file path to a temp file
+                    # The Streamlit app will read this file
+                    temp_dir = tempfile.gettempdir()
+                    json_path_file = os.path.join(
+                        temp_dir, "comet_gpu_report_json_path.txt"
+                    )
+                    with open(json_path_file, "w") as f:
+                        f.write(os.path.abspath(json_file_path))
+
+                    # Launch streamlit with the app
+                    sys.argv = ["streamlit", "run", gpu_app_path]
+                    stcli.main()
+                except Exception as e:
+                    print(f"ERROR launching Streamlit app: {e}")
+                    if parsed_args.debug:
+                        raise
+                    return
+            else:
+                # Generate report (JSON is always saved by gpu_report_main)
+                if not workspace_projects:
+                    print(
+                        "ERROR: At least one workspace/project is required when not using --app"
+                    )
+                    return
+                try:
+                    result = gpu_report_main(
+                        workspace_projects=workspace_projects,
+                        start_date=start_date,
+                        end_date=end_date,
+                        metrics=metrics,
+                        max_workers=None,  # Use default
+                    )
+                    if result:
+                        num_experiments = len(result.get("metrics", {}))
+                        num_charts = len(result.get("charts", []))
+                        pdf_file = result.get("pdf_file")
+                        json_file = result.get("json_file")
+
+                        print(
+                            f"\nGPU report completed. Processed {num_experiments} experiments."
+                        )
+                        if num_charts > 0:
+                            print(f"Generated {num_charts} charts:")
+                            for chart_file in result.get("charts", []):
+                                print(f"  - {chart_file}")
+                        if json_file:
+                            print(f"JSON report: {json_file}")
+                        if pdf_file:
+                            print(f"PDF report: {pdf_file}")
+                            # Open PDF if --open flag is set
+                            if parsed_args.open:
+                                from .admin_gpu_report import open_pdf
+
+                                open_pdf(pdf_file, debug=parsed_args.debug)
+                except Exception as e:
+                    print("ERROR: " + str(e))
+                    if parsed_args.debug:
+                        import traceback
+
+                        traceback.print_exc()
+                    return
         elif parsed_args.ACTION == "optimizer-report":
             optimizer_id = parsed_args.OPTIMIZER_ID
 

@@ -8,6 +8,7 @@ Charts:
 """
 
 import datetime
+import json
 import os
 import warnings
 import webbrowser
@@ -68,15 +69,24 @@ def search(workspace, project_name, query):
 
 def get_experiment_data(workspace, project_name, start_date, end_date):
     # Build query with date range (inclusive start, exclusive end)
-    query = Metadata("start_server_timestamp") >= datetime.datetime(*start_date)
+    if start_date:
+        query = Metadata("start_server_timestamp") >= datetime.datetime(*start_date)
+    else:
+        # No start date filter - get all experiments
+        query = Metadata("start_server_timestamp") >= datetime.datetime(1970, 1, 1)
+
     if end_date:
         query = query & (
             Metadata("start_server_timestamp") < datetime.datetime(*end_date)
         )
     results = search(workspace, project_name, query)
+
     # Return a list of dictionaries, one per experiment
     return [
-        {key: data[key] for key in ["experimentKey", "server_timestamp"]}
+        {
+            "experimentKey": data.get("experimentKey"),
+            "server_timestamp": data.get("server_timestamp"),
+        }
         for data in results.get("experiments", [])
     ]
 
@@ -84,7 +94,7 @@ def get_experiment_data(workspace, project_name, start_date, end_date):
 def process_workspace_project(
     workspace: str,
     project_name: str,
-    start_date: Tuple[int, int, int],
+    start_date: Tuple[int, int, int] = None,
     end_date: Tuple[int, int, int] = None,
 ) -> Tuple[str, str, List[Dict[str, Any]]]:
     """Process a single workspace-project pair and return the result."""
@@ -92,6 +102,17 @@ def process_workspace_project(
         experiment_data = get_experiment_data(
             workspace, project_name, start_date, end_date
         )
+
+        # Get username map once per workspace/project pair (expensive operation)
+        # This ensures we only call it once per pair, not per experiment
+        username_map = get_username_map(workspace, project_name)
+
+        # Merge username into experiment data
+        for exp in experiment_data:
+            exp_key = exp.get("experimentKey")
+            if exp_key and exp_key in username_map:
+                exp["userName"] = username_map[exp_key]
+
         return (workspace, project_name, experiment_data)
     except Exception as e:
         console.print(f"[red]Error processing {workspace}/{project_name}: {e}[/red]")
@@ -99,7 +120,7 @@ def process_workspace_project(
 
 
 def collect_experiment_data(
-    workspace_project_pairs, max_workers, start_date, end_date=None
+    workspace_project_pairs, max_workers, start_date=None, end_date=None
 ):
     """Collect experiment data from workspace-project pairs in parallel."""
     all_data = []
@@ -986,13 +1007,15 @@ def parse_workspace_projects(api, workspace_projects):
     return workspace_project_pairs
 
 
-def main(workspace_projects, start_date, end_date=None, metrics=None, max_workers=None):
+def main(
+    workspace_projects, start_date=None, end_date=None, metrics=None, max_workers=None
+):
     """
     Main function for GPU report generation.
 
     Args:
         workspace_projects: List of workspace/project strings
-        start_date: Start date as tuple (year, month, day) or string YYYY-MM-DD
+        start_date: Start date as tuple (year, month, day) or string YYYY-MM-DD (optional, collects all data if not provided)
         end_date: End date as tuple (year, month, day) or string YYYY-MM-DD (optional)
         metrics: List of metric names to track (optional, uses defaults if not provided)
         max_workers: Number of parallel workers (optional, uses default if not provided)
@@ -1003,9 +1026,9 @@ def main(workspace_projects, start_date, end_date=None, metrics=None, max_worker
     global api
 
     # Parse dates if they're strings
-    if isinstance(start_date, str):
+    if start_date and isinstance(start_date, str):
         start_date = parse_date(start_date)
-    if isinstance(end_date, str):
+    if end_date and isinstance(end_date, str):
         end_date = parse_date(end_date)
 
     # Use defaults if not provided
@@ -1023,17 +1046,20 @@ def main(workspace_projects, start_date, end_date=None, metrics=None, max_worker
         console.print("[yellow]No workspace-project pairs found.[/yellow]")
         return {}
 
+    date_range_str = "All data (no date filter)"
+    if start_date:
+        date_range_str = f"{start_date[0]}-{start_date[1]:02d}-{start_date[2]:02d}"
+        if end_date:
+            date_range_str += f" to {end_date[0]}-{end_date[1]:02d}-{end_date[2]:02d}"
+        else:
+            date_range_str += " onwards"
+
     console.print(
         Panel.fit(
             "[bold blue]GPU Usage Data Collection[/bold blue]\n"
             f"Workspace-project pairs: {len(workspace_project_pairs)}\n"
             f"Metrics to track: {len(metrics)}\n"
-            f"Date range: {start_date[0]}-{start_date[1]:02d}-{start_date[2]:02d}"
-            + (
-                f" to {end_date[0]}-{end_date[1]:02d}-{end_date[2]:02d}"
-                if end_date
-                else " onwards"
-            ),
+            f"Date range: {date_range_str}",
             border_style="blue",
         )
     )
@@ -1130,10 +1156,22 @@ def main(workspace_projects, start_date, end_date=None, metrics=None, max_worker
         "charts": chart_files,
         "workspace_avg_data": workspace_avg_data,
         "monthly_max_data": monthly_max_data,
+        "experiment_map": experiment_map,
+        "metrics_to_track": metrics,
+        "workspace_projects": workspace_projects,
+        "start_date": start_date,
+        "end_date": end_date,
     }
 
+    # Always save JSON file
+    console.print("\n[bold]Step 4:[/bold] Saving JSON report...")
+    json_filename = save_json_report(result_data)
+
+    if json_filename:
+        result_data["json_file"] = json_filename
+
     # Generate PDF report
-    console.print("\n[bold]Step 4:[/bold] Generating PDF report...")
+    console.print("\n[bold]Step 5:[/bold] Generating PDF report...")
     pdf_filename = generate_pdf_report(
         result_data,
         workspace_projects,
@@ -1148,3 +1186,157 @@ def main(workspace_projects, start_date, end_date=None, metrics=None, max_worker
         )
 
     return result_data
+
+
+def save_json_report(result_data, json_filename=None):
+    """
+    Save the GPU report data to a JSON file.
+
+    Args:
+        result_data: Dictionary with result data from main()
+        json_filename: Optional filename for the JSON file
+
+    Returns:
+        str: The filename of the saved JSON file, or None on error
+    """
+    if not result_data:
+        return None
+
+    if json_filename is None:
+        # Generate a default filename based on workspace/projects
+        workspace_projects = result_data.get("workspace_projects", [])
+        if workspace_projects:
+            filename_parts = [wp.replace("/", "_") for wp in workspace_projects]
+            json_filename = f"gpu_report_{'_'.join(filename_parts)}.json"
+        else:
+            json_filename = "gpu_report.json"
+
+    try:
+        # Convert datetime objects and other non-serializable types to strings
+        serializable_data = {}
+        for key, value in result_data.items():
+            if key == "experiment_map":
+                # Convert experiment_map to a serializable format
+                serializable_data[key] = {
+                    k: {
+                        k2: (
+                            v2.isoformat() if isinstance(v2, datetime.datetime) else v2
+                        )
+                        for k2, v2 in v.items()
+                    }
+                    for k, v in value.items()
+                }
+            elif key == "metrics":
+                # Convert metrics to a serializable format
+                serializable_data[key] = {
+                    k: {
+                        k2: (
+                            v2.isoformat() if isinstance(v2, datetime.datetime) else v2
+                        )
+                        for k2, v2 in v.items()
+                    }
+                    for k, v in value.items()
+                }
+            elif key in ["start_date", "end_date"]:
+                # Convert date tuples to strings
+                if value:
+                    serializable_data[key] = f"{value[0]}-{value[1]:02d}-{value[2]:02d}"
+                else:
+                    serializable_data[key] = None
+            elif key == "charts":
+                # Keep charts as list of filenames
+                serializable_data[key] = value
+            elif key == "pdf_file":
+                # Keep PDF filename
+                serializable_data[key] = value
+            else:
+                # For other keys, try to serialize as-is
+                serializable_data[key] = value
+
+        with open(json_filename, "w") as f:
+            json.dump(serializable_data, f, indent=2, default=str)
+
+        console.print(
+            f"\n[bold green]✓[/bold green] [green]JSON report saved: {json_filename}[/green]"
+        )
+        return json_filename
+    except Exception as e:
+        console.print(f"[red]Error saving JSON file: {e}[/red]")
+        return None
+
+
+def get_username_map(workspace, project_name):
+    """
+    Given a workspace, project_name, return a map from experiment.id to username.
+    Uses pagination to handle large numbers of experiments.
+    """
+    username_map = {}
+    page = 1
+    page_size = 1000  # Reasonable page size to avoid timeouts
+
+    # Try pagination first - the API may or may not support pagination parameters
+    # We'll try with parameters first, and if that fails, fall back to single call
+    try_pagination = True
+
+    while True:
+        try:
+            # Try calling with pagination parameters first
+            if try_pagination:
+                try:
+                    response = api._client.get_project_experiments(
+                        workspace, project_name, page=page, page_size=page_size
+                    )
+                except TypeError:
+                    # API doesn't support pagination parameters, fall back to single call
+                    try_pagination = False
+                    response = api._client.get_project_experiments(
+                        workspace, project_name
+                    )
+            else:
+                # Already determined pagination isn't supported, make single call
+                response = api._client.get_project_experiments(workspace, project_name)
+
+            if not response or "experiments" not in response:
+                break
+
+            experiments = response["experiments"]
+            if not experiments:
+                break
+
+            # Extract username for each experiment
+            for metadata in experiments:
+                exp_key = metadata.get("experimentKey")
+                if exp_key:
+                    username_map[exp_key] = metadata.get("userName")
+
+            # If pagination isn't supported, we got all results in one call
+            if not try_pagination:
+                break
+
+            # Check if there are more pages
+            # Common pagination patterns:
+            # 1. Response has "nextPage" or "hasMore" field
+            # 2. Response has "totalPages" or "pageCount" field
+            # 3. If we got fewer results than page_size, we're done
+            if len(experiments) < page_size:
+                break
+
+            # Check for explicit pagination indicators
+            if "nextPage" in response and not response.get("nextPage"):
+                break
+            if "hasMore" in response and not response.get("hasMore"):
+                break
+            if "totalPages" in response and page >= response.get("totalPages", page):
+                break
+            if "pageCount" in response and page >= response.get("pageCount", page):
+                break
+
+            page += 1
+
+        except Exception as e:
+            console.print(
+                f"[yellow]Warning: Error fetching username map page {page} for {workspace}/{project_name}: {e}[/yellow]"
+            )
+            break
+
+    return username_map
