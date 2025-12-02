@@ -48,6 +48,7 @@ from . import (
     reproduce,
     smoke_test,
     update,
+    upload_optimizer_experiments,
 )
 
 
@@ -103,6 +104,9 @@ def main(raw_args=sys.argv[1:]):
     add_subparser(subparsers, reproduce, "reproduce")
     add_subparser(subparsers, config, "config")
     add_subparser(subparsers, smoke_test, "smoke-test")
+    add_subparser(
+        subparsers, upload_optimizer_experiments, "upload-optimizer-experiments"
+    )
 
     # Parse arguments
     args, rest = parser.parse_known_args(raw_args)

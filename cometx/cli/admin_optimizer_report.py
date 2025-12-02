@@ -65,6 +65,10 @@ def get_status_emoji(status):
         return "❌"
     elif status_lower in ["running", "assigned"]:
         return "🔄"
+    elif status_lower == "processing":
+        return "⚙️"
+    elif status_lower == "processed":
+        return "✔️"
     else:
         return "⚪"
 
@@ -289,7 +293,14 @@ def run_streamlit_app():
 
         status_filter = st.multiselect(
             "Filter by Status",
-            options=["completed", "aborted", "running", "assigned"],
+            options=[
+                "completed",
+                "aborted",
+                "running",
+                "assigned",
+                "processing",
+                "processed",
+            ],
             default=[],
             help="Select statuses to display (empty = all)",
             key="status_filter",
