@@ -160,7 +160,7 @@ If no RESOURCE is given it will download all of them.
 
 ### Flags
 
-* `--from from` - Source of data to copy. Should be: comet, wandb, or neptune
+* `--from from` - Source of data to copy. Should be: comet, wandb, or neptune. When using `--from neptune`, you must set the `NEPTUNE_API_TOKEN` environment variable.
 * `-i IGNORE [IGNORE ...], --ignore IGNORE [IGNORE ...]` - Resource(s) (or 'experiments') to ignore
 * `-j PARALLEL, --parallel PARALLEL` - The number of threads to use for parallel downloading; default (None) is based on CPUs
 * `-o OUTPUT, --output OUTPUT` - Output directory for downloads
