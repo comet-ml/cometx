@@ -255,6 +255,35 @@ def download(parsed_args, remaining=None):
                 print("Download aborted: %s" % str(exc))
         except KeyboardInterrupt:
             print("User canceled download by keyboard interrupt")
+    elif parsed_args.FROM == "neptune":
+        from ..framework.neptune import DownloadManager
+
+        dm = DownloadManager(
+            include=parsed_args.RESOURCE,
+            ignore=parsed_args.ignore,
+            output=parsed_args.output,
+            list_items=parsed_args.list,
+            flat=parsed_args.flat,
+            ask=parsed_args.ask,
+            filename=parsed_args.filename,
+            asset_type=parsed_args.asset_type,
+            sync=parsed_args.sync,
+            debug=parsed_args.debug,
+            query=parsed_args.query,
+            max_workers=max_workers,
+        )
+
+        try:
+            dm.download(parsed_args.PATH)
+            print("Waiting on threaded downloads...")
+            dm.end()
+        except Exception as exc:
+            if parsed_args.debug:
+                raise exc from None
+            else:
+                print("Download aborted: %s" % str(exc))
+        except KeyboardInterrupt:
+            print("User canceled download by keyboard interrupt")
 
 
 def main(args):
