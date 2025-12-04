@@ -8,6 +8,7 @@ download data from and copy data to:
 * workspace to workspace
 * Comet installation to Comet installation
 * WandB installation to Comet installation
+* Neptune installation to Comet installation
 
 This is useful when you want to migrate projects or experiments
 between different Comet instances or to Comet from different
@@ -96,9 +97,10 @@ You can also download data from other vendors using the `--from`
 flag. Currently, `cometx` supports:
 
 * `--from wandb`
+* `--from neptune`
 
-**Note that you need to be logged into wandb before downloading your
-data.**
+**For WandB**: Note that you need to be logged into wandb before downloading your
+data.
 
 For example:
 
@@ -108,13 +110,25 @@ cometx download --from wandb stacey/yolo-drive/1dwb18ia
 
 This will download the WandB run: https://wandb.ai/stacey/yolo-drive/runs/1dwb18ia
 
+**For Neptune**: You must set the `NEPTUNE_API_TOKEN` environment variable before downloading.
+
+For example:
+
+```shell
+export NEPTUNE_API_TOKEN="your-neptune-api-token"
+cometx download --from neptune WORKSPACE/PROJECT
+cometx download --from neptune WORKSPACE
+```
+
+The `--from neptune` option works like the other download frameworks and supports the same flags and resource filtering options.
+
 After download, the following `copy` commands will be relevant.
 
 #### Additional Download Flags
 
 These flags may be useful:
 
-* `--sync SYNC` - if additional data has been logged at wandb since last download. This is the level to sync at: all, experiment, project, or workspace
+* `--sync SYNC` - if additional data has been logged at the source (wandb, neptune, etc.) since last download. This is the level to sync at: all, experiment, project, or workspace
 
 ### Copying Data
 
@@ -211,7 +225,7 @@ For experiments, you can specify zero or more of these resource types:
 
 #### Download Options
 
-* `--from from` - Source of data to download. Options: comet or wandb
+* `--from from` - Source of data to download. Options: comet, wandb, or neptune. When using `--from neptune`, you must set the `NEPTUNE_API_TOKEN` environment variable.
 * `-i IGNORE, --ignore IGNORE` - Resource(s) (or 'experiments') to ignore
 * `-j PARALLEL, --parallel PARALLEL` - Number of threads to use for parallel downloading (default based on CPUs)
 * `-o OUTPUT, --output OUTPUT` - Output directory for downloads
