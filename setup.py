@@ -55,6 +55,7 @@ setup_args = dict(
         "tqdm",
         "matplotlib",
         "streamlit",
+        "boto3",
     ],
     extras_require={
         "all": [
