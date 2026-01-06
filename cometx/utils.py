@@ -97,6 +97,8 @@ def display_invalid_api_key(api_key=None, cloud_url=None):
 
 
 def get_query_experiments(api, query_string, workspace, project_name):
+    from datetime import datetime
+
     from comet_ml.query import Environment, Metadata, Metric, Other, Parameter, Tag
 
     env = {
@@ -106,6 +108,7 @@ def get_query_experiments(api, query_string, workspace, project_name):
         "Other": Other,
         "Parameter": Parameter,
         "Tag": Tag,
+        "datetime": datetime,
     }
     query = eval(query_string, env)
     return api.query(workspace, project_name, query)
