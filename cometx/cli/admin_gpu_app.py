@@ -14,11 +14,11 @@ import tempfile
 from collections import defaultdict
 from typing import Dict, List, Tuple
 
-import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import streamlit as st
 
 from cometx.cli.admin_gpu_report import extract_metric_value
+from cometx.cli.admin_utils import get_distinct_colors
 
 
 def load_json_data(json_file_path: str) -> Dict:
@@ -375,7 +375,7 @@ def create_time_series_chart(
     fig, ax = plt.subplots(figsize=(14, 8))
 
     # Generate distinct colors for each aggregation key
-    colors_list = cm.tab10(range(len(all_agg_keys)))
+    colors_list = get_distinct_colors(len(all_agg_keys))
 
     # Plot line for each aggregation key
     for i, agg_key in enumerate(all_agg_keys):

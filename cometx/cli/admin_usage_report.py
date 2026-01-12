@@ -75,9 +75,10 @@ from datetime import datetime, timedelta
 from urllib.parse import urlparse
 from xml.sax.saxutils import escape
 
-import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 from comet_ml import API
+
+from .admin_utils import get_distinct_colors
 from PIL import Image
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
@@ -1092,7 +1093,7 @@ def create_combined_chart_from_data(
     fig, ax = plt.subplots(figsize=(14, 8))
 
     # Generate distinct colors for each project
-    colors = cm.tab10(range(len(aligned_data)))
+    colors = get_distinct_colors(len(aligned_data))
 
     # Set up bar positions for grouped bars
     num_projects = len(aligned_data)
@@ -1294,7 +1295,7 @@ def create_combined_gpu_chart_from_data(
     fig, ax = plt.subplots(figsize=(14, 8))
 
     # Generate distinct colors for each project
-    chart_colors = cm.tab10(range(len(aligned_data)))
+    chart_colors = get_distinct_colors(len(aligned_data))
 
     # Set up bar positions for grouped bars
     num_projects = len(aligned_data)
