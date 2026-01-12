@@ -297,16 +297,17 @@ def parse_date(date_str):
         raise ValueError(f"Invalid date format: {date_str}. Expected YYYY-MM-DD")
 
 
-def extract_metric_value(metric_data, metric_name):
+def extract_metric_value(metric_data, metric_name, aggregate="max"):
     """
-    Extract the maximum value for a metric from metric data.
+    Extract the aggregated value for a metric from metric data.
 
     Args:
         metric_data: Dictionary containing metric data from get_metrics_for_chart
         metric_name: Name of the metric to extract
+        aggregate: Aggregation method - "max" or "avg" (default: "max")
 
     Returns:
-        float or None: Maximum value of the metric, or None if not found
+        float or None: Aggregated value of the metric, or None if not found
     """
     if not metric_data or "metrics" not in metric_data:
         return None
@@ -315,11 +316,16 @@ def extract_metric_value(metric_data, metric_name):
         if metric.get("metricName") == metric_name:
             values = metric.get("values", [])
             if values:
-                return max(values)
+                if aggregate == "avg":
+                    return sum(values) / len(values)
+                else:  # default to max
+                    return max(values)
     return None
 
 
-def process_metrics_for_charts(all_metrics, experiment_map, metrics_to_track):
+def process_metrics_for_charts(
+    all_metrics, experiment_map, metrics_to_track, aggregate_metric="avg"
+):
     """
     Process metric data to prepare for chart generation.
 
@@ -327,11 +333,14 @@ def process_metrics_for_charts(all_metrics, experiment_map, metrics_to_track):
         all_metrics: Dictionary keyed by experiment key with metric data
         experiment_map: Dictionary keyed by experiment key with experiment metadata
         metrics_to_track: List of metric names to process
+        aggregate_metric: Aggregation method for time series - "max" or "avg" (default: "avg")
 
     Returns:
-        tuple: (workspace_avg_data, monthly_max_data)
+        tuple: (workspace_avg_data, monthly_aggregated_data, monthly_max_data, monthly_avg_data)
             workspace_avg_data: Dict[metric_name][workspace] = average_value
-            monthly_max_data: Dict[metric_name][month_key][workspace] = max_value
+            monthly_aggregated_data: Dict[metric_name][month_key][workspace] = aggregated_value (selected method)
+            monthly_max_data: Dict[metric_name][month_key][workspace] = max_value (both saved for instant switching)
+            monthly_avg_data: Dict[metric_name][month_key][workspace] = avg_value
     """
     # Structure: metric_name -> workspace -> list of values
     workspace_values = defaultdict(lambda: defaultdict(list))
@@ -370,7 +379,8 @@ def process_metrics_for_charts(all_metrics, experiment_map, metrics_to_track):
 
         # Extract values for each metric
         for metric_name in metrics_to_track:
-            value = extract_metric_value(metric_data, metric_name)
+            # For workspace averages, always use max from experiment, then average across experiments
+            value = extract_metric_value(metric_data, metric_name, aggregate="max")
             if value is not None:
                 workspace_values[metric_name][workspace].append(value)
                 if month_key:
@@ -384,17 +394,33 @@ def process_metrics_for_charts(all_metrics, experiment_map, metrics_to_track):
             if values:
                 workspace_avg_data[metric_name][workspace] = sum(values) / len(values)
 
-    # Calculate max per month per workspace
+    # Calculate both max and avg per month per workspace (save both for instant switching in app)
     monthly_max_data = {}
+    monthly_avg_data = {}
     for metric_name in metrics_to_track:
         monthly_max_data[metric_name] = {}
+        monthly_avg_data[metric_name] = {}
         for month_key in sorted(monthly_values[metric_name].keys()):
             monthly_max_data[metric_name][month_key] = {}
+            monthly_avg_data[metric_name][month_key] = {}
             for workspace, values in monthly_values[metric_name][month_key].items():
                 if values:
                     monthly_max_data[metric_name][month_key][workspace] = max(values)
+                    monthly_avg_data[metric_name][month_key][workspace] = sum(
+                        values
+                    ) / len(values)
 
-    return workspace_avg_data, monthly_max_data
+    # Return the selected aggregation for backward compatibility, but also include both
+    monthly_aggregated_data = (
+        monthly_avg_data if aggregate_metric == "avg" else monthly_max_data
+    )
+
+    return (
+        workspace_avg_data,
+        monthly_aggregated_data,
+        monthly_max_data,
+        monthly_avg_data,
+    )
 
 
 def create_workspace_avg_chart(
@@ -473,30 +499,38 @@ def create_workspace_avg_chart(
 
 
 def create_monthly_max_chart(
-    monthly_max_data, metric_name, png_filename=None, debug=False
+    monthly_aggregated_data,
+    metric_name,
+    aggregate_metric="avg",
+    png_filename=None,
+    debug=False,
 ):
     """
-    Create a time series line chart showing max metric value per month with workspace legend.
+    Create a time series line chart showing aggregated metric value per month with workspace legend.
 
     Args:
-        monthly_max_data: Dictionary of metric_name -> month_key -> workspace -> max_value
+        monthly_aggregated_data: Dictionary of metric_name -> month_key -> workspace -> aggregated_value
         metric_name: Name of the metric to chart
+        aggregate_metric: Aggregation method used - "max" or "avg" (default: "avg")
         png_filename: Optional filename for the PNG
         debug: If True, print debug information
 
     Returns:
         str: The filename of the saved PNG chart, or None if no data
     """
-    if metric_name not in monthly_max_data or not monthly_max_data[metric_name]:
+    if (
+        metric_name not in monthly_aggregated_data
+        or not monthly_aggregated_data[metric_name]
+    ):
         if debug:
             print(f"No data for metric {metric_name}")
         return None
 
-    data = monthly_max_data[metric_name]
+    data = monthly_aggregated_data[metric_name]
 
     if png_filename is None:
         safe_metric = metric_name.replace(".", "_").replace("/", "_")
-        png_filename = f"gpu_report_max_{safe_metric}_by_month.png"
+        png_filename = f"gpu_report_{aggregate_metric}_{safe_metric}_by_month.png"
 
     # Collect all unique workspaces and existing months
     all_workspaces = set()
@@ -562,14 +596,15 @@ def create_monthly_max_chart(
         )
 
     # Customize the chart
+    aggregate_label = "Maximum" if aggregate_metric == "max" else "Average"
     ax.set_title(
-        f"Maximum {metric_name} by Month",
+        f"{aggregate_label} {metric_name} by Month",
         fontsize=16,
         fontweight="bold",
         pad=20,
     )
     ax.set_xlabel("Month", fontsize=14)
-    ax.set_ylabel(f"Maximum {metric_name}", fontsize=14)
+    ax.set_ylabel(f"{aggregate_label} {metric_name}", fontsize=14)
 
     # Set x-axis labels - show every Nth to avoid crowding
     max_labels = 20
@@ -879,8 +914,8 @@ def generate_pdf_report(
         chart_files = result_data.get("charts", [])
 
         # Group charts by type (avg vs monthly)
-        avg_charts = [f for f in chart_files if "avg" in f]
-        monthly_charts = [f for f in chart_files if "max" in f]
+        avg_charts = [f for f in chart_files if "_avg_" in f and "_by_month" not in f]
+        monthly_charts = [f for f in chart_files if "_by_month" in f]
 
         # Add workspace average charts
         if avg_charts:
@@ -916,13 +951,16 @@ def generate_pdf_report(
                 )
                 flowables.append(PageBreak())
 
-        # Add monthly max charts
+        # Add monthly aggregated charts
         if monthly_charts:
             if avg_charts:
                 flowables.append(PageBreak())
+            # Get aggregate metric from result_data if available
+            aggregate_metric = result_data.get("aggregate_metric", "avg")
+            aggregate_label = "Maximum" if aggregate_metric == "max" else "Average"
             flowables.append(
                 Paragraph(
-                    escape("Maximum Metrics by Month"),
+                    escape(f"{aggregate_label} Metrics by Month"),
                     ParagraphStyle(
                         "SectionHeading",
                         parent=getSampleStyleSheet()["Heading1"],
@@ -937,16 +975,24 @@ def generate_pdf_report(
             flowables.append(Spacer(1, 0.2 * inch))
 
             for chart_file in monthly_charts:
-                # Extract metric name from filename
-                metric_name = (
-                    chart_file.replace("gpu_report_max_", "")
-                    .replace("_by_month.png", "")
-                    .replace("_", ".")
+                # Extract metric name and aggregation from filename
+                # Format: gpu_report_{max|avg}_{metric}_by_month.png
+                base_name = chart_file.replace("gpu_report_", "").replace(
+                    "_by_month.png", ""
                 )
+                parts = base_name.split("_", 1)
+                if len(parts) == 2:
+                    agg_type = parts[0]  # "max" or "avg"
+                    metric_name = parts[1].replace("_", ".")
+                    aggregate_label = "Maximum" if agg_type == "max" else "Average"
+                else:
+                    # Fallback for old format
+                    metric_name = base_name.replace("max_", "").replace("_", ".")
+                    aggregate_label = "Maximum"
                 add_chart_to_flowables(
                     flowables,
                     chart_file,
-                    title=f"Maximum {metric_name} by Month",
+                    title=f"{aggregate_label} {metric_name} by Month",
                     debug=debug,
                 )
                 if chart_file != monthly_charts[-1]:
@@ -1008,7 +1054,12 @@ def parse_workspace_projects(api, workspace_projects):
 
 
 def main(
-    workspace_projects, start_date=None, end_date=None, metrics=None, max_workers=None
+    workspace_projects,
+    start_date=None,
+    end_date=None,
+    metrics=None,
+    max_workers=None,
+    aggregate_metric="avg",
 ):
     """
     Main function for GPU report generation.
@@ -1019,6 +1070,7 @@ def main(
         end_date: End date as tuple (year, month, day) or string YYYY-MM-DD (optional)
         metrics: List of metric names to track (optional, uses defaults if not provided)
         max_workers: Number of parallel workers (optional, uses default if not provided)
+        aggregate_metric: Aggregation method for time series - "max" or "avg" (default: "avg")
 
     Returns:
         Dictionary of metrics keyed by experiment key
@@ -1120,8 +1172,10 @@ def main(
         f"\n[bold]Step 3:[/bold] Generating charts for {len(metrics)} metrics..."
     )
 
-    workspace_avg_data, monthly_max_data = process_metrics_for_charts(
-        all_metrics, experiment_map, metrics
+    workspace_avg_data, monthly_aggregated_data, monthly_max_data, monthly_avg_data = (
+        process_metrics_for_charts(
+            all_metrics, experiment_map, metrics, aggregate_metric=aggregate_metric
+        )
     )
 
     chart_files = []
@@ -1155,12 +1209,15 @@ def main(
         "metrics": all_metrics,
         "charts": chart_files,
         "workspace_avg_data": workspace_avg_data,
-        "monthly_max_data": monthly_max_data,
+        "monthly_max_data": monthly_max_data,  # Both max and avg saved for instant switching
+        "monthly_avg_data": monthly_avg_data,
+        "monthly_aggregated_data": monthly_aggregated_data,  # Keep for backward compatibility
         "experiment_map": experiment_map,
         "metrics_to_track": metrics,
         "workspace_projects": workspace_projects,
         "start_date": start_date,
         "end_date": end_date,
+        "aggregate_metric": aggregate_metric,
     }
 
     # Always save JSON file

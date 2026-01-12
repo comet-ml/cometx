@@ -118,6 +118,7 @@ def process_metrics_with_aggregation(
     time_unit: str,
     start_date: str = None,
     end_date: str = None,
+    aggregate_metric: str = "avg",
 ) -> Tuple[Dict, Dict]:
     """
     Process metric data with specified aggregation and time unit.
@@ -130,11 +131,12 @@ def process_metrics_with_aggregation(
         time_unit: "year", "month", "week", or "day"
         start_date: Optional start date filter (YYYY-MM-DD)
         end_date: Optional end date filter (YYYY-MM-DD)
+        aggregate_metric: Aggregation method for time series - "max" or "avg" (default: "avg")
 
     Returns:
         tuple: (avg_data, time_series_data)
             avg_data: Dict[metric_name][aggregation_key] = average_value
-            time_series_data: Dict[metric_name][time_key][aggregation_key] = max_value
+            time_series_data: Dict[metric_name][time_key][aggregation_key] = aggregated_value
     """
     # Structure: metric_name -> aggregation_key -> list of values
     aggregation_values = defaultdict(lambda: defaultdict(list))
@@ -211,21 +213,25 @@ def process_metrics_with_aggregation(
 
         # Extract values for each metric
         for metric_name in metrics_to_track:
-            value = extract_metric_value(metric_data, metric_name)
+            # For aggregation averages, always use max from experiment, then average across experiments
+            value = extract_metric_value(metric_data, metric_name, aggregate="max")
             if value is not None:
                 aggregation_values[metric_name][agg_key].append(value)
                 if time_key:
                     time_series_values[metric_name][time_key][agg_key].append(value)
 
-    # Calculate averages per aggregation key
+    # Calculate aggregated values per aggregation key (respects aggregate_metric selection)
     avg_data = {}
     for metric_name in metrics_to_track:
         avg_data[metric_name] = {}
         for agg_key, values in aggregation_values[metric_name].items():
             if values:
-                avg_data[metric_name][agg_key] = sum(values) / len(values)
+                if aggregate_metric == "avg":
+                    avg_data[metric_name][agg_key] = sum(values) / len(values)
+                else:  # max
+                    avg_data[metric_name][agg_key] = max(values)
 
-    # Calculate max per time unit per aggregation key
+    # Calculate aggregated value per time unit per aggregation key
     time_series_data = {}
     for metric_name in metrics_to_track:
         time_series_data[metric_name] = {}
@@ -233,15 +239,24 @@ def process_metrics_with_aggregation(
             time_series_data[metric_name][time_key] = {}
             for agg_key, values in time_series_values[metric_name][time_key].items():
                 if values:
-                    time_series_data[metric_name][time_key][agg_key] = max(values)
+                    if aggregate_metric == "avg":
+                        time_series_data[metric_name][time_key][agg_key] = sum(
+                            values
+                        ) / len(values)
+                    else:  # max
+                        time_series_data[metric_name][time_key][agg_key] = max(values)
 
     return avg_data, time_series_data
 
 
 def create_aggregation_avg_chart(
-    avg_data: Dict, metric_name: str, aggregation: str, png_filename=None
+    avg_data: Dict,
+    metric_name: str,
+    aggregation: str,
+    aggregate_metric: str = "avg",
+    png_filename=None,
 ):
-    """Create a bar chart showing average metric value per aggregation key."""
+    """Create a bar chart showing aggregated metric value per aggregation key."""
     if metric_name not in avg_data or not avg_data[metric_name]:
         return None
 
@@ -270,14 +285,15 @@ def create_aggregation_avg_chart(
 
     # Customize the chart
     aggregation_label = aggregation.capitalize()
+    aggregate_label = "Maximum" if aggregate_metric == "max" else "Average"
     ax.set_title(
-        f"Average {metric_name} by {aggregation_label}",
+        f"{aggregate_label} {metric_name} by {aggregation_label}",
         fontsize=16,
         fontweight="bold",
         pad=20,
     )
     ax.set_xlabel(aggregation_label, fontsize=14)
-    ax.set_ylabel(f"Average {metric_name}", fontsize=14)
+    ax.set_ylabel(f"{aggregate_label} {metric_name}", fontsize=14)
 
     # Set x-axis labels
     ax.set_xticks(range(len(keys)))
@@ -295,9 +311,10 @@ def create_time_series_chart(
     metric_name: str,
     aggregation: str,
     time_unit: str,
+    aggregate_metric: str = "avg",
     png_filename=None,
 ):
-    """Create a time series line chart showing max metric value per time unit."""
+    """Create a time series line chart showing aggregated metric value per time unit."""
     if metric_name not in time_series_data or not time_series_data[metric_name]:
         return None
 
@@ -379,14 +396,15 @@ def create_time_series_chart(
 
     # Customize the chart
     time_unit_label = time_unit.capitalize()
+    aggregate_label = "Maximum" if aggregate_metric == "max" else "Average"
     ax.set_title(
-        f"Maximum {metric_name} by {time_unit_label}",
+        f"{aggregate_label} {metric_name} by {time_unit_label}",
         fontsize=16,
         fontweight="bold",
         pad=20,
     )
     ax.set_xlabel(time_unit_label, fontsize=14)
-    ax.set_ylabel(f"Maximum {metric_name}", fontsize=14)
+    ax.set_ylabel(f"{aggregate_label} {metric_name}", fontsize=14)
 
     # Set x-axis labels - show every Nth to avoid crowding
     max_labels = 20
@@ -557,6 +575,22 @@ def main():
             help="Select the time unit for time series charts",
         )
 
+        # Aggregate metric selection
+        st.subheader("Aggregate Metric")
+        # Get default from data if available, otherwise default to "avg"
+        default_aggregate = data.get("aggregate_metric", "avg")
+        # Use session state to persist user selection, but initialize from data if not set
+        if "aggregate_metric" not in st.session_state:
+            st.session_state.aggregate_metric = default_aggregate
+
+        aggregate_metric = st.selectbox(
+            "Aggregate metric",
+            options=["avg", "max"],
+            index=0 if st.session_state.aggregate_metric == "avg" else 1,
+            key="aggregate_metric",
+            help="Select aggregation method for time series charts (avg or max)",
+        )
+
         # Date range selection
         st.subheader("Date Range")
         if min_date and max_date:
@@ -592,6 +626,10 @@ def main():
     all_metrics = data.get("metrics", {})
     experiment_map = data.get("experiment_map", {})
 
+    # Process data with selected aggregation and time unit
+    # Note: Even though both max and avg are saved in JSON, we still need to recalculate
+    # for different time units (year/week/day) and aggregations (project/user)
+    # The pre-computed data is organized by month and workspace only
     with st.spinner("Processing data..."):
         avg_data, time_series_data = process_metrics_with_aggregation(
             all_metrics,
@@ -601,6 +639,7 @@ def main():
             time_unit,
             start_date_str,
             end_date_str,
+            aggregate_metric=aggregate_metric,
         )
 
     # Display statistics
@@ -638,12 +677,18 @@ def main():
         with metric_tabs[idx]:
             col1, col2 = st.columns(2)
 
-            # Average chart
+            # Aggregated chart (respects aggregate_metric selection)
             with col1:
-                st.subheader(f"Average {metric_name} by {aggregation.capitalize()}")
+                aggregate_label = "Maximum" if aggregate_metric == "max" else "Average"
+                st.subheader(
+                    f"{aggregate_label} {metric_name} by {aggregation.capitalize()}"
+                )
                 if metric_name in avg_data and avg_data[metric_name]:
                     fig_avg = create_aggregation_avg_chart(
-                        avg_data, metric_name, aggregation
+                        avg_data,
+                        metric_name,
+                        aggregation,
+                        aggregate_metric=aggregate_metric,
                     )
                     if fig_avg:
                         st.pyplot(fig_avg)
@@ -655,10 +700,17 @@ def main():
 
             # Time series chart
             with col2:
-                st.subheader(f"Maximum {metric_name} by {time_unit.capitalize()}")
+                aggregate_label = "Maximum" if aggregate_metric == "max" else "Average"
+                st.subheader(
+                    f"{aggregate_label} {metric_name} by {time_unit.capitalize()}"
+                )
                 if metric_name in time_series_data and time_series_data[metric_name]:
                     fig_ts = create_time_series_chart(
-                        time_series_data, metric_name, aggregation, time_unit
+                        time_series_data,
+                        metric_name,
+                        aggregation,
+                        time_unit,
+                        aggregate_metric=aggregate_metric,
                     )
                     if fig_ts:
                         st.pyplot(fig_ts)

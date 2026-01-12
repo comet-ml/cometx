@@ -321,6 +321,11 @@ Options:
         - sys.gpu.0.power_usage
         - sys.gpu.0.temperature
 
+    --aggregate-metric {max,avg}
+        Aggregation method for time series charts (default: avg).
+        - max: Use maximum value per time period
+        - avg: Use average value per time period
+
     --open
         Automatically open the generated PDF file after generation.
 
@@ -387,6 +392,13 @@ Examples:
         nargs="+",
         type=str,
         default=None,
+    )
+    gpu_parser.add_argument(
+        "--aggregate-metric",
+        help="Aggregation method for time series charts (default: avg)",
+        choices=["max", "avg"],
+        default="avg",
+        type=str,
     )
     gpu_parser.add_argument(
         "--open",
@@ -544,6 +556,7 @@ def admin(parsed_args, remaining=None):
             start_date = parsed_args.start_date
             end_date = parsed_args.end_date
             metrics = parsed_args.metrics
+            aggregate_metric = parsed_args.aggregate_metric
 
             if parsed_args.app:
                 # Require workspace_projects for --app
@@ -563,6 +576,7 @@ def admin(parsed_args, remaining=None):
                         end_date=end_date,
                         metrics=metrics,
                         max_workers=None,  # Use default
+                        aggregate_metric=aggregate_metric,
                     )
                     if result:
                         json_file_path = result.get("json_file")
@@ -631,6 +645,7 @@ def admin(parsed_args, remaining=None):
                         end_date=end_date,
                         metrics=metrics,
                         max_workers=None,  # Use default
+                        aggregate_metric=aggregate_metric,
                     )
                     if result:
                         num_experiments = len(result.get("metrics", {}))
