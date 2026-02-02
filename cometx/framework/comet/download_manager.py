@@ -1179,10 +1179,17 @@ class DownloadManager:
     def submit_task(self, file_path, experiment, method_name, args, kwargs):
         def task():
             method = getattr(experiment, method_name)
-            results = method(*args, **kwargs)
-            if results:
-                with open(file_path, "wb+") as f:
-                    f.write(results)
+            try:
+                results = method(*args, **kwargs)
+                if results:
+                    with open(file_path, "wb+") as f:
+                        f.write(results)
+                else:
+                    print(
+                        f"WARNING: No data returned for {file_path}; skipping download"
+                    )
+            except Exception as exc:
+                print(f"WARNING: Failed to download {file_path}: {exc}")
 
         self.submit_task_direct(task)
 

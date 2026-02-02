@@ -99,6 +99,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from ..api import API
+from ..framework.comet.download_manager import sanitize_filename
 from ..utils import remove_extra_slashes
 from .copy_utils import upload_single_offline_experiment
 
@@ -544,6 +545,7 @@ class CopyManager:
         self.progress_ui = ProgressUI(
             quiet=debug, max_workers=self.max_concurrent_uploads
         )  # Show UI by default, hide when debug=True
+        self.missing_files_count = 0
 
         # Register signal handler for cursor reset on interruption
         if not debug:  # Only register signal handler when not in debug mode
@@ -1043,7 +1045,12 @@ class CopyManager:
         experiment = self.create_experiment(workspace_dst, project_dst)
         # copy experiment_folder stuff to experiment
         # copy all resources to existing or new experiment
+        self.missing_files_count = 0
         self.log_all(experiment, experiment_folder)
+        if self.missing_files_count > 0:
+            print(
+                f"WARNING: {self.missing_files_count} asset file(s) were missing and could not be copied"
+            )
         experiment.end()
 
         archive_path = os.path.join(
@@ -1200,16 +1207,14 @@ class CopyManager:
         old_asset_id = assets_metadata[log_filename].get("assetId")
         if asset_type in self.ignore:
             return
-        if log_filename.startswith("/"):
-            filename = os.path.join(path, asset_type, log_filename[1:])
-        else:
-            filename = os.path.join(path, asset_type, log_filename)
-
-        filename = filename.replace(":", "-")
+        sanitized_filename = sanitize_filename(log_filename)
+        filename = os.path.join(path, asset_type, sanitized_filename)
 
         if not os.path.isfile(filename):
-            with experiment.context_manager("ignore"):
-                print("Missing file %r: unable to copy" % filename)
+            self.missing_files_count += 1
+            if self.debug:
+                with experiment.context_manager("ignore"):
+                    print("Missing file %r: unable to copy" % filename)
             return
 
         metadata = assets_metadata[log_filename].get("metadata")
