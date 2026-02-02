@@ -46,6 +46,7 @@ for ML management.
 * [cometx download](#cometx-download)
 * [cometx list](#cometx-list)
 * [cometx log](#cometx-log)
+* [cometx rename-duplicates](#cometx-rename-duplicates)
 * [cometx reproduce](#cometx-reproduce)
 * [cometx smoke-test](#cometx-smoke-test)
 * [cometx update](#cometx-update)
@@ -327,6 +328,36 @@ Where TYPE is one of the following names:
 * `--use-base-name` - If given, using the basename for logging assets
 
 For more information, `cometx log --help`
+
+## cometx rename-duplicates
+
+This command is used to rename duplicate experiments within projects. When multiple experiments share the same name in a project, this command renames the duplicates to NAME-1, NAME-2, etc. while avoiding conflicts with existing names.
+
+```
+cometx rename-duplicates [PATH] [--dry-run] [--debug]
+```
+
+cometx rename-duplicates examples:
+
+```
+cometx rename-duplicates                           # Process all workspaces
+cometx rename-duplicates WORKSPACE                 # Process all projects in a workspace
+cometx rename-duplicates WORKSPACE/PROJECT         # Process a single project
+cometx rename-duplicates WORKSPACE/PROJECT --dry-run  # Preview changes without renaming
+```
+
+Where PATH is optional and can be:
+
+* `WORKSPACE` - process all projects in a workspace
+* `WORKSPACE/PROJECT` - process a single project
+* (empty) - process all workspaces and projects you have access to
+
+### Flags
+
+* `--dry-run` - Preview changes without actually renaming experiments
+* `--debug` - Provide debug info
+
+For more information, `cometx rename-duplicates --help`
 
 ## cometx delete-assets
 
