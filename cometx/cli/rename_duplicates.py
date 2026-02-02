@@ -75,7 +75,9 @@ def get_next_available_name(base_name, existing_names):
         n += 1
 
 
-def process_project(api, workspace, project_name, dry_run=False, debug=False):
+def process_project(
+    api, workspace, project_name, dry_run=False, debug=False, pbar_position=2
+):
     """Process a single project, renaming duplicate experiments.
 
     Args:
@@ -84,6 +86,7 @@ def process_project(api, workspace, project_name, dry_run=False, debug=False):
         project_name: Project name
         dry_run: If True, preview changes without renaming
         debug: If True, print debug info
+        pbar_position: Position for the experiments progress bar
 
     Returns:
         List of tuples (experiment, old_name, new_name) for all renames
@@ -93,10 +96,18 @@ def process_project(api, workspace, project_name, dry_run=False, debug=False):
 
     experiments = api.get_experiments(workspace, project_name)
 
-    # Group experiments by name
+    # Group experiments by name with progress bar
     name_to_exps = defaultdict(list)
-    for exp in experiments:
+    exp_pbar = tqdm(
+        experiments,
+        desc="  Experiments",
+        position=pbar_position,
+        leave=False,
+        unit="exp",
+    )
+    for exp in exp_pbar:
         name_to_exps[exp.name].append(exp)
+    exp_pbar.close()
 
     # Set of all names (for conflict detection)
     existing_names = set(name_to_exps.keys())
@@ -107,7 +118,15 @@ def process_project(api, workspace, project_name, dry_run=False, debug=False):
         if len(exps) > 1:
             # Keep first experiment unchanged, rename the rest
             for exp in exps[1:]:
-                new_name = get_next_available_name(name, existing_names)
+                if name == "None" or name is None:
+                    # For "None" names, use first 9 chars of experiment ID
+                    base_name = exp.id[:9]
+                    if base_name in existing_names:
+                        new_name = get_next_available_name(base_name, existing_names)
+                    else:
+                        new_name = base_name
+                else:
+                    new_name = get_next_available_name(name, existing_names)
                 existing_names.add(new_name)
                 renames.append((exp, name, new_name))
                 if not dry_run:
@@ -143,37 +162,78 @@ def rename_duplicates(parsed_args):
             print(f"Filter workspace: {filter_workspace}")
             print(f"Filter project: {filter_project}")
 
-        # Collect all workspace/project pairs to process
-        projects_to_process = []
-        for workspace in api.get_workspaces():
-            if filter_workspace and workspace != filter_workspace:
-                continue
-
-            for project_name in api.get_projects(workspace):
-                if filter_project and project_name != filter_project:
-                    continue
-                projects_to_process.append((workspace, project_name))
+        # Get workspaces to process
+        all_workspaces = api.get_workspaces()
+        if filter_workspace:
+            workspaces_to_process = [
+                w for w in all_workspaces if w == filter_workspace
+            ]
+        else:
+            workspaces_to_process = all_workspaces
 
         if debug:
-            print(f"Projects to process: {len(projects_to_process)}")
+            print(f"Workspaces to process: {len(workspaces_to_process)}")
 
         total_renames = 0
+        total_projects = 0
 
-        for workspace, project_name in tqdm(
-            projects_to_process, desc="Processing projects"
-        ):
-            renames = process_project(api, workspace, project_name, dry_run, debug)
+        # Progress bar for workspaces
+        workspace_pbar = tqdm(
+            workspaces_to_process,
+            desc="Workspaces",
+            position=0,
+            unit="ws",
+        )
 
-            if renames:
-                tqdm.write(f"[{workspace}/{project_name}]")
-                for exp, old_name, new_name in renames:
-                    action = "Would rename" if dry_run else "Renamed"
-                    tqdm.write(f"  {action}: '{old_name}' -> '{new_name}' ({exp.id})")
-                total_renames += len(renames)
+        for workspace in workspace_pbar:
+            workspace_pbar.set_postfix_str(workspace)
+
+            # Get projects for this workspace
+            all_projects = api.get_projects(workspace)
+            if filter_project:
+                projects_to_process = [
+                    p for p in all_projects if p == filter_project
+                ]
+            else:
+                projects_to_process = all_projects
+
+            if not projects_to_process:
+                continue
+
+            # Progress bar for projects within this workspace
+            project_pbar = tqdm(
+                projects_to_process,
+                desc=" Projects",
+                position=1,
+                leave=False,
+                unit="proj",
+            )
+
+            for project_name in project_pbar:
+                project_pbar.set_postfix_str(project_name)
+                total_projects += 1
+
+                renames = process_project(
+                    api, workspace, project_name, dry_run, debug, pbar_position=2
+                )
+
+                if renames:
+                    tqdm.write(f"[{workspace}/{project_name}]")
+                    for exp, old_name, new_name in renames:
+                        action = "Would rename" if dry_run else "Renamed"
+                        tqdm.write(
+                            f"  {action}: '{old_name}' -> '{new_name}' ({exp.id})"
+                        )
+                    total_renames += len(renames)
+
+            project_pbar.close()
+
+        workspace_pbar.close()
 
         print(
             f"\nTotal: {total_renames} experiment(s) "
-            f"{'would be ' if dry_run else ''}renamed"
+            f"{'would be ' if dry_run else ''}renamed "
+            f"across {total_projects} project(s)"
         )
 
     except Exception as exc:
