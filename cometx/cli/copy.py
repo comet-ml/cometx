@@ -1304,6 +1304,7 @@ class CopyManager:
             with open(filename) as fp:
                 cm_json = json.load(fp)
             # go though JSON, replace asset_ids with new asset_ids
+            missing_assets = set()
             for row in cm_json["sampleMatrix"]:
                 if row:
                     for cols in row:
@@ -1311,8 +1312,16 @@ class CopyManager:
                             for cell in cols:
                                 if cell and isinstance(cell, dict):
                                     old_cell_asset_id = cell["assetId"]
-                                    new_cell_asset_id = asset_map[old_cell_asset_id]
-                                    cell["assetId"] = new_cell_asset_id
+                                    if old_cell_asset_id in asset_map:
+                                        cell["assetId"] = asset_map[old_cell_asset_id]
+                                    else:
+                                        missing_assets.add(old_cell_asset_id)
+                                        # Remove the cell reference since the asset wasn't copied
+                                        cell.clear()
+            if missing_assets:
+                print(
+                    f"WARNING: {len(missing_assets)} sample asset(s) referenced by confusion matrix were not found in downloaded data"
+                )
 
             binary_io = io.BytesIO(json.dumps(cm_json).encode())
             result = self._log_asset_filename(
