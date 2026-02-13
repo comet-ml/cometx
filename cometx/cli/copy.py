@@ -1356,10 +1356,27 @@ class CopyManager:
             else:
                 asset_map[old_asset_id] = result["assetId"]
         elif asset_type == "model-element":
-            name = os.path.basename(filename)
-            result = experiment.log_model(name, filename)
+            dir_name = assets_metadata[log_filename].get("dir", "")
+            # The dir field includes a "models/" prefix added by the
+            # backend; strip it to get the actual model name.
+            if dir_name.startswith("models/"):
+                model_name = dir_name[len("models/"):]
+            else:
+                model_name = dir_name
+            binary_io = open(filename, "rb")
+            result = experiment._log_asset(
+                binary_io,
+                file_name=log_as_filename or log_filename,
+                copy_to_tmp=True,
+                asset_type=asset_type,
+                metadata=metadata,
+                step=step,
+                grouping_name=model_name,
+            )
             if result is None:
-                print(f"ERROR: Unable to log {asset_type} asset {name}; skipping")
+                print(
+                    f"ERROR: Unable to log {asset_type} asset {log_as_filename or log_filename}; skipping"
+                )
             else:
                 asset_map[old_asset_id] = result["assetId"]
         else:
