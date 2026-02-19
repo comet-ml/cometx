@@ -46,6 +46,7 @@ for ML management.
 * [cometx download](#cometx-download)
 * [cometx list](#cometx-list)
 * [cometx log](#cometx-log)
+* [cometx migrate-users](#cometx-migrate-users)
 * [cometx rename-duplicates](#cometx-rename-duplicates)
 * [cometx reproduce](#cometx-reproduce)
 * [cometx smoke-test](#cometx-smoke-test)
@@ -268,6 +269,7 @@ Not all combinations are possible:
 * `--symlink` - Instead of copying, create a link to an experiment in a project
 * `--sync` - Check to see if experiment name has been created first; if so, skip
 * `--path PATH` - Path to prepend to workspace_src when accessing files (supports ~ for home directory)
+* `--create-workspaces` - Attempt to create the destination workspace if it does not exist (requires appropriate API permissions)
 
 ### Using --path
 
@@ -328,6 +330,43 @@ Where TYPE is one of the following names:
 * `--use-base-name` - If given, using the basename for logging assets
 
 For more information, `cometx log --help`
+
+## cometx migrate-users
+
+This command is used to migrate users into workspaces from a source Comet environment to a destination environment. It reads workspace membership from a chargeback report from the source environment and invites each user to the corresponding workspace in the destination environment by email. If a user with the email does not exist in the destination environment, they still will be provisioned access to these workspaces once they sign up using that email.
+
+The chargeback report can be fetched automatically from the source environment's admin API, or you can provide a pre-downloaded JSON file.
+
+```
+cometx migrate-users --api-key DEST_KEY --source-api-key SOURCE_KEY [FLAGS ...]
+cometx migrate-users --api-key DEST_KEY --chargeback-report /path/to/report.json [FLAGS ...]
+```
+
+**Arguments:**
+* `--api-key API_KEY` - API key for the destination environment where users will be added. Falls back to `COMET_API_KEY` environment variable if not provided.
+* `--source-api-key SOURCE_API_KEY` - API key for the source environment. Used to fetch the chargeback report. Falls back to `COMET_API_KEY` environment variable if not provided. Required unless `--chargeback-report` is given.
+* `--chargeback-report PATH` - Path to a local chargeback report JSON file. When provided, the report is loaded from this file instead of being fetched from the source environment, and `--source-api-key` is not required.
+
+### Flags
+
+* `--create-workspaces` - Create workspaces on the destination environment if they don't already exist (default: off)
+* `--dry-run` - Print what would happen without making any changes
+
+### Examples
+
+```bash
+# Dry run — preview what would happen
+cometx migrate-users --api-key DEST_KEY --source-api-key SOURCE_KEY --dry-run
+
+# Execute the migration
+cometx migrate-users --api-key DEST_KEY --source-api-key SOURCE_KEY
+
+# Use a local chargeback report file
+cometx migrate-users --api-key DEST_KEY --chargeback-report /tmp/chargeback_reports.json
+
+```
+
+For more information, `cometx migrate-users --help`
 
 ## cometx rename-duplicates
 
