@@ -1419,11 +1419,13 @@ class CopyManager:
                             sync_mode=False,
                         )
                     else:
+                        raw_metadata = asset_data.get("metadata")
+                        metadata = json.loads(raw_metadata) if raw_metadata else None
                         experiment.log_remote_asset(
                             uri=asset_data["link"],
                             remote_file_name=asset_data["fileName"],
                             step=asset_data["step"],
-                            metadata=asset_data["metadata"],
+                            metadata=metadata,
                         )
                 else:
                     self._log_asset(

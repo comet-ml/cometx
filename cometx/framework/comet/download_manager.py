@@ -1214,44 +1214,46 @@ class DownloadManager:
             self.asset_type if self.asset_type else "all"
         )
         if len(assets) > 0:
+            filename_counts = {}
+            for asset in assets:
+                if asset["type"] == "audio" and asset["step"] is not None:
+                    asset_filename = asset["fileName"]
+                    asset["logAsFileName"] = asset_filename
+                    if "." in asset_filename:
+                        asset_filename, ext = asset_filename.split(".", 1)
+                    else:
+                        asset_filename, ext = asset_filename, ""
+                    asset_filename = "%s-%s.%s" % (
+                        asset_filename,
+                        asset["step"],
+                        ext,
+                    )
+                    asset["fileName"] = asset_filename
+                fn = asset["fileName"]
+                if fn in filename_counts:
+                    filename_counts[fn] += 1
+                    if "." in fn:
+                        base, ext = fn.rsplit(".", 1)
+                        asset["diskFileName"] = "%s_%d.%s" % (
+                            base,
+                            filename_counts[fn],
+                            ext,
+                        )
+                    else:
+                        asset["diskFileName"] = "%s_%d" % (
+                            fn,
+                            filename_counts[fn],
+                        )
+                else:
+                    filename_counts[fn] = 0
+
             filename = "assets_metadata.jsonl"
             filepath = os.path.join(assets_path, filename)
             if self._should_write(filepath):
                 self.summary["assets"] += 1
                 os.makedirs(assets_path, exist_ok=True)
-                filename_counts = {}
                 with open(filepath, "w") as f:
                     for asset in assets:
-                        if asset["type"] == "audio" and asset["step"] is not None:
-                            asset_filename = asset["fileName"]
-                            asset["logAsFileName"] = asset_filename
-                            if "." in asset_filename:
-                                asset_filename, ext = asset_filename.split(".", 1)
-                            else:
-                                asset_filename, ext = asset_filename, ""
-                            asset_filename = "%s-%s.%s" % (
-                                asset_filename,
-                                asset["step"],
-                                ext,
-                            )
-                            asset["fileName"] = asset_filename
-                        fn = asset["fileName"]
-                        if fn in filename_counts:
-                            filename_counts[fn] += 1
-                            if "." in fn:
-                                base, ext = fn.rsplit(".", 1)
-                                asset["diskFileName"] = "%s (%d).%s" % (
-                                    base,
-                                    filename_counts[fn],
-                                    ext,
-                                )
-                            else:
-                                asset["diskFileName"] = "%s (%d)" % (
-                                    fn,
-                                    filename_counts[fn],
-                                )
-                        else:
-                            filename_counts[fn] = 0
                         f.write(json.dumps(asset))
                         f.write("\n")
 
