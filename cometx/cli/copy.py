@@ -1196,18 +1196,17 @@ class CopyManager:
                 asset_map[old_asset_id] = result["assetId"]
 
     def _log_asset(
-        self, experiment, path, asset_type, log_filename, assets_metadata, asset_map
+        self, experiment, path, asset_type, asset_data, asset_map
     ):
-        log_as_filename = assets_metadata[log_filename].get(
-            "logAsFileName",
-            None,
-        )
-        step = assets_metadata[log_filename].get("step")
-        epoch = assets_metadata[log_filename].get("epoch")
-        old_asset_id = assets_metadata[log_filename].get("assetId")
+        log_as_filename = asset_data.get("logAsFileName", None)
+        original_filename = asset_data["fileName"]
+        disk_filename = asset_data.get("diskFileName", original_filename)
+        step = asset_data.get("step")
+        epoch = asset_data.get("epoch")
+        old_asset_id = asset_data.get("assetId")
         if asset_type in self.ignore:
             return
-        sanitized_filename = sanitize_filename(log_filename)
+        sanitized_filename = sanitize_filename(disk_filename)
         filename = os.path.join(path, asset_type, sanitized_filename)
 
         if not os.path.isfile(filename):
@@ -1217,7 +1216,7 @@ class CopyManager:
                     print("Missing file %r: unable to copy" % filename)
             return
 
-        metadata = assets_metadata[log_filename].get("metadata")
+        metadata = asset_data.get("metadata")
         metadata = json.loads(metadata) if metadata else {}
 
         if asset_type == "notebook":
@@ -1286,11 +1285,11 @@ class CopyManager:
                 metadata,
                 binary_io,
                 step,
-                log_as_filename or log_filename,
+                log_as_filename or original_filename,
             )
             if result is None:
                 print(
-                    f"ERROR: Unable to log {asset_type} asset {log_as_filename or log_filename}; skipping"
+                    f"ERROR: Unable to log {asset_type} asset {log_as_filename or original_filename}; skipping"
                 )
             else:
                 asset_map[old_asset_id] = result["assetId"]
@@ -1301,7 +1300,7 @@ class CopyManager:
                 metadata,
                 step,
                 filename,
-                log_as_filename or log_filename,
+                log_as_filename or original_filename,
                 old_asset_id,
             )
         elif asset_type == "confusion-matrix":
@@ -1335,28 +1334,30 @@ class CopyManager:
                 metadata,
                 binary_io,
                 step,
-                log_as_filename or log_filename,
+                log_as_filename or original_filename,
             )
             if result is None:
                 print(
-                    f"ERROR: Unable to log {asset_type} asset {log_as_filename or log_filename}; skipping"
+                    f"ERROR: Unable to log {asset_type} asset {log_as_filename or original_filename}; skipping"
                 )
             else:
                 asset_map[old_asset_id] = result["assetId"]
         elif asset_type == "video":
-            name = os.path.basename(filename)
             binary_io = open(filename, "rb")
             result = experiment.log_video(
-                binary_io, name=log_as_filename or name, step=step, epoch=epoch
-            )  # done!
+                binary_io,
+                name=log_as_filename or original_filename,
+                step=step,
+                epoch=epoch,
+            )
             if result is None:
                 print(
-                    f"ERROR: Unable to log {asset_type} asset {log_as_filename or name}; skipping"
+                    f"ERROR: Unable to log {asset_type} asset {log_as_filename or original_filename}; skipping"
                 )
             else:
                 asset_map[old_asset_id] = result["assetId"]
         elif asset_type == "model-element":
-            dir_name = assets_metadata[log_filename].get("dir", "")
+            dir_name = asset_data.get("dir", "")
             # The dir field includes a "models/" prefix added by the
             # backend; strip it to get the actual model name.
             if dir_name.startswith("models/"):
@@ -1364,18 +1365,15 @@ class CopyManager:
             else:
                 model_name = dir_name
             binary_io = open(filename, "rb")
-            result = experiment._log_asset(
-                binary_io,
-                file_name=log_as_filename or log_filename,
-                copy_to_tmp=True,
-                asset_type=asset_type,
+            result = experiment.log_model(
+                name=model_name,
+                file_or_folder=binary_io,
+                file_name=log_as_filename or original_filename,
                 metadata=metadata,
-                step=step,
-                grouping_name=model_name,
             )
             if result is None:
                 print(
-                    f"ERROR: Unable to log {asset_type} asset {log_as_filename or log_filename}; skipping"
+                    f"ERROR: Unable to log {asset_type} asset {log_as_filename or original_filename}; skipping"
                 )
             else:
                 asset_map[old_asset_id] = result["assetId"]
@@ -1386,11 +1384,11 @@ class CopyManager:
                 metadata,
                 filename,
                 step,
-                log_as_filename or log_filename,
+                log_as_filename or original_filename,
             )
             if result is None:
                 print(
-                    f"ERROR: Unable to log {asset_type} asset {log_as_filename or log_filename}; skipping"
+                    f"ERROR: Unable to log {asset_type} asset {log_as_filename or original_filename}; skipping"
                 )
             else:
                 asset_map[old_asset_id] = result["assetId"]
@@ -1402,39 +1400,50 @@ class CopyManager:
         # Create mapping from old asset id to new asset id
         asset_map = {}
         # Process all of the non-nested assets first:
-        for log_filename in assets_metadata:
-            asset_type = assets_metadata[log_filename].get("type", "asset") or "asset"
+        for asset_data in assets_metadata:
+            asset_type = asset_data.get("type", "asset") or "asset"
             if asset_type not in ["confusion-matrix", "embeddings", "datagrid"]:
-                if (
-                    "remote" in assets_metadata[log_filename]
-                    and assets_metadata[log_filename]["remote"]
-                ):
-                    asset = assets_metadata[log_filename]
-                    experiment.log_remote_asset(
-                        uri=asset["link"],
-                        remote_file_name=asset["fileName"],
-                        step=asset["step"],
-                        metadata=asset["metadata"],
-                    )
+                if asset_data.get("remote", False):
+                    if asset_type == "model-element":
+                        dir_name = asset_data.get("dir", "")
+                        if dir_name.startswith("models/"):
+                            model_name = dir_name[len("models/"):]
+                        else:
+                            model_name = dir_name
+                        raw_metadata = asset_data.get("metadata")
+                        metadata = json.loads(raw_metadata) if raw_metadata else None
+                        experiment.log_remote_model(
+                            model_name=model_name,
+                            uri=asset_data["link"],
+                            metadata=metadata,
+                            sync_mode=False,
+                        )
+                    else:
+                        raw_metadata = asset_data.get("metadata")
+                        metadata = json.loads(raw_metadata) if raw_metadata else None
+                        experiment.log_remote_asset(
+                            uri=asset_data["link"],
+                            remote_file_name=asset_data["fileName"],
+                            step=asset_data["step"],
+                            metadata=metadata,
+                        )
                 else:
                     self._log_asset(
                         experiment,
                         path,
                         asset_type,
-                        log_filename,
-                        assets_metadata,
+                        asset_data,
                         asset_map,
                     )
         # Process all nested assets:
-        for log_filename in assets_metadata:
-            asset_type = assets_metadata[log_filename].get("type", "asset") or "asset"
+        for asset_data in assets_metadata:
+            asset_type = asset_data.get("type", "asset") or "asset"
             if asset_type in ["confusion-matrix", "embeddings", "datagrid"]:
                 self._log_asset(
                     experiment,
                     path,
                     asset_type,
-                    log_filename,
-                    assets_metadata,
+                    asset_data,
                     asset_map,
                 )
 
@@ -1632,11 +1641,11 @@ class CopyManager:
             assets_metadata_filename = os.path.join(
                 experiment_folder, "assets", "assets_metadata.jsonl"
             )
-            assets_metadata = {}
+            assets_metadata = []
             if os.path.exists(assets_metadata_filename):
                 for line in open(assets_metadata_filename):
                     data = json.loads(line)
-                    assets_metadata[data["fileName"]] = data
+                    assets_metadata.append(data)
 
                 self.log_assets(
                     experiment,
