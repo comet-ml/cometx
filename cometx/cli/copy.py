@@ -197,6 +197,12 @@ def get_parser_arguments(parser):
         type=str,
         default=None,
     )
+    parser.add_argument(
+        "--create-workspaces",
+        help="Attempt to create the destination workspace if it does not exist",
+        default=False,
+        action="store_true",
+    )
 
 
 def copy(parsed_args, remaining=None):
@@ -214,6 +220,7 @@ def copy(parsed_args, remaining=None):
             parsed_args.ignore,
             parsed_args.debug,
             parsed_args.sync,
+            parsed_args.create_workspaces,
         )
 
         # Wait for all uploads to complete
@@ -790,7 +797,7 @@ class CopyManager:
         # Restore default signal handler
         signal.signal(signal.SIGINT, signal.default_int_handler)
 
-    def copy(self, source, destination, symlink, ignore, debug, sync):
+    def copy(self, source, destination, symlink, ignore, debug, sync, create_workspaces=False):
         """ """
         self.ignore = ignore
         self.debug = debug
@@ -820,31 +827,37 @@ class CopyManager:
         else:
             raise Exception("invalid COMET_SOURCE: %r" % source)
 
-        # First check to make sure workspace_dst exists; try to create if not:
+        # First check to make sure workspace_dst exists:
         workspaces = self.api.get_workspaces()
         if workspace_dst not in workspaces:
-            print(
-                f"Workspace {workspace_dst!r} does not exist, attempting to create it..."
-            )
-            try:
-                import requests
-
-                url = f"{self.api.server_url}/api/rest/v2/write/workspace/new"
-                response = requests.post(
-                    url,
-                    json={"name": workspace_dst},
-                    headers={
-                        "Authorization": self.api.api_key,
-                        "Content-Type": "application/json",
-                    },
+            if create_workspaces:
+                print(
+                    f"Workspace {workspace_dst!r} does not exist, attempting to create it..."
                 )
-                response.raise_for_status()
-                print(f"Workspace {workspace_dst!r} created successfully.")
-            except Exception as exc:
+                try:
+                    import requests
+
+                    url = f"{self.api.server_url}/api/rest/v2/write/workspace/new"
+                    response = requests.post(
+                        url,
+                        json={"name": workspace_dst},
+                        headers={
+                            "Authorization": self.api.api_key,
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    response.raise_for_status()
+                    print(f"Workspace {workspace_dst!r} created successfully.")
+                except Exception as exc:
+                    raise Exception(
+                        f"Workspace {workspace_dst!r} does not exist and could not be "
+                        f"created automatically: {exc}. "
+                        f"Please create it via the Comet UI and try again."
+                    )
+            else:
                 raise Exception(
-                    f"Workspace {workspace_dst!r} does not exist and could not be "
-                    f"created automatically: {exc}. "
-                    f"Please create it via the Comet UI or with an admin API Key and try again."
+                    f"{workspace_dst} does not exist; use --create-workspaces to "
+                    f"create it automatically, or create it via the Comet UI"
                 )
 
         if project_src == "panels":
