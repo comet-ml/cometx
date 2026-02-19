@@ -1365,14 +1365,11 @@ class CopyManager:
             else:
                 model_name = dir_name
             binary_io = open(filename, "rb")
-            result = experiment._log_asset(
-                binary_io,
+            result = experiment.log_model(
+                name=model_name,
+                file_or_folder=binary_io,
                 file_name=log_as_filename or original_filename,
-                copy_to_tmp=True,
-                asset_type=asset_type,
                 metadata=metadata,
-                step=step,
-                grouping_name=model_name,
             )
             if result is None:
                 print(
@@ -1407,12 +1404,27 @@ class CopyManager:
             asset_type = asset_data.get("type", "asset") or "asset"
             if asset_type not in ["confusion-matrix", "embeddings", "datagrid"]:
                 if asset_data.get("remote", False):
-                    experiment.log_remote_asset(
-                        uri=asset_data["link"],
-                        remote_file_name=asset_data["fileName"],
-                        step=asset_data["step"],
-                        metadata=asset_data["metadata"],
-                    )
+                    if asset_type == "model-element":
+                        dir_name = asset_data.get("dir", "")
+                        if dir_name.startswith("models/"):
+                            model_name = dir_name[len("models/"):]
+                        else:
+                            model_name = dir_name
+                        raw_metadata = asset_data.get("metadata")
+                        metadata = json.loads(raw_metadata) if raw_metadata else None
+                        experiment.log_remote_model(
+                            model_name=model_name,
+                            uri=asset_data["link"],
+                            metadata=metadata,
+                            sync_mode=False,
+                        )
+                    else:
+                        experiment.log_remote_asset(
+                            uri=asset_data["link"],
+                            remote_file_name=asset_data["fileName"],
+                            step=asset_data["step"],
+                            metadata=asset_data["metadata"],
+                        )
                 else:
                     self._log_asset(
                         experiment,
