@@ -820,12 +820,32 @@ class CopyManager:
         else:
             raise Exception("invalid COMET_SOURCE: %r" % source)
 
-        # First check to make sure workspace_dst exists:
+        # First check to make sure workspace_dst exists; try to create if not:
         workspaces = self.api.get_workspaces()
         if workspace_dst not in workspaces:
-            raise Exception(
-                f"{workspace_dst} does not exist; use the Comet UI to create it"
+            print(
+                f"Workspace {workspace_dst!r} does not exist, attempting to create it..."
             )
+            try:
+                import requests
+
+                url = f"{self.api.server_url}/api/rest/v2/write/workspace/new"
+                response = requests.post(
+                    url,
+                    json={"name": workspace_dst},
+                    headers={
+                        "Authorization": self.api.api_key,
+                        "Content-Type": "application/json",
+                    },
+                )
+                response.raise_for_status()
+                print(f"Workspace {workspace_dst!r} created successfully.")
+            except Exception as exc:
+                raise Exception(
+                    f"Workspace {workspace_dst!r} does not exist and could not be "
+                    f"created automatically: {exc}. "
+                    f"Please create it via the Comet UI or with an admin API Key and try again."
+                )
 
         if project_src == "panels":
             # experiment_src may be "*" or filename
