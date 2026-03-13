@@ -333,9 +333,7 @@ For more information, `cometx log --help`
 
 ## cometx migrate-users
 
-This command is used to migrate users into workspaces from a source Comet environment to a destination environment. It reads workspace membership from a chargeback report from the source environment and invites each user to the corresponding workspace in the destination environment by email. If a user with the email does not exist in the destination environment, they still will be provisioned access to these workspaces once they sign up using that email.
-
-The chargeback report can be fetched automatically from the source environment's admin API, or you can provide a pre-downloaded JSON file.
+This command migrates users into workspaces from a source Comet environment to a destination environment. It reads workspace membership from a chargeback report fetched from the source environment's admin API (or a pre-downloaded local file) and invites each user to the corresponding workspace in the destination environment by email. If a user with that email does not yet exist in the destination, they will be provisioned access once they sign up.
 
 ```
 cometx migrate-users --api-key DEST_KEY --source-api-key SOURCE_KEY [FLAGS ...]
@@ -343,14 +341,17 @@ cometx migrate-users --api-key DEST_KEY --chargeback-report /path/to/report.json
 ```
 
 **Arguments:**
-* `--api-key API_KEY` - API key for the destination environment where users will be added. Falls back to `COMET_API_KEY` environment variable if not provided.
-* `--source-api-key SOURCE_API_KEY` - API key for the source environment. Used to fetch the chargeback report. Falls back to `COMET_API_KEY` environment variable if not provided. Required unless `--chargeback-report` is given.
-* `--chargeback-report PATH` - Path to a local chargeback report JSON file. When provided, the report is loaded from this file instead of being fetched from the source environment, and `--source-api-key` is not required.
+* `--api-key API_KEY` - API key for the destination environment. Falls back to `COMET_API_KEY` if not provided.
+* `--url URL` - Base URL of the destination Comet environment (e.g. `https://comet.example.com`). Required for self-hosted instances when the API key does not encode the server URL.
+* `--source-api-key SOURCE_API_KEY` - API key for the source environment. Used to fetch the chargeback report. Required unless `--chargeback-report` is given.
+* `--source-url SOURCE_URL` - Base URL of the source Comet environment. Required for self-hosted source instances when the source API key does not encode the server URL.
+* `--chargeback-report PATH` - Path to a local chargeback report JSON file. When provided, `--source-api-key` is not required.
 
 ### Flags
 
-* `--create-workspaces` - Create workspaces on the destination environment if they don't already exist (default: off)
+* `--create-workspaces` - Create workspaces on the destination if they don't already exist (default: off)
 * `--dry-run` - Print what would happen without making any changes
+* `--failures-output PATH` - Path to write failed operations JSON (default: `bulk_add_failures_by_email.json`)
 
 ### Examples
 
@@ -364,6 +365,9 @@ cometx migrate-users --api-key DEST_KEY --source-api-key SOURCE_KEY
 # Use a local chargeback report file
 cometx migrate-users --api-key DEST_KEY --chargeback-report /tmp/chargeback_reports.json
 
+# Self-hosted environments — provide explicit URLs
+cometx migrate-users --api-key DEST_KEY --url https://comet.dest.example.com \
+    --source-api-key SOURCE_KEY --source-url https://comet.src.example.com
 ```
 
 For more information, `cometx migrate-users --help`
@@ -518,12 +522,8 @@ cometx admin chargeback-report [YEAR-MONTH]
 **Examples:**
 ```
 cometx admin chargeback-report
-<<<<<<< Updated upstream
-cometx admin usage-report
-=======
 cometx admin chargeback-report 2024-09
 ```
->>>>>>> Stashed changes
 
 #### usage-report
 

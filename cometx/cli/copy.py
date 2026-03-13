@@ -78,6 +78,8 @@ import threading
 import time
 import urllib.parse
 import zipfile
+
+import requests
 from datetime import datetime, timedelta
 
 from comet_ml import APIExperiment, Artifact, Experiment, OfflineExperiment
@@ -834,10 +836,8 @@ class CopyManager:
                 print(
                     f"Workspace {workspace_dst!r} does not exist, attempting to create it..."
                 )
+                url = f"{self.api._get_url_server()}/api/rest/v2/write/workspace/new"
                 try:
-                    import requests
-
-                    url = f"{self.api.server_url}/api/rest/v2/write/workspace/new"
                     response = requests.post(
                         url,
                         json={"name": workspace_dst},
@@ -848,12 +848,18 @@ class CopyManager:
                     )
                     response.raise_for_status()
                     print(f"Workspace {workspace_dst!r} created successfully.")
-                except Exception as exc:
+                except requests.exceptions.HTTPError as exc:
+                    raise Exception(
+                        f"Workspace {workspace_dst!r} does not exist and could not be "
+                        f"created automatically (HTTP {exc.response.status_code}). "
+                        f"Please create it via the Comet UI and try again."
+                    ) from exc
+                except requests.exceptions.RequestException as exc:
                     raise Exception(
                         f"Workspace {workspace_dst!r} does not exist and could not be "
                         f"created automatically: {exc}. "
                         f"Please create it via the Comet UI and try again."
-                    )
+                    ) from exc
             else:
                 raise Exception(
                     f"{workspace_dst} does not exist; use --create-workspaces to "
