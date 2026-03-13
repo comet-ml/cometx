@@ -108,7 +108,6 @@ def main(raw_args=sys.argv[1:]):
     add_subparser(subparsers, count, "count")
     add_subparser(subparsers, reproduce, "reproduce")
     add_subparser(subparsers, config, "config")
-    add_subparser(subparsers, migrate_users, "migrate-users")
     add_subparser(subparsers, rename_duplicates, "rename-duplicates")
     add_subparser(subparsers, smoke_test, "smoke-test")
     add_subparser(subparsers, migrate_users, "migrate-users")

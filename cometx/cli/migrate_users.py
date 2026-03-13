@@ -30,6 +30,7 @@ import base64
 import json
 import os
 import sys
+import urllib.parse
 
 import requests
 
@@ -99,9 +100,13 @@ def _resolve_server_url(api_key, explicit_url=None):
     Priority:
     1. ``explicit_url`` (from --url / --source-url), if provided.
     2. URL encoded inside the API key (new-style keys contain ``*<base64>``).
-    3. COMET_CLOUD_URL as a last resort.
+    3. Error — no silent fallback to cloud URL.
     """
     if explicit_url:
+        parsed = urllib.parse.urlparse(explicit_url)
+        if parsed.scheme != "https":
+            print("[ERROR] --url/--source-url must use https://.")
+            sys.exit(1)
         return explicit_url.rstrip("/")
 
     if "*" in api_key:
@@ -112,9 +117,14 @@ def _resolve_server_url(api_key, explicit_url=None):
             payload = json.loads(base64.b64decode(encoded + "=" * padding))
             return payload["baseUrl"].rstrip("/")
         except Exception:
-            pass  # Fall through to default
+            pass  # Fall through to error below
 
-    return COMET_CLOUD_URL
+    print(
+        "[ERROR] Cannot determine the server URL from the API key. "
+        "Pass --url (destination) or --source-url (source) explicitly, "
+        "e.g. --url https://comet.example.com"
+    )
+    sys.exit(1)
 
 
 def _fetch_chargeback_report(server_url, source_api_key):
@@ -140,9 +150,16 @@ def _get_existing_workspaces(dest_url, headers):
     resp = requests.get(url, headers=headers, timeout=15)
     resp.raise_for_status()
     data = resp.json()
-    # The endpoint may return a list of strings or a list of dicts with a "name" key.
+    # Handle {"workspaceNames": [...]} dict shape
+    if isinstance(data, dict):
+        names = data.get("workspaceNames", [])
+        if names and isinstance(names[0], dict):
+            return {ws["name"] for ws in names}
+        return set(names)
+    # Handle list of dicts with a "name" key
     if data and isinstance(data[0], dict):
         return {ws["name"] for ws in data}
+    # Handle flat list of strings
     return set(data)
 
 

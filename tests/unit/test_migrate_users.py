@@ -17,8 +17,9 @@ import json
 import unittest
 from unittest.mock import MagicMock, call, patch
 
+import pytest
+
 from cometx.cli.migrate_users import (
-    COMET_CLOUD_URL,
     _add_member,
     _get_existing_workspaces,
     _resolve_server_url,
@@ -40,6 +41,10 @@ class TestResolveServerUrl:
     def test_explicit_url_trailing_slash_stripped(self):
         assert _resolve_server_url("anykey", "https://example.com/") == "https://example.com"
 
+    def test_explicit_url_non_https_exits(self):
+        with pytest.raises(SystemExit):
+            _resolve_server_url("anykey", "http://example.com")
+
     def test_new_style_key_decoded(self):
         key = _make_new_style_key("https://self-hosted.example.com")
         assert _resolve_server_url(key) == "https://self-hosted.example.com"
@@ -48,17 +53,20 @@ class TestResolveServerUrl:
         key = _make_new_style_key("https://self-hosted.example.com/")
         assert _resolve_server_url(key) == "https://self-hosted.example.com"
 
-    def test_old_style_key_defaults_to_cloud(self):
-        assert _resolve_server_url("oldstylekey") == COMET_CLOUD_URL
+    def test_old_style_key_exits(self):
+        with pytest.raises(SystemExit):
+            _resolve_server_url("oldstylekey")
 
-    def test_malformed_new_style_key_defaults_to_cloud(self):
-        assert _resolve_server_url("abc*notvalidbase64!!!") == COMET_CLOUD_URL
+    def test_malformed_new_style_key_exits(self):
+        with pytest.raises(SystemExit):
+            _resolve_server_url("abc*notvalidbase64!!!")
 
-    def test_new_style_key_missing_base_url_defaults_to_cloud(self):
+    def test_new_style_key_missing_base_url_exits(self):
         payload = json.dumps({"other": "value"}).encode()
         encoded = base64.b64encode(payload).decode()
         key = f"abc*{encoded}"
-        assert _resolve_server_url(key) == COMET_CLOUD_URL
+        with pytest.raises(SystemExit):
+            _resolve_server_url(key)
 
 
 class TestGetExistingWorkspaces:
@@ -72,6 +80,22 @@ class TestGetExistingWorkspaces:
     @patch("cometx.cli.migrate_users.requests.get")
     def test_dict_list_response(self, mock_get):
         mock_get.return_value.json.return_value = [{"name": "ws1"}, {"name": "ws2"}]
+        mock_get.return_value.raise_for_status = MagicMock()
+        result = _get_existing_workspaces("https://example.com", {})
+        assert result == {"ws1", "ws2"}
+
+    @patch("cometx.cli.migrate_users.requests.get")
+    def test_workspace_names_dict_response(self, mock_get):
+        mock_get.return_value.json.return_value = {"workspaceNames": ["ws1", "ws2"]}
+        mock_get.return_value.raise_for_status = MagicMock()
+        result = _get_existing_workspaces("https://example.com", {})
+        assert result == {"ws1", "ws2"}
+
+    @patch("cometx.cli.migrate_users.requests.get")
+    def test_workspace_names_dict_with_dict_entries(self, mock_get):
+        mock_get.return_value.json.return_value = {
+            "workspaceNames": [{"name": "ws1"}, {"name": "ws2"}]
+        }
         mock_get.return_value.raise_for_status = MagicMock()
         result = _get_existing_workspaces("https://example.com", {})
         assert result == {"ws1", "ws2"}
