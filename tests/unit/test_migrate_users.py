@@ -208,21 +208,8 @@ class TestMigrateUsersDryRun:
 
     def test_no_source_key_without_chargeback_report_exits(self):
         args = self._make_args(source_api_key=None, chargeback_report=None)
-        with self.assertRaises(SystemExit):
+        with pytest.raises(SystemExit):
             migrate_users(args)
-
-    def assertRaises(self, exc):
-        import contextlib
-
-        @contextlib.contextmanager
-        def ctx():
-            try:
-                yield
-                raise AssertionError(f"{exc} was not raised")
-            except exc:
-                pass
-
-        return ctx()
 
 
 if __name__ == "__main__":

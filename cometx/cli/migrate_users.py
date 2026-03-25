@@ -36,8 +36,6 @@ import requests
 
 ADDITIONAL_ARGS = False
 
-COMET_CLOUD_URL = "https://www.comet.com"
-
 
 def get_parser_arguments(parser):
     parser.add_argument(
