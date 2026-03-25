@@ -120,7 +120,7 @@ def _add_member(url, headers, email, workspace_name):
     payload = {
         "userEmail": email,
         "workspaceName": workspace_name,
-        "admin": False,
+        "admin": True,
     }
     try:
         response = requests.post(
