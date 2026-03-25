@@ -20,9 +20,9 @@ admin API, or you can provide a local JSON file with --chargeback-report.
 
 Examples:
 
-$ cometx --api-key DEST_KEY migrate-users --source-api-key SOURCE_KEY --dry-run
-$ cometx --api-key DEST_KEY migrate-users --source-api-key SOURCE_KEY
-$ cometx --api-key DEST_KEY migrate-users --chargeback-report /path/to/report.json
+$ cometx migrate-users --api-key DEST_KEY --source-api-key SOURCE_KEY --dry-run
+$ cometx migrate-users --api-key DEST_KEY --source-api-key SOURCE_KEY
+$ cometx migrate-users --api-key DEST_KEY --chargeback-report /path/to/report.json
 """
 
 import argparse
@@ -30,6 +30,8 @@ import base64
 import json
 import os
 import sys
+import urllib.parse
+
 import requests
 
 ADDITIONAL_ARGS = False
@@ -40,13 +42,29 @@ COMET_CLOUD_URL = "https://www.comet.com"
 def get_parser_arguments(parser):
     parser.add_argument(
         "--api-key",
-        help="API key for the destination environment (used to add workspace members)",
+        help="API key for the destination environment (used to add workspace members). "
+        "Falls back to COMET_API_KEY environment variable if not provided.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--url",
+        help="Base URL of the destination Comet environment (e.g. https://comet.example.com). "
+        "Required for self-hosted instances when the API key does not encode the server URL.",
         type=str,
         default=None,
     )
     parser.add_argument(
         "--source-api-key",
-        help="API key for the source environment (used to fetch the chargeback report)",
+        help="API key for the source environment (used to fetch the chargeback report). "
+        "Required unless --chargeback-report is given.",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--source-url",
+        help="Base URL of the source Comet environment. "
+        "Required for self-hosted instances when the source API key does not encode the server URL.",
         type=str,
         default=None,
     )
@@ -68,15 +86,45 @@ def get_parser_arguments(parser):
         default=False,
         action="store_true",
     )
+    parser.add_argument(
+        "--failures-output",
+        help="Path to write failed operations JSON (default: bulk_add_failures_by_email.json)",
+        type=str,
+        default="bulk_add_failures_by_email.json",
+    )
 
 
-def _resolve_server_url(api_key):
-    if "*" not in api_key:
-        return COMET_CLOUD_URL
+def _resolve_server_url(api_key, explicit_url=None):
+    """Return the server base URL.
 
-    _, encoded = api_key.split("*", 1)
-    payload = json.loads(base64.b64decode(encoded))
-    return payload["baseUrl"].rstrip("/")
+    Priority:
+    1. ``explicit_url`` (from --url / --source-url), if provided.
+    2. URL encoded inside the API key (new-style keys contain ``*<base64>``).
+    3. Error — no silent fallback to cloud URL.
+    """
+    if explicit_url:
+        parsed = urllib.parse.urlparse(explicit_url)
+        if parsed.scheme != "https":
+            print("[ERROR] --url/--source-url must use https://.")
+            sys.exit(1)
+        return explicit_url.rstrip("/")
+
+    if "*" in api_key:
+        try:
+            _, encoded = api_key.split("*", 1)
+            # base64 padding may be missing
+            padding = (4 - len(encoded) % 4) % 4
+            payload = json.loads(base64.b64decode(encoded + "=" * padding))
+            return payload["baseUrl"].rstrip("/")
+        except Exception:
+            pass  # Fall through to error below
+
+    print(
+        "[ERROR] Cannot determine the server URL from the API key. "
+        "Pass --url (destination) or --source-url (source) explicitly, "
+        "e.g. --url https://comet.example.com"
+    )
+    sys.exit(1)
 
 
 def _fetch_chargeback_report(server_url, source_api_key):
@@ -101,7 +149,18 @@ def _get_existing_workspaces(dest_url, headers):
     url = f"{dest_url}/api/rest/v2/workspaces"
     resp = requests.get(url, headers=headers, timeout=15)
     resp.raise_for_status()
-    return set(resp.json())
+    data = resp.json()
+    # Handle {"workspaceNames": [...]} dict shape
+    if isinstance(data, dict):
+        names = data.get("workspaceNames", [])
+        if names and isinstance(names[0], dict):
+            return {ws["name"] for ws in names}
+        return set(names)
+    # Handle list of dicts with a "name" key
+    if data and isinstance(data[0], dict):
+        return {ws["name"] for ws in data}
+    # Handle flat list of strings
+    return set(data)
 
 
 def _create_workspace(dest_url, headers, workspace_name):
@@ -126,7 +185,7 @@ def _add_member(url, headers, email, workspace_name):
         response = requests.post(
             url,
             headers=headers,
-            data=json.dumps(payload),
+            json=payload,
             timeout=15,
         )
 
@@ -163,22 +222,30 @@ def migrate_users(parsed_args):
         print("[ERROR] No API key found. Set COMET_API_KEY or pass --api-key.")
         sys.exit(1)
 
-    source_api_key = parsed_args.source_api_key or os.environ.get("COMET_API_KEY")
+    source_api_key = parsed_args.source_api_key
     create_workspaces = parsed_args.create_workspaces
     dry_run = parsed_args.dry_run
+    failures_output = parsed_args.failures_output
 
     if not parsed_args.chargeback_report and not source_api_key:
-        print("[ERROR] Provide either --source-api-key or --chargeback-report.")
+        print(
+            "[ERROR] --source-api-key is required when --chargeback-report is not provided."
+        )
         sys.exit(1)
 
-    dest_url = _resolve_server_url(api_key)
+    dest_url = _resolve_server_url(api_key, parsed_args.url)
     print(f"Destination URL: {dest_url}")
 
     if parsed_args.chargeback_report:
         data = _load_chargeback_report(parsed_args.chargeback_report)
     else:
-        source_url = _resolve_server_url(source_api_key)
+        source_url = _resolve_server_url(source_api_key, parsed_args.source_url)
         print(f"Source URL: {source_url}")
+        if source_url == dest_url and source_api_key == api_key:
+            print(
+                "[WARNING] Source and destination URL and API key are identical. "
+                "Are you sure you want to migrate users to the same environment?"
+            )
         try:
             data = _fetch_chargeback_report(source_url, source_api_key)
         except requests.exceptions.RequestException as e:
@@ -215,7 +282,7 @@ def migrate_users(parsed_args):
     elif create_workspaces and dry_run:
         print("[DRY RUN] Would check/create workspaces on destination\n")
 
-    url = f"{dest_url}/api/rest/v2/write/add-workspace-member"
+    add_member_url = f"{dest_url}/api/rest/v2/write/add-workspace-member"
 
     total_added = 0
     total_skipped = 0
@@ -252,11 +319,12 @@ def migrate_users(parsed_args):
                 continue
 
             if dry_run:
+                print(f"  [DRY RUN] Would add '{email}' to '{ws_name}'")
                 ws_added += 1
                 total_added += 1
                 continue
 
-            status, error_info = _add_member(url, headers, email, ws_name)
+            status, error_info = _add_member(add_member_url, headers, email, ws_name)
 
             if status == "added":
                 ws_added += 1
@@ -280,7 +348,7 @@ def migrate_users(parsed_args):
                 )
 
         if dry_run:
-            print(f"  [DRY RUN] Would add {ws_added}/{len(members)} users")
+            print(f"  [DRY RUN] Total: would add {ws_added}/{len(members)} users")
         else:
             parts = [f"  Added {ws_added}/{len(members)} users successfully"]
             if ws_already_member:
@@ -309,10 +377,9 @@ def migrate_users(parsed_args):
         print(f"  *** Remove --dry-run to execute for real ***")
 
     if failures:
-        failures_file = "bulk_add_failures_by_email.json"
-        with open(failures_file, "w") as f:
+        with open(failures_output, "w") as f:
             json.dump(failures, f, indent=2)
-        print(f"\n  Failed operations saved to {failures_file}")
+        print(f"\n  Failed operations saved to {failures_output}")
 
 
 def main(args):

@@ -78,6 +78,8 @@ import threading
 import time
 import urllib.parse
 import zipfile
+
+import requests
 from datetime import datetime, timedelta
 
 from comet_ml import APIExperiment, Artifact, Experiment, OfflineExperiment
@@ -102,6 +104,7 @@ from ..api import API
 from ..framework.comet.download_manager import sanitize_filename
 from ..utils import remove_extra_slashes
 from .copy_utils import upload_single_offline_experiment
+from .migrate_users import _create_workspace
 
 ADDITIONAL_ARGS = False
 
@@ -834,26 +837,26 @@ class CopyManager:
                 print(
                     f"Workspace {workspace_dst!r} does not exist, attempting to create it..."
                 )
+                dest_url = self.api._get_url_server()
+                headers = {
+                    "Authorization": self.api.api_key,
+                    "Content-Type": "application/json",
+                }
                 try:
-                    import requests
-
-                    url = f"{self.api.server_url}/api/rest/v2/write/workspace/new"
-                    response = requests.post(
-                        url,
-                        json={"name": workspace_dst},
-                        headers={
-                            "Authorization": self.api.api_key,
-                            "Content-Type": "application/json",
-                        },
-                    )
-                    response.raise_for_status()
+                    _create_workspace(dest_url, headers, workspace_dst)
                     print(f"Workspace {workspace_dst!r} created successfully.")
-                except Exception as exc:
+                except requests.exceptions.HTTPError as exc:
+                    raise Exception(
+                        f"Workspace {workspace_dst!r} does not exist and could not be "
+                        f"created automatically (HTTP {exc.response.status_code}). "
+                        f"Please create it via the Comet UI and try again."
+                    ) from exc
+                except requests.exceptions.RequestException as exc:
                     raise Exception(
                         f"Workspace {workspace_dst!r} does not exist and could not be "
                         f"created automatically: {exc}. "
                         f"Please create it via the Comet UI and try again."
-                    )
+                    ) from exc
             else:
                 raise Exception(
                     f"{workspace_dst} does not exist; use --create-workspaces to "
