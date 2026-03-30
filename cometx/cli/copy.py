@@ -78,6 +78,8 @@ import threading
 import time
 import urllib.parse
 import zipfile
+
+import requests
 from datetime import datetime, timedelta
 
 from comet_ml import APIExperiment, Artifact, Experiment, OfflineExperiment
@@ -102,6 +104,7 @@ from ..api import API
 from ..framework.comet.download_manager import sanitize_filename
 from ..utils import remove_extra_slashes
 from .copy_utils import upload_single_offline_experiment
+from .migrate_users import _create_workspace
 
 ADDITIONAL_ARGS = False
 
@@ -197,6 +200,12 @@ def get_parser_arguments(parser):
         type=str,
         default=None,
     )
+    parser.add_argument(
+        "--create-workspaces",
+        help="Attempt to create the destination workspace if it does not exist",
+        default=False,
+        action="store_true",
+    )
 
 
 def copy(parsed_args, remaining=None):
@@ -214,6 +223,7 @@ def copy(parsed_args, remaining=None):
             parsed_args.ignore,
             parsed_args.debug,
             parsed_args.sync,
+            parsed_args.create_workspaces,
         )
 
         # Wait for all uploads to complete
@@ -790,7 +800,7 @@ class CopyManager:
         # Restore default signal handler
         signal.signal(signal.SIGINT, signal.default_int_handler)
 
-    def copy(self, source, destination, symlink, ignore, debug, sync):
+    def copy(self, source, destination, symlink, ignore, debug, sync, create_workspaces=False):
         """ """
         self.ignore = ignore
         self.debug = debug
@@ -823,9 +833,35 @@ class CopyManager:
         # First check to make sure workspace_dst exists:
         workspaces = self.api.get_workspaces()
         if workspace_dst not in workspaces:
-            raise Exception(
-                f"{workspace_dst} does not exist; use the Comet UI to create it"
-            )
+            if create_workspaces:
+                print(
+                    f"Workspace {workspace_dst!r} does not exist, attempting to create it..."
+                )
+                dest_url = self.api._get_url_server()
+                headers = {
+                    "Authorization": self.api.api_key,
+                    "Content-Type": "application/json",
+                }
+                try:
+                    _create_workspace(dest_url, headers, workspace_dst)
+                    print(f"Workspace {workspace_dst!r} created successfully.")
+                except requests.exceptions.HTTPError as exc:
+                    raise Exception(
+                        f"Workspace {workspace_dst!r} does not exist and could not be "
+                        f"created automatically (HTTP {exc.response.status_code}). "
+                        f"Please create it via the Comet UI and try again."
+                    ) from exc
+                except requests.exceptions.RequestException as exc:
+                    raise Exception(
+                        f"Workspace {workspace_dst!r} does not exist and could not be "
+                        f"created automatically: {exc}. "
+                        f"Please create it via the Comet UI and try again."
+                    ) from exc
+            else:
+                raise Exception(
+                    f"{workspace_dst} does not exist; use --create-workspaces to "
+                    f"create it automatically, or create it via the Comet UI"
+                )
 
         if project_src == "panels":
             # experiment_src may be "*" or filename
