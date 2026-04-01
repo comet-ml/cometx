@@ -194,15 +194,19 @@ class API(API):
         ```
         """
         filename = create_panel_zip(panel_name, code)
-        self.upload_panel_zip(workspace, filename)
+        return self.upload_panel_zip(workspace, filename)
 
-    def upload_panel_zip(self, workspace: str, filename: str) -> Dict[str, str]:
+    def upload_panel_zip(
+        self, workspace: str, filename: str, template_id: str = None
+    ) -> Dict[str, str]:
         """
         Upload a panel zip file to a workspace.
 
         Args:
             workspace (str): the workspace to place the panel into
             filename (str): the name of the panel zip to upload
+            template_id (str, optional): if provided, overwrites the existing
+                panel with this ID instead of creating a new one
 
         Returns: dictionary of results
 
@@ -215,6 +219,8 @@ class API(API):
         ```
         """
         params = {"teamName": workspace}
+        if template_id is not None:
+            params["templateId"] = template_id
         payload = {}
         with open(filename, "rb") as fp:
             files = {"file": (filename, fp)}
@@ -224,6 +230,67 @@ class API(API):
                 params=params,
                 files=files,
             )
+        return results.json()
+
+    def create_dashboard(
+        self,
+        workspace: str,
+        project_name: str,
+        template_name: str,
+        template_id: str = None,
+        panels: List[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Create a new dashboard in a project.
+
+        Args:
+            workspace (str): the workspace name the project belongs to
+            project_name (str): the project name to create the dashboard in
+            template_name (str): name for the new dashboard
+            template_id (str, optional): source template ID to clone code
+                panel associations from an existing dashboard
+            panels (list, optional): list of panel template IDs to include
+                in the new dashboard
+            **kwargs: additional DashboardTemplate fields
+
+        Returns: dictionary representing the created DashboardTemplate
+
+        Example:
+        ```python linenums="1"
+        from cometx import API
+
+        api = API()
+        dashboard = api.create_dashboard(
+            workspace="my-workspace",
+            project_name="my-project",
+            template_name="My Dashboard",
+            panels=["panel-template-id-1", "panel-template-id-2"],
+        )
+        ```
+        """
+        projects = self._client.get_from_endpoint(
+            "projects", params={"workspaceName": workspace}
+        )
+        project = next(
+            (p for p in projects["projects"] if p["projectName"] == project_name),
+            None,
+        )
+        if project is None:
+            raise Exception(
+                f"Project {project_name!r} not found in workspace {workspace!r}"
+            )
+        project_id = project["projectId"]
+
+        body = {"project_id": project_id, "template_name": template_name, **kwargs}
+        if template_id is not None:
+            body["template_id"] = template_id
+        if panels is not None:
+            body["codePanelTemplateIds"] = panels
+        results = self._client.post_from_endpoint(
+            "write/dashboard-template/create",
+            payload=body,
+        )
         return results.json()
 
     def log_pr_curves(
