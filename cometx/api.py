@@ -171,7 +171,13 @@ class API(API):
         else:
             raise Exception("I don't know what to do with %r" % parsed_url.path)
 
-    def upload_panel_code(self, workspace: str, panel_name: str, code: str) -> None:
+    def upload_panel_code(
+        self,
+        workspace: str,
+        panel_name: str,
+        code: str,
+        template_id: str = None,
+    ) -> None:
         """
         Upload Python code as a panel in a workspace.
 
@@ -179,6 +185,8 @@ class API(API):
             workspace (str): the workspace to place the panel into
             panel_name (str): the name of the panel
             code (str): the code to turn into a panel
+            template_id (str, optional): if provided, overwrites the existing
+                panel with this ID instead of creating a new one
 
         Example:
         ```python linenums="1"
@@ -194,7 +202,7 @@ class API(API):
         ```
         """
         filename = create_panel_zip(panel_name, code)
-        return self.upload_panel_zip(workspace, filename)
+        return self.upload_panel_zip(workspace, filename, template_id=template_id)
 
     def upload_panel_zip(
         self, workspace: str, filename: str, template_id: str = None
@@ -289,6 +297,67 @@ class API(API):
             body["codePanelTemplateIds"] = panels
         results = self._client.post_from_endpoint(
             "write/dashboard-template/create",
+            payload=body,
+        )
+        return results.json()
+
+    def update_dashboard(
+        self,
+        workspace: str,
+        project_name: str,
+        template_id: str,
+        template_name: str = None,
+        panels: List[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Update an existing dashboard in a project.
+
+        Args:
+            workspace (str): the workspace name the project belongs to
+            project_name (str): the project name the dashboard belongs to
+            template_id (str): the ID of the dashboard to update
+            template_name (str, optional): new name for the dashboard
+            panels (list, optional): list of panel template IDs to set on
+                the dashboard
+            **kwargs: additional DashboardTemplate fields
+
+        Returns: dictionary representing the updated DashboardTemplate
+
+        Example:
+        ```python linenums="1"
+        from cometx import API
+
+        api = API()
+        dashboard = api.update_dashboard(
+            workspace="my-workspace",
+            project_name="my-project",
+            template_id="existing-dashboard-id",
+            template_name="Renamed Dashboard",
+            panels=["panel-template-id-1", "panel-template-id-2"],
+        )
+        ```
+        """
+        projects = self._client.get_from_endpoint(
+            "projects", params={"workspaceName": workspace}
+        )
+        project = next(
+            (p for p in projects["projects"] if p["projectName"] == project_name),
+            None,
+        )
+        if project is None:
+            raise Exception(
+                f"Project {project_name!r} not found in workspace {workspace!r}"
+            )
+        project_id = project["projectId"]
+
+        body = {"project_id": project_id, "template_id": template_id, **kwargs}
+        if template_name is not None:
+            body["template_name"] = template_name
+        if panels is not None:
+            body["codePanelTemplateIds"] = panels
+        results = self._client.post_from_endpoint(
+            "dashboard-templates/project/upsert",
             payload=body,
         )
         return results.json()
