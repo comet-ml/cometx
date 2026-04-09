@@ -177,7 +177,7 @@ class API(API):
         panel_name: str,
         code: str,
         template_id: str = None,
-    ) -> None:
+    ) -> Dict[str, Any]:
         """
         Upload Python code as a panel in a workspace.
 
@@ -240,6 +240,20 @@ class API(API):
             )
         return results.json()
 
+    def _get_project_id(self, workspace: str, project_name: str) -> str:
+        projects = self._client.get_from_endpoint(
+            "projects", params={"workspaceName": workspace}
+        )
+        project = next(
+            (p for p in projects["projects"] if p["projectName"] == project_name),
+            None,
+        )
+        if project is None:
+            raise Exception(
+                f"Project {project_name!r} not found in workspace {workspace!r}"
+            )
+        return project["projectId"]
+
     def create_dashboard(
         self,
         workspace: str,
@@ -277,18 +291,7 @@ class API(API):
         )
         ```
         """
-        projects = self._client.get_from_endpoint(
-            "projects", params={"workspaceName": workspace}
-        )
-        project = next(
-            (p for p in projects["projects"] if p["projectName"] == project_name),
-            None,
-        )
-        if project is None:
-            raise Exception(
-                f"Project {project_name!r} not found in workspace {workspace!r}"
-            )
-        project_id = project["projectId"]
+        project_id = self._get_project_id(workspace, project_name)
 
         body = {"project_id": project_id, "template_name": template_name, **kwargs}
         if template_id is not None:
@@ -338,18 +341,7 @@ class API(API):
         )
         ```
         """
-        projects = self._client.get_from_endpoint(
-            "projects", params={"workspaceName": workspace}
-        )
-        project = next(
-            (p for p in projects["projects"] if p["projectName"] == project_name),
-            None,
-        )
-        if project is None:
-            raise Exception(
-                f"Project {project_name!r} not found in workspace {workspace!r}"
-            )
-        project_id = project["projectId"]
+        project_id = self._get_project_id(workspace, project_name)
 
         body = {"project_id": project_id, "template_id": template_id, **kwargs}
         if template_name is not None:
