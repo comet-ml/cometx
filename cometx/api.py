@@ -171,7 +171,13 @@ class API(API):
         else:
             raise Exception("I don't know what to do with %r" % parsed_url.path)
 
-    def upload_panel_code(self, workspace: str, panel_name: str, code: str) -> None:
+    def upload_panel_code(
+        self,
+        workspace: str,
+        panel_name: str,
+        code: str,
+        template_id: str = None,
+    ) -> Dict[str, Any]:
         """
         Upload Python code as a panel in a workspace.
 
@@ -179,6 +185,8 @@ class API(API):
             workspace (str): the workspace to place the panel into
             panel_name (str): the name of the panel
             code (str): the code to turn into a panel
+            template_id (str, optional): if provided, overwrites the existing
+                panel with this ID instead of creating a new one
 
         Example:
         ```python linenums="1"
@@ -194,15 +202,19 @@ class API(API):
         ```
         """
         filename = create_panel_zip(panel_name, code)
-        self.upload_panel_zip(workspace, filename)
+        return self.upload_panel_zip(workspace, filename, template_id=template_id)
 
-    def upload_panel_zip(self, workspace: str, filename: str) -> Dict[str, str]:
+    def upload_panel_zip(
+        self, workspace: str, filename: str, template_id: str = None
+    ) -> Dict[str, str]:
         """
         Upload a panel zip file to a workspace.
 
         Args:
             workspace (str): the workspace to place the panel into
             filename (str): the name of the panel zip to upload
+            template_id (str, optional): if provided, overwrites the existing
+                panel with this ID instead of creating a new one
 
         Returns: dictionary of results
 
@@ -215,6 +227,8 @@ class API(API):
         ```
         """
         params = {"teamName": workspace}
+        if template_id is not None:
+            params["templateId"] = template_id
         payload = {}
         with open(filename, "rb") as fp:
             files = {"file": (filename, fp)}
@@ -224,6 +238,120 @@ class API(API):
                 params=params,
                 files=files,
             )
+        return results.json()
+
+    def _get_project_id(self, workspace: str, project_name: str) -> str:
+        projects = self._client.get_from_endpoint(
+            "projects", params={"workspaceName": workspace}
+        )
+        project = next(
+            (p for p in projects["projects"] if p["projectName"] == project_name),
+            None,
+        )
+        if project is None:
+            raise Exception(
+                f"Project {project_name!r} not found in workspace {workspace!r}"
+            )
+        return project["projectId"]
+
+    def create_dashboard(
+        self,
+        workspace: str,
+        project_name: str,
+        template_name: str,
+        template_id: str = None,
+        panels: List[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Create a new dashboard in a project.
+
+        Args:
+            workspace (str): the workspace name the project belongs to
+            project_name (str): the project name to create the dashboard in
+            template_name (str): name for the new dashboard
+            template_id (str, optional): source template ID to clone code
+                panel associations from an existing dashboard
+            panels (list, optional): list of panel template IDs to include
+                in the new dashboard
+            **kwargs: additional DashboardTemplate fields
+
+        Returns: dictionary representing the created DashboardTemplate
+
+        Example:
+        ```python linenums="1"
+        from cometx import API
+
+        api = API()
+        dashboard = api.create_dashboard(
+            workspace="my-workspace",
+            project_name="my-project",
+            template_name="My Dashboard",
+            panels=["panel-template-id-1", "panel-template-id-2"],
+        )
+        ```
+        """
+        project_id = self._get_project_id(workspace, project_name)
+
+        body = {"project_id": project_id, "template_name": template_name, **kwargs}
+        if template_id is not None:
+            body["template_id"] = template_id
+        if panels is not None:
+            body["codePanelTemplateIds"] = panels
+        results = self._client.post_from_endpoint(
+            "write/dashboard-template/create",
+            payload=body,
+        )
+        return results.json()
+
+    def update_dashboard(
+        self,
+        workspace: str,
+        project_name: str,
+        template_id: str,
+        template_name: str = None,
+        panels: List[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Update an existing dashboard in a project.
+
+        Args:
+            workspace (str): the workspace name the project belongs to
+            project_name (str): the project name the dashboard belongs to
+            template_id (str): the ID of the dashboard to update
+            template_name (str, optional): new name for the dashboard
+            panels (list, optional): list of panel template IDs to set on
+                the dashboard
+            **kwargs: additional DashboardTemplate fields
+
+        Returns: dictionary representing the updated DashboardTemplate
+
+        Example:
+        ```python linenums="1"
+        from cometx import API
+
+        api = API()
+        dashboard = api.update_dashboard(
+            workspace="my-workspace",
+            project_name="my-project",
+            template_id="existing-dashboard-id",
+            template_name="Renamed Dashboard",
+            panels=["panel-template-id-1", "panel-template-id-2"],
+        )
+        ```
+        """
+        project_id = self._get_project_id(workspace, project_name)
+
+        body = {"project_id": project_id, "template_id": template_id, **kwargs}
+        if template_name is not None:
+            body["template_name"] = template_name
+        if panels is not None:
+            body["codePanelTemplateIds"] = panels
+        results = self._client.post_from_endpoint(
+            "dashboard-templates/project/upsert",
+            payload=body,
+        )
         return results.json()
 
     def log_pr_curves(
