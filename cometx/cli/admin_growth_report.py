@@ -419,6 +419,195 @@ class GrowthReporter:
 
         return events, usage
 
+    def _collect_mpm(self, workspaces):
+        """Collect MPM `mpm_model` CreationEvents + PREDICTION_VOLUME
+        UsageMetrics.
+
+        MPM models have no reliable creation timestamp, so `created` is
+        resolved via the probe -> proxy -> count chain (see
+        task-C6-context.md): probe `get_model_details` for a
+        creation-timestamp key -> earliest prediction datapoint with y>0
+        -> no CreationEvent (model still counted, just not on the
+        created-over-time chart). The wide predictions series is fetched
+        ONCE per model and reused for both the creation proxy and the
+        PREDICTION_VOLUME usage metric. This is ALL-TIME data; `self.window`
+        is not applied here. Degrades gracefully to `([], [])` if
+        `comet_mpm` is not installed, or if the model-inventory endpoint is
+        unavailable (e.g. MPM not provisioned for this account -> 404).
+        """
+        try:
+            import comet_mpm
+        except ImportError:
+            print("Warning: comet_mpm not installed; skipping MPM collection")
+            return [], []
+
+        events: list = []
+        usage: list = []
+
+        if self.limit is not None:
+            workspaces = list(workspaces)[: self.limit]
+
+        try:
+            mpm = comet_mpm.API(api_key=self.api.config["comet.api_key"])
+            resp = mpm._client.get("api/mpm/v3/workspaces")
+            all_workspaces = (resp or {}).get("workspaces", []) or []
+        except Exception as exc:
+            print(f"Warning: failed to list MPM workspaces: {exc}")
+            return [], []
+
+        interval_type = "HOURLY" if self.units == "hour" else "DAILY"
+        start_date = "2015-01-01T00:00:00Z"
+        end_date = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+
+        requested = set(workspaces)
+        for ws_entry in all_workspaces:
+            ws = ws_entry.get("workspaceName")
+            if ws not in requested:
+                continue
+
+            models = ws_entry.get("models", []) or []
+            ws_counts: dict = defaultdict(float)
+            ws_total = 0.0
+
+            for model in models:
+                model_name = model.get("modelName")
+                model_id = model.get("modelId")
+                try:
+                    points = self._mpm_prediction_points(
+                        mpm,
+                        model_id,
+                        start_date,
+                        end_date,
+                        interval_type,
+                    )
+                    created = self._mpm_model_created(mpm, model_id, points)
+                    if created is not None:
+                        events.append(
+                            CreationEvent(
+                                platform="mpm",
+                                workspace=ws,
+                                use_case=model_name,
+                                kind="mpm_model",
+                                created=created,
+                            )
+                        )
+
+                    counts = self._mpm_prediction_counts(points)
+                    total = sum(counts.values())
+                    usage.append(
+                        UsageMetric(
+                            platform="mpm",
+                            workspace=ws,
+                            metric="PREDICTION_VOLUME",
+                            value=total,
+                            project=model_name,
+                            series=(
+                                continuous_series(counts, self.units) if counts else []
+                            ),
+                        )
+                    )
+                    ws_total += total
+                    for key, n in counts.items():
+                        ws_counts[key] += n
+                except Exception as exc:
+                    print(
+                        f"Warning: failed to collect MPM model "
+                        f"{ws}/{model_name}: {exc}"
+                    )
+                    continue
+
+            usage.append(
+                UsageMetric(
+                    platform="mpm",
+                    workspace=ws,
+                    metric="PREDICTION_VOLUME",
+                    value=ws_total,
+                    project=None,
+                    series=(
+                        continuous_series(dict(ws_counts), self.units)
+                        if ws_counts
+                        else []
+                    ),
+                )
+            )
+
+        return events, usage
+
+    def _mpm_prediction_points(self, mpm, model_id, start_date, end_date, interval):
+        """Fetch the wide prediction series ONCE and return the raw
+        `[{"x": ..., "y": ...}, ...]` points, parsed defensively.
+
+        Reused by both `_mpm_model_created` (creation proxy) and
+        `_mpm_prediction_counts` (usage metric) -- never call
+        `get_nb_predictions` twice for the same model.
+        """
+        resp = mpm._client.get_nb_predictions(
+            model_id, start_date, end_date, interval, [], None
+        )
+        if not isinstance(resp, dict):
+            return []
+        series = resp.get("data") or []
+        if not series or not isinstance(series[0], dict):
+            return []
+        return series[0].get("data") or []
+
+    def _mpm_point_time(self, x):
+        """Parse a datapoint's `x` value (epoch-ms int/float or ISO str)."""
+        if isinstance(x, (int, float)):
+            return _ms_to_utc(x)
+        return datetime.datetime.fromisoformat(str(x).replace("Z", "+00:00"))
+
+    def _mpm_model_created(self, mpm, model_id, points):
+        """Resolve a model's `created` via probe -> proxy -> None chain."""
+        try:
+            details = mpm._client.get_model_details(model_id) or {}
+        except Exception:
+            details = {}
+
+        for key in (
+            "createdAt",
+            "creationDate",
+            "creationTimestamp",
+            "created_at",
+            "createdAtMillis",
+        ):
+            val = details.get(key)
+            if not val:
+                continue
+            if isinstance(val, (int, float)):
+                return _ms_to_utc(val)
+            try:
+                return datetime.datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+
+        earliest = None
+        for point in points:
+            try:
+                x, y = point.get("x"), point.get("y")
+                if not y:
+                    continue
+                t = self._mpm_point_time(x)
+            except Exception:
+                continue
+            if earliest is None or t < earliest:
+                earliest = t
+        return earliest
+
+    def _mpm_prediction_counts(self, points):
+        """Bucket the pre-fetched prediction points by `self.units`."""
+        counts: dict = defaultdict(float)
+        for point in points:
+            try:
+                x, y = point.get("x"), point.get("y")
+                t = self._mpm_point_time(x)
+            except Exception:
+                continue
+            counts[format_time_key(t, self.units)] += y or 0
+        return dict(counts)
+
     def _em_experiment_counts(self, experiments):
         """Bucket the project's pre-fetched experiment start timestamps by
         `self.units` to build the all-time EXPERIMENT_COUNT over-time series."""

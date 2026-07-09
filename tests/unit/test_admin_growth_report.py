@@ -425,3 +425,266 @@ def test_collect_opik_missing_dependency_returns_empty(monkeypatch):
 
     assert events == []
     assert usage == []
+
+
+def _make_mpm_api():
+    """MagicMock api with a REAL dict `.config` (see task-C6-context.md)."""
+    api = MagicMock()
+    api.config = {
+        "comet.api_key": "KEY",
+        "comet.url_override": "https://example.com/",
+    }
+    return api
+
+
+def _mpm_pred_envelope(points):
+    """points: list of (x, y) -> the verified {"data":[{"data":[...]}]} envelope."""
+    return {"data": [{"data": [{"x": x, "y": y} for x, y in points]}]}
+
+
+def _make_mpm_client(workspaces_resp, details_map, predictions_map):
+    """MagicMock comet_mpm._client with the verified MPM endpoints stubbed.
+
+    `details_map`: model_id -> details dict (or an exception instance to raise).
+    `predictions_map`: model_id -> envelope dict returned by get_nb_predictions.
+    """
+    client = MagicMock()
+
+    def fake_get(path, *args, **kwargs):
+        assert path == "api/mpm/v3/workspaces"
+        return workspaces_resp
+
+    client.get.side_effect = fake_get
+
+    def fake_get_model_details(model_id):
+        val = details_map.get(model_id, {})
+        if isinstance(val, Exception):
+            raise val
+        return val
+
+    client.get_model_details.side_effect = fake_get_model_details
+
+    def fake_get_nb_predictions(model_id, *args, **kwargs):
+        return predictions_map.get(model_id, _mpm_pred_envelope([]))
+
+    client.get_nb_predictions.side_effect = fake_get_nb_predictions
+    return client
+
+
+def _mpm_workspaces_resp(models_by_ws):
+    return {
+        "workspaces": [
+            {"workspaceName": ws, "models": models}
+            for ws, models in models_by_ws.items()
+        ]
+    }
+
+
+@patch("comet_mpm.API")
+def test_collect_mpm_creation_scenarios_a_b_c(mock_api_ctor):
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    models_by_ws = {
+        "ws1": [
+            {"modelName": "modelA", "modelId": "idA"},
+            {"modelName": "modelB", "modelId": "idB"},
+            {"modelName": "modelC", "modelId": "idC"},
+        ]
+    }
+    workspaces_resp = _mpm_workspaces_resp(models_by_ws)
+
+    # (a) model A: details carry a creation timestamp
+    details_map = {
+        "idA": {"createdAt": 1700000000000},
+        "idB": {},  # no creation key -> falls back to first-prediction-day
+        "idC": {},  # no creation key, and no y>0 predictions -> no event
+    }
+
+    predictions_map = {
+        "idA": _mpm_pred_envelope([(1699000000000, 5), (1700500000000, 2)]),
+        "idB": _mpm_pred_envelope([(1690000000000, 0), (1691000000000, 7)]),
+        "idC": _mpm_pred_envelope([(1690000000000, 0), (1691000000000, 0)]),
+    }
+
+    client = _make_mpm_client(workspaces_resp, details_map, predictions_map)
+    mock_mpm = MagicMock()
+    mock_mpm._client = client
+    mock_api_ctor.return_value = mock_mpm
+
+    api = _make_mpm_api()
+    reporter = GrowthReporter(api, window="7d", units="month", platforms="mpm")
+    events, usage = reporter._collect_mpm(["ws1"])
+
+    by_uc = {e.use_case: e for e in events}
+
+    # (a) details timestamp -> mpm_model event at that time
+    assert "modelA" in by_uc
+    assert by_uc["modelA"].kind == "mpm_model"
+    assert by_uc["modelA"].platform == "mpm"
+    assert by_uc["modelA"].workspace == "ws1"
+    assert by_uc["modelA"].created == datetime.datetime.fromtimestamp(
+        1700000000000 / 1000, tz=datetime.timezone.utc
+    )
+
+    # (b) no details ts but predictions -> proxy event at first prediction
+    # day with y>0 (1691000000000, not the 0-value 1690000000000 point)
+    assert "modelB" in by_uc
+    assert by_uc["modelB"].created == datetime.datetime.fromtimestamp(
+        1691000000000 / 1000, tz=datetime.timezone.utc
+    )
+
+    # (c) neither details ts nor any y>0 -> no CreationEvent for modelC
+    assert "modelC" not in by_uc
+
+    # but modelC must still yield a PREDICTION_VOLUME usage metric
+    pred_metrics = [m for m in usage if m.metric == "PREDICTION_VOLUME"]
+    modelC_metric = next(m for m in pred_metrics if m.project == "modelC")
+    assert modelC_metric.value == 0
+    assert modelC_metric.platform == "mpm" and modelC_metric.workspace == "ws1"
+
+
+@patch("comet_mpm.API")
+def test_collect_mpm_prediction_volume_usage_per_model_and_per_workspace(
+    mock_api_ctor,
+):
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    models_by_ws = {
+        "ws1": [
+            {"modelName": "modelA", "modelId": "idA"},
+            {"modelName": "modelB", "modelId": "idB"},
+        ]
+    }
+    workspaces_resp = _mpm_workspaces_resp(models_by_ws)
+    details_map = {"idA": {"createdAt": 1700000000000}, "idB": {}}
+    predictions_map = {
+        "idA": _mpm_pred_envelope([(1699000000000, 5), (1700500000000, 2)]),
+        "idB": _mpm_pred_envelope([(1691000000000, 7)]),
+    }
+
+    client = _make_mpm_client(workspaces_resp, details_map, predictions_map)
+    mock_mpm = MagicMock()
+    mock_mpm._client = client
+    mock_api_ctor.return_value = mock_mpm
+
+    api = _make_mpm_api()
+    reporter = GrowthReporter(api, window="7d", units="month", platforms="mpm")
+    _events, usage = reporter._collect_mpm(["ws1"])
+
+    pred_metrics = [m for m in usage if m.metric == "PREDICTION_VOLUME"]
+
+    modelA_metric = next(m for m in pred_metrics if m.project == "modelA")
+    assert modelA_metric.value == 7  # 5 + 2
+    assert modelA_metric.series  # non-empty over-time series
+
+    modelB_metric = next(m for m in pred_metrics if m.project == "modelB")
+    assert modelB_metric.value == 7
+
+    ws_total_metric = next(m for m in pred_metrics if m.project is None)
+    assert ws_total_metric.value == 14  # 7 + 7
+    assert ws_total_metric.workspace == "ws1"
+    assert ws_total_metric.series
+
+    # fetch-once regression guard: get_nb_predictions called exactly once
+    # per model (reused for BOTH the creation proxy and the usage metric)
+    assert client.get_nb_predictions.call_count == 2
+
+
+@patch("comet_mpm.API")
+def test_collect_mpm_respects_limit_on_workspaces(mock_api_ctor):
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    models_by_ws = {
+        "ws1": [{"modelName": "modelA", "modelId": "idA"}],
+        "ws2": [{"modelName": "modelZ", "modelId": "idZ"}],
+    }
+    workspaces_resp = _mpm_workspaces_resp(models_by_ws)
+    details_map = {"idA": {"createdAt": 1700000000000}}
+    predictions_map = {"idA": _mpm_pred_envelope([(1700000000000, 3)])}
+
+    client = _make_mpm_client(workspaces_resp, details_map, predictions_map)
+    mock_mpm = MagicMock()
+    mock_mpm._client = client
+    mock_api_ctor.return_value = mock_mpm
+
+    api = _make_mpm_api()
+    reporter = GrowthReporter(api, window="7d", units="month", platforms="mpm", limit=1)
+    events, usage = reporter._collect_mpm(["ws1", "ws2"])
+
+    assert all(e.workspace == "ws1" for e in events)
+    assert all(m.workspace == "ws1" for m in usage)
+    assert not any(e.use_case == "modelZ" for e in events)
+
+
+@patch("comet_mpm.API")
+def test_collect_mpm_skips_bad_model_and_continues(mock_api_ctor, capsys):
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    models_by_ws = {
+        "ws1": [
+            {"modelName": "modelBad", "modelId": "idBad"},
+            {"modelName": "modelGood", "modelId": "idGood"},
+        ]
+    }
+    workspaces_resp = _mpm_workspaces_resp(models_by_ws)
+    details_map = {"idBad": {}, "idGood": {"createdAt": 1700000000000}}
+
+    def fake_get_nb_predictions(model_id, *args, **kwargs):
+        if model_id == "idBad":
+            raise RuntimeError("boom")
+        return _mpm_pred_envelope([(1700000000000, 4)])
+
+    client = _make_mpm_client(workspaces_resp, details_map, {})
+    client.get_nb_predictions.side_effect = fake_get_nb_predictions
+    mock_mpm = MagicMock()
+    mock_mpm._client = client
+    mock_api_ctor.return_value = mock_mpm
+
+    api = _make_mpm_api()
+    reporter = GrowthReporter(api, window="7d", units="month", platforms="mpm")
+    events, usage = reporter._collect_mpm(["ws1"])
+
+    assert not any(e.use_case == "modelBad" for e in events)
+    assert any(e.use_case == "modelGood" for e in events)
+    assert any(m.project == "modelGood" for m in usage)
+    assert not any(m.project == "modelBad" for m in usage)
+
+
+@patch("comet_mpm.API")
+def test_collect_mpm_workspaces_endpoint_error_returns_empty(mock_api_ctor):
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    client = MagicMock()
+    client.get.side_effect = RuntimeError("404")
+    mock_mpm = MagicMock()
+    mock_mpm._client = client
+    mock_api_ctor.return_value = mock_mpm
+
+    api = _make_mpm_api()
+    reporter = GrowthReporter(api, window="7d", units="month", platforms="mpm")
+    events, usage = reporter._collect_mpm(["ws1"])
+
+    assert events == []
+    assert usage == []
+
+
+def test_collect_mpm_missing_dependency_returns_empty(monkeypatch):
+    import builtins
+
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "comet_mpm":
+            raise ImportError("no comet_mpm")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    api = _make_mpm_api()
+    reporter = GrowthReporter(api, window="7d", units="month", platforms="mpm")
+    events, usage = reporter._collect_mpm(["ws1"])
+
+    assert events == []
+    assert usage == []
