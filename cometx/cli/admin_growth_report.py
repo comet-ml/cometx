@@ -851,9 +851,7 @@ class GrowthReporter:
             ws_experiment_total = 0
             ws_counts: dict = defaultdict(int)
 
-            for project in tqdm(
-                projects, desc=f"EM {ws}", unit="proj", leave=False
-            ):
+            for project in tqdm(projects, desc=f"EM {ws}", unit="proj", leave=False):
                 proj_name = project.get("projectName")
                 try:
                     # Fetch the project's experiments once and reuse the list
@@ -861,7 +859,13 @@ class GrowthReporter:
                     experiments = self.api.get_experiments(ws, proj_name) or []
                     created = self._em_project_created(project, experiments)
                     counts = self._em_experiment_counts(experiments)
-                    total = project.get("numberOfExperiments", sum(counts.values()))
+                    # Derive the KPI total from the SAME bucketed counts that
+                    # feed the chart series -- NOT the `numberOfExperiments`
+                    # metadata, which can disagree with the experiments that
+                    # actually carry a `start_server_timestamp`. This keeps the
+                    # EM adoption KPI total (and its workspace roll-up) exactly
+                    # equal to the cumulative chart sum.
+                    total = sum(counts.values())
 
                     events.append(
                         CreationEvent(
@@ -1017,9 +1021,7 @@ class GrowthReporter:
 
             ws_counts: dict = defaultdict(float)
 
-            for project in tqdm(
-                projects, desc=f"Opik {ws}", unit="proj", leave=False
-            ):
+            for project in tqdm(projects, desc=f"Opik {ws}", unit="proj", leave=False):
                 try:
                     if project.created_at is not None:
                         events.append(
@@ -1045,9 +1047,9 @@ class GrowthReporter:
                     counts: dict = defaultdict(float)
                     for result in resp.results or []:
                         for dp in result.data or []:
-                            counts[
-                                format_time_key(dp.time, self.units)
-                            ] += _as_float(dp.value)
+                            counts[format_time_key(dp.time, self.units)] += _as_float(
+                                dp.value
+                            )
 
                     usage.append(
                         UsageMetric(
@@ -1128,8 +1130,7 @@ class GrowthReporter:
             for ws_entry in all_workspaces
             # The MPM inventory shape is not verifiable live; guard against
             # malformed elements so one bad entry can't crash the report.
-            if isinstance(ws_entry, dict)
-            and ws_entry.get("workspaceName") in requested
+            if isinstance(ws_entry, dict) and ws_entry.get("workspaceName") in requested
         ]
         for ws_entry in tqdm(selected_entries, desc="MPM workspaces", unit="ws"):
             ws = ws_entry.get("workspaceName")
@@ -1138,9 +1139,7 @@ class GrowthReporter:
             ws_counts: dict = defaultdict(float)
             ws_total = 0.0
 
-            for model in tqdm(
-                models, desc=f"MPM {ws}", unit="model", leave=False
-            ):
+            for model in tqdm(models, desc=f"MPM {ws}", unit="model", leave=False):
                 if not isinstance(model, dict):
                     continue
                 model_name = model.get("modelName")

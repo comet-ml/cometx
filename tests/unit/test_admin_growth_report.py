@@ -212,6 +212,48 @@ def test_collect_em_usage_metrics_experiment_count_and_registry_snapshot():
     assert not any(m.metric.startswith("REGISTRY") and m.series for m in usage)
 
 
+def test_collect_em_kpi_total_matches_chart_sum_when_metadata_disagrees():
+    # Regression: the EXPERIMENT_COUNT total must come from the SAME bucketed
+    # timestamps that feed the chart series, NOT from `numberOfExperiments`.
+    # Here the metadata (10) disagrees with the experiments that actually carry
+    # a start_server_timestamp (3), so the old fallback would have produced a
+    # KPI total that didn't equal the cumulative chart sum.
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    api = MagicMock()
+    api._client.get_from_endpoint.return_value = {
+        "projects": [
+            {
+                "projectName": "proj1",
+                "projectId": "p1",
+                "workspaceName": "ws1",
+                "numberOfExperiments": 10,  # metadata, intentionally != 3
+                "lastUpdated": 1700000000000,
+            }
+        ]
+    }
+    api.get_experiments.return_value = [
+        MagicMock(start_server_timestamp=1695000000000),
+        MagicMock(start_server_timestamp=1695100000000),
+        MagicMock(start_server_timestamp=1695200000000),
+    ]
+    api.get_registry_model_names.return_value = []
+    reporter = GrowthReporter(api, window="7d", units="month", platforms="em")
+    _events, usage = reporter._collect_em(["ws1"])
+
+    proj_metric = next(
+        m for m in usage if m.metric == "EXPERIMENT_COUNT" and m.project == "proj1"
+    )
+    ws_total = next(
+        m for m in usage if m.metric == "EXPERIMENT_COUNT" and m.project is None
+    )
+    # total is derived from counts (3), NOT numberOfExperiments (10)
+    assert proj_metric.value == 3
+    assert ws_total.value == 3
+    # the KPI total equals the cumulative chart sum for the workspace
+    assert ws_total.value == sum(v for _k, v in ws_total.series)
+
+
 def test_collect_em_respects_limit_on_workspaces():
     from cometx.cli.admin_growth_report import GrowthReporter
 
