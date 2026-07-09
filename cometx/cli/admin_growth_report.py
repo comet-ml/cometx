@@ -121,6 +121,18 @@ def _num(value):
     return value
 
 
+def _as_float(value):
+    """Coerce a collector datapoint value to a float, treating None/blank and
+    any non-numeric value (e.g. a stray string from an SDK/REST response) as
+    0.0 -- keeps count aggregation from crashing on mixed-type payloads."""
+    if value is None or value == "":
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _all_time_counts(events, units) -> dict:
     """Bucket `events` by creation time-key, with NO window filtering --
     charts always render all-time (Option-A: the window is a shaded band
@@ -1014,9 +1026,9 @@ class GrowthReporter:
                     counts: dict = defaultdict(float)
                     for result in resp.results or []:
                         for dp in result.data or []:
-                            counts[format_time_key(dp.time, self.units)] += (
-                                dp.value or 0
-                            )
+                            counts[
+                                format_time_key(dp.time, self.units)
+                            ] += _as_float(dp.value)
 
                     usage.append(
                         UsageMetric(
@@ -1250,7 +1262,7 @@ class GrowthReporter:
                 t = self._mpm_point_time(x)
             except Exception:
                 continue
-            counts[format_time_key(t, self.units)] += y or 0
+            counts[format_time_key(t, self.units)] += _as_float(y)
         return dict(counts)
 
     def _em_experiment_counts(self, experiments):
