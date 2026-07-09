@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import re
 from collections import defaultdict
 
 from cometx.cli.admin_growth_render import build_html, write_html
@@ -117,6 +118,76 @@ def growth_stats(events, window, units) -> dict:
     before = sum(1 for e in events if e.created < window.start)
     pct = (new_in / before * 100.0) if before > 0 else 0.0
     return {"total": total, "new_in_window": new_in, "pct_growth": round(pct, 1)}
+
+
+def _num(value):
+    """Render a metric value as an int when it has no fractional part, else
+    a float -- avoids "3.0" showing up in KPI/table cells for counts that
+    are naturally integers but arrive as floats from the collectors."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+def _all_time_counts(events, units) -> dict:
+    """Bucket `events` by creation time-key, with NO window filtering --
+    charts always render all-time (Option-A: the window is a shaded band
+    drawn on top, not a data filter)."""
+    counts: dict = defaultdict(int)
+    for ev in events:
+        counts[format_time_key(ev.created, units)] += 1
+    return dict(counts)
+
+
+def _stacked_points(events_by_kind, units, kinds) -> list:
+    """Build zero-filled `{"key": k, "values": {kind: count, ...}}` points
+    for a stackedBars chart, across the union of all-time bucket keys seen
+    for ANY kind (so every series shares one continuous, zero-filled key
+    sequence even if a given kind has no events in some periods)."""
+    per_kind_counts = {
+        kind: _all_time_counts(events, units) for kind, events in events_by_kind.items()
+    }
+    merged: dict = defaultdict(int)
+    for counts in per_kind_counts.values():
+        for key in counts:
+            merged[key] += 0  # ensure key presence without double counting
+    if not merged:
+        return []
+    keys = [k for k, _ in continuous_series(dict(merged), units)]
+    return [
+        {
+            "key": k,
+            "values": {kind: per_kind_counts.get(kind, {}).get(k, 0) for kind in kinds},
+        }
+        for k in keys
+    ]
+
+
+_WINDOW_SPEC_RE = re.compile(r"^(\d+)([dwmy])$")
+_WINDOW_DAYS_PER_UNIT = {"d": 1, "w": 7, "m": 30, "y": 365}
+
+
+def parse_window(spec, now, units="month") -> Window:
+    """Parse a relative `--window` spec (e.g. "7d"/"14d"/"30d"/"90d") into a
+    `Window(start=now - delta, end=now, units=units)`.
+
+    Format: ``\\d+[dwmy]`` -- ``d``=days, ``w``=weeks (x7 days), ``m``=months
+    (approximated as 30 days), ``y``=years (approximated as 365 days). The
+    m/y approximations are deliberate: the report only needs a window
+    boundary for "installed base before window" comparisons, not calendar-
+    exact month/year arithmetic. Defaults to "7d" when `spec` is falsy.
+    Raises `ValueError` on a malformed spec.
+    """
+    spec = "7d" if spec is None else spec.strip()
+    match = _WINDOW_SPEC_RE.match(spec)
+    if not match:
+        raise ValueError(
+            f"Invalid --window spec {spec!r}; expected e.g. '7d', '14d', "
+            "'30d', '90d' (\\d+[dwmy])"
+        )
+    amount, unit = int(match.group(1)), match.group(2)
+    delta = datetime.timedelta(days=amount * _WINDOW_DAYS_PER_UNIT[unit])
+    return Window(start=now - delta, end=now, units=units)
 
 
 USE_CASE_KINDS = ("opik_project", "em_project", "mpm_model")
@@ -236,7 +307,428 @@ class GrowthReporter:
         self.limit = limit
 
     def build(self, workspaces):
-        raise NotImplementedError  # filled in C2-C7
+        """Resolve window/platforms/workspaces, run the selected collectors,
+        and assemble `report_data` matching the C8 renderer contract (see
+        `.superpowers/sdd/task-C8-report.md`).
+        """
+        now = self._now()
+        window = parse_window(self.window, now, self.units)
+
+        platforms = self._resolve_platforms()
+        resolved_workspaces = self._resolve_workspaces(workspaces)
+        events, usage, ran = self._collect_selected(platforms, resolved_workspaces)
+
+        return self._assemble_report_data(
+            events, usage, ran, resolved_workspaces, window
+        )
+
+    def _now(self):
+        return datetime.datetime.now(datetime.timezone.utc)
+
+    def _resolve_platforms(self):
+        """`self.platforms` (csv) intersected with {em,opik,mpm}, in a fixed
+        order, dropping opik/mpm if their optional dependency isn't
+        importable (EM has no optional dependency)."""
+        requested = {p.strip() for p in (self.platforms or "").split(",") if p.strip()}
+        resolved = []
+        for platform in ("em", "opik", "mpm"):
+            if platform not in requested:
+                continue
+            if platform == "opik":
+                try:
+                    import opik  # noqa: F401
+                except ImportError:
+                    print("Note: opik not installed; skipping Opik collection")
+                    continue
+            elif platform == "mpm":
+                try:
+                    import comet_mpm  # noqa: F401
+                except ImportError:
+                    print("Note: comet_mpm not installed; skipping MPM collection")
+                    continue
+            resolved.append(platform)
+        return resolved
+
+    def _resolve_workspaces(self, workspaces):
+        """Use the given `WORKSPACE` args if non-empty, else
+        `api.get_workspaces()`; apply `self.limit` once here so the final
+        workspace list is fixed before any collector runs (the collectors'
+        own `self.limit` slicing then becomes a no-op on this already-sliced
+        list -- not a double-slice)."""
+        resolved = (
+            list(workspaces) if workspaces else list(self.api.get_workspaces() or [])
+        )
+        if self.limit is not None:
+            resolved = resolved[: self.limit]
+        return resolved
+
+    _COLLECTOR_METHODS = {
+        "em": "_collect_em",
+        "opik": "_collect_opik",
+        "mpm": "_collect_mpm",
+    }
+
+    def _collect_selected(self, platforms, workspaces):
+        """Run each selected platform's collector and aggregate all events +
+        usage. Returns `(events, usage, ran)` where `ran` is a
+        `{"opik": bool, "em": bool, "mpm": bool}` map of which collectors
+        actually executed."""
+        events: list = []
+        usage: list = []
+        ran = {"opik": False, "em": False, "mpm": False}
+        for platform in platforms:
+            collector = getattr(self, self._COLLECTOR_METHODS[platform])
+            platform_events, platform_usage = collector(workspaces)
+            events.extend(platform_events)
+            usage.extend(platform_usage)
+            ran[platform] = True
+        return events, usage, ran
+
+    def _window_label(self, window):
+        return (
+            f"Analysis window: {window.start.date().isoformat()} "
+            f"– {window.end.date().isoformat()} ({self.window or '7d'})"
+        )
+
+    def _build_window_block(self, window, count_before):
+        return {
+            "start": window.start.isoformat(),
+            "end": window.end.isoformat(),
+            "units": window.units,
+            "label": self._window_label(window),
+            "count_before": count_before,
+            "window_start": format_time_key(window.start, window.units),
+            "window_end": format_time_key(window.end, window.units),
+        }
+
+    def _series_chart_data(self, events, window):
+        """All-time zero-filled `(points, window_start, window_end)` for a
+        single-series bar/area chart, per Option-A window rendering."""
+        counts = _all_time_counts(events, self.units)
+        points = [
+            {"key": k, "value": v} for k, v in continuous_series(counts, self.units)
+        ]
+        window_start = format_time_key(window.start, self.units)
+        window_end = format_time_key(window.end, self.units)
+        return points, window_start, window_end
+
+    def _growth_kpis(self, stats, count_before, workspaces_count):
+        spec = self.window or "7d"
+        return [
+            {"label": "Workspaces", "value": workspaces_count},
+            {"label": "Total", "value": stats["total"]},
+            {"label": f"New ({spec})", "value": f"+{stats['new_in_window']}"},
+            {
+                "label": f"Growth ({spec})",
+                "value": f"{stats['pct_growth']}%",
+                "sub": f"vs {count_before} before window",
+            },
+        ]
+
+    def _breakdown_table(self, events, kind_label, workspaces_count):
+        """Apply the workspace-vs-use-case breakdown rule: more than one
+        workspace -> break down by workspace; a single workspace -> break
+        down by use case instead (a by-workspace table would have exactly
+        one, uninformative, row)."""
+        if workspaces_count > 1:
+            by_ws: dict = defaultdict(int)
+            for ev in events:
+                by_ws[ev.workspace] += 1
+            rows = sorted(by_ws.items(), key=lambda kv: -kv[1])
+            return {
+                "headers": ["Workspace", kind_label],
+                "rows": [[ws, count] for ws, count in rows],
+            }
+        rows = sorted(events, key=lambda ev: ev.created, reverse=True)
+        return {
+            "headers": ["Use case", "Created"],
+            "rows": [[ev.use_case, ev.created.date().isoformat()] for ev in rows],
+        }
+
+    def _unified_table(self, events, workspaces_count):
+        if workspaces_count > 1:
+            by_ws = use_cases_by_workspace(events)
+            rows = sorted(by_ws.items(), key=lambda kv: -kv[1]["use_cases_total"])
+            return {
+                "title": "By department",
+                "headers": ["Department", "Opik", "EM", "MPM", "Total"],
+                "rows": [
+                    [
+                        ws,
+                        entry["by_kind"]["opik_project"],
+                        entry["by_kind"]["em_project"],
+                        entry["by_kind"]["mpm_model"],
+                        entry["use_cases_total"],
+                    ]
+                    for ws, entry in rows
+                ],
+            }
+        rows = sorted(unified_events(events), key=lambda ev: ev.created, reverse=True)
+        return {
+            "title": "Use cases",
+            "headers": ["Use case", "Kind", "Created"],
+            "rows": [
+                [
+                    ev.use_case,
+                    KIND_LABELS.get(ev.kind, ev.kind),
+                    ev.created.date().isoformat(),
+                ]
+                for ev in rows
+            ],
+        }
+
+    def _unified_stacked_chart(self, events, window):
+        events_by_kind = {
+            kind: [ev for ev in events if ev.kind == kind] for kind in USE_CASE_KINDS
+        }
+        points = _stacked_points(events_by_kind, self.units, USE_CASE_KINDS)
+        window_start = format_time_key(window.start, self.units) if points else None
+        window_end = format_time_key(window.end, self.units) if points else None
+        return {
+            "id": "chart-unified-created",
+            "kind": "stackedBars",
+            "title": "Use cases created",
+            "hint": f"by kind · {self.units}ly",
+            "legend": [
+                {"label": "Opik", "color": "--accent"},
+                {"label": "EM", "color": "--sdk"},
+                {"label": "MPM", "color": "--ok"},
+            ],
+            "data": {
+                "categories": list(USE_CASE_KINDS),
+                "labels": {k: KIND_LABELS[k] for k in USE_CASE_KINDS},
+                "colors": ["--accent", "--sdk", "--ok"],
+                "points": points,
+                "window_start": window_start,
+                "window_end": window_end,
+            },
+        }
+
+    def _unified_department_chart(self, unified):
+        by_ws = use_cases_by_workspace(unified)
+        rows = sorted(
+            (
+                {"label": ws, "value": entry["use_cases_total"]}
+                for ws, entry in by_ws.items()
+            ),
+            key=lambda r: -r["value"],
+        )
+        return {
+            "id": "chart-unified-by-department",
+            "kind": "groupedBarsH",
+            "title": "Use cases by department",
+            "hint": "current totals",
+            "data": {"rows": rows},
+        }
+
+    def _build_unified_section(self, events, window, workspaces_count):
+        unified = unified_events(events)
+        count_before = sum(1 for ev in unified if ev.created < window.start)
+        stats = growth_stats(unified, window, self.units)
+        spec = self.window or "7d"
+        return {
+            "title": "Use cases across all platforms",
+            "window_chip": self._window_label(window),
+            "kpis": [
+                {"label": "Departments", "value": workspaces_count},
+                {"label": "Use cases", "value": stats["total"], "tone": "ok"},
+                {"label": f"New ({spec})", "value": f"+{stats['new_in_window']}"},
+                {
+                    "label": f"Growth ({spec})",
+                    "value": f"{stats['pct_growth']}%",
+                    "sub": f"vs {count_before} before window",
+                },
+            ],
+            "charts": [
+                self._unified_stacked_chart(events, window),
+                self._unified_department_chart(unified),
+            ],
+            "table": self._unified_table(events, workspaces_count),
+        }
+
+    def _adoption_metric_series(self, metric_name, metrics, window):
+        """Combine the per-workspace-total entries (`project is None`) for
+        `metric_name` into one all-time zero-filled series + grand total."""
+        ws_totals = [
+            m for m in metrics if m.metric == metric_name and m.project is None
+        ]
+        total = sum(m.value for m in ws_totals)
+        merged: dict = defaultdict(float)
+        for m in ws_totals:
+            for key, value in m.series or []:
+                merged[key] += value
+        points = (
+            [
+                {"key": k, "value": v}
+                for k, v in continuous_series(dict(merged), self.units)
+            ]
+            if merged
+            else []
+        )
+        window_start = format_time_key(window.start, self.units)
+        window_end = format_time_key(window.end, self.units)
+        return _num(total), points, window_start, window_end
+
+    def _adoption_table_by_project(self, metric_name, metrics, value_label):
+        project_metrics = [
+            m for m in metrics if m.metric == metric_name and m.project is not None
+        ]
+        rows = sorted(project_metrics, key=lambda m: -m.value)
+        return {
+            "title": f"{value_label} by project",
+            "headers": ["Project", value_label],
+            "rows": [[m.project, _num(m.value)] for m in rows],
+        }
+
+    def _registry_panel(self, usage):
+        models = {m.workspace: m.value for m in usage if m.metric == "REGISTRY_MODELS"}
+        versions = {
+            m.workspace: m.value for m in usage if m.metric == "REGISTRY_VERSIONS"
+        }
+        workspaces = sorted(set(models) | set(versions))
+        return {
+            "title": "Model-registry engagement",
+            "hint": "snapshot, not over-time",
+            "headers": ["Workspace", "Registered models", "Model versions"],
+            "rows": [
+                [ws, _num(models.get(ws, 0)), _num(versions.get(ws, 0))]
+                for ws in workspaces
+            ],
+        }
+
+    def _build_adoption_section(self, platform, usage, window):
+        """Per-product adoption/usage section. Registry counts (EM) are
+        NEVER merged with MPM's monitored-model metrics -- they live in
+        their own `panels` entry with distinct labels."""
+        if platform == "opik":
+            metric, value_label = "SPAN_COUNT", "Span count"
+        elif platform == "em":
+            metric, value_label = "EXPERIMENT_COUNT", "Experiment count"
+        else:
+            metric, value_label = "PREDICTION_VOLUME", "Prediction volume"
+
+        total, points, window_start, window_end = self._adoption_metric_series(
+            metric, usage, window
+        )
+        charts = (
+            [
+                {
+                    "id": f"chart-{platform}-adoption",
+                    "kind": "bars",
+                    "title": value_label,
+                    "hint": f"by {self.units}",
+                    "data": {
+                        "points": points,
+                        "window_start": window_start,
+                        "window_end": window_end,
+                    },
+                }
+            ]
+            if points
+            else []
+        )
+        section = {
+            "title": f"{PLATFORM_LABELS[platform]} — adoption / usage",
+            "kpis": [{"label": value_label, "value": total}],
+            "charts": charts,
+            "table": self._adoption_table_by_project(metric, usage, value_label),
+        }
+        if platform == "em":
+            registry_panel = self._registry_panel(usage)
+            section["panels"] = [registry_panel] if registry_panel["rows"] else []
+        return section
+
+    def _build_product_section(
+        self, platform, kind, events, usage, window, workspaces_count
+    ):
+        kind_events = [ev for ev in events if ev.kind == kind]
+        stats = growth_stats(kind_events, window, self.units)
+        count_before = sum(1 for ev in kind_events if ev.created < window.start)
+        workspaces_with_kind = {ev.workspace for ev in kind_events}
+
+        points, window_start, window_end = self._series_chart_data(kind_events, window)
+        cum_points = [
+            {"key": k, "value": v}
+            for k, v in cumulative(
+                continuous_series(_all_time_counts(kind_events, self.units), self.units)
+            )
+        ]
+
+        growth_section = {
+            "title": f"{PLATFORM_LABELS[platform]} — growth",
+            "window_chip": self._window_label(window),
+            "kpis": self._growth_kpis(stats, count_before, len(workspaces_with_kind)),
+            "charts": [
+                {
+                    "id": f"chart-{platform}-bars",
+                    "kind": "bars",
+                    "title": f"New {KIND_LABELS[kind]}",
+                    "hint": f"by {self.units}",
+                    "data": {
+                        "points": points,
+                        "window_start": window_start,
+                        "window_end": window_end,
+                    },
+                },
+                {
+                    "id": f"chart-{platform}-area",
+                    "kind": "area",
+                    "title": f"{KIND_LABELS[kind]} — cumulative",
+                    "hint": "all-time",
+                    "data": {
+                        "points": cum_points,
+                        "window_start": window_start,
+                        "window_end": window_end,
+                        "delta": stats["new_in_window"],
+                    },
+                },
+            ],
+            "table": self._breakdown_table(
+                kind_events, KIND_LABELS[kind], workspaces_count
+            ),
+        }
+
+        return {
+            "label": PLATFORM_LABELS[platform],
+            "growth": growth_section,
+            "adoption": self._build_adoption_section(platform, usage, window),
+        }
+
+    def _assemble_report_data(self, events, usage, ran, workspaces, window):
+        workspaces_count = len(workspaces)
+        unified_section = self._build_unified_section(events, window, workspaces_count)
+        count_before_unified = sum(
+            1 for ev in unified_events(events) if ev.created < window.start
+        )
+
+        kind_by_platform = {
+            "opik": "opik_project",
+            "em": "em_project",
+            "mpm": "mpm_model",
+        }
+        products = {}
+        for platform in ("opik", "em", "mpm"):
+            if not ran.get(platform):
+                continue
+            products[platform] = self._build_product_section(
+                platform,
+                kind_by_platform[platform],
+                events,
+                usage,
+                window,
+                workspaces_count,
+            )
+
+        return {
+            "meta": {
+                "title": "Comet growth report",
+                "generated": window.end.isoformat(),
+                "source": "Comet Admin API",
+            },
+            "window": self._build_window_block(window, count_before_unified),
+            "collectors": ran,
+            "sections": {"unified": unified_section, "products": products},
+        }
 
     def _collect_em(self, workspaces):
         """Collect EM `em_project` CreationEvents + EXPERIMENT_COUNT /

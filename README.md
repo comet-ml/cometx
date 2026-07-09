@@ -578,6 +578,55 @@ cometx admin usage-report workspace --units day --no-open
 cometx admin usage-report --app
 ```
 
+#### growth-report
+
+Generate a cross-platform use-case growth & adoption report (Opik projects, EM projects,
+MPM monitored models) as a single self-contained HTML page. Distinct from `usage-report`
+(experiment-count PDF): `growth-report` tracks *how many use cases exist and how fast
+they're being created*, per workspace/department, across all three products.
+
+```
+cometx admin growth-report [WORKSPACE ...]
+```
+
+**Arguments:**
+* `WORKSPACE` (optional, zero or more) - Workspaces to include. If omitted, all workspaces visible to the current API key are used (via `get_workspaces()`).
+
+**Options:**
+* `--units {month,week,day,hour}` - Chart bucket granularity (default: month). Charts always render **all-time** history at this granularity; this is unrelated to `--window` below.
+* `--window WINDOW` - Relative analysis window for the KPIs, e.g. `7d`, `14d`, `30d`, `90d`, `2w`, `6m`, `1y` (default: `7d`). `d`=days, `w`=weeks (×7d), `m`=months (approximated as 30 days), `y`=years (approximated as 365 days) — the approximation is intentional, since the window only needs an "installed base before window" cutoff, not calendar-exact arithmetic.
+* `--platforms PLATFORMS` - Comma-separated list of platforms to include (default: `em,opik,mpm`). Any of `em`, `opik`, `mpm`.
+* `--output PATH` - Output HTML file path (default: `growth_report.html`).
+* `--limit N` - Limit the number of workspaces processed (useful for a fast smoke-test run).
+* `--no-open` - Don't automatically open the generated HTML file after generation.
+
+**Two time concepts:**
+* `--units` controls chart *granularity* — every chart shows the full all-time history bucketed at this resolution.
+* `--window` controls the *analysis window* used for the KPI numbers (Total / New / % growth) — it's drawn as a shaded band on top of the all-time charts rather than filtering them out.
+
+**Growth rates:** growth/adoption rates are computed from use-case **creation timestamps**
+(`--window` boundary vs. each event's `created` time), not from a separate "installed base"
+snapshot, so `pct_growth` is always `new_in_window / count_before_window`.
+
+**Caveats:**
+* **EM "created" is a proxy** — the Comet API has no true EM project-creation timestamp, so EM project creation is approximated as the earliest experiment start time in that project (falling back to the project's `lastUpdated` time if no experiments exist).
+* **Workspace/department "created" is also a proxy** — it's the earliest use-case creation timestamp seen in that workspace, across all platforms.
+* **MPM requires provisioning** — if the account/workspace has no MPM model-monitoring provisioned, the MPM collector degrades gracefully (an empty MPM section, `collectors.mpm: false`) instead of failing the whole report.
+
+Opik and MPM collection require their optional SDKs; install them with `pip install 'cometx[all]'` if they aren't already available. Platforms whose SDK can't be imported are silently dropped from `--platforms` (a note is printed) so the report still succeeds with the remaining platforms.
+
+**Examples:**
+```
+# Full cross-platform report for all workspaces, default 7-day window
+cometx admin growth-report
+
+# Just Opik + EM, 30-day window, monthly chart granularity, for two workspaces
+cometx admin growth-report --platforms em,opik --window 30d my-workspace another-workspace
+
+# Fast smoke-test run against a single workspace, don't auto-open
+cometx admin growth-report --limit 1 --no-open --output growth.html my-workspace
+```
+
 #### gpu-report
 
 Generate a GPU usage report for one or more workspaces/projects with detailed GPU metrics analysis.

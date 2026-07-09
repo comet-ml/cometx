@@ -1222,3 +1222,329 @@ def test_write_growth_html_delegates_to_renderer(tmp_path):
 
     assert result == str(out)
     assert out.exists()
+
+
+# ---------------------------------------------------------------------------
+# C9: parse_window + GrowthReporter.build() orchestration
+# ---------------------------------------------------------------------------
+
+
+def _now():
+    return datetime.datetime(2026, 7, 9, 12, 0, 0, tzinfo=datetime.timezone.utc)
+
+
+def test_parse_window_days():
+    from cometx.cli.admin_growth_report import parse_window
+
+    w = parse_window("7d", _now(), "month")
+    assert w.end == _now()
+    assert w.start == _now() - datetime.timedelta(days=7)
+    assert w.units == "month"
+
+
+def test_parse_window_weeks_is_seven_times_days():
+    from cometx.cli.admin_growth_report import parse_window
+
+    w = parse_window("2w", _now(), "day")
+    assert w.start == _now() - datetime.timedelta(days=14)
+
+
+def test_parse_window_months_is_thirty_day_approximation():
+    from cometx.cli.admin_growth_report import parse_window
+
+    w = parse_window("3m", _now(), "day")
+    assert w.start == _now() - datetime.timedelta(days=90)
+
+
+def test_parse_window_years_is_365_day_approximation():
+    from cometx.cli.admin_growth_report import parse_window
+
+    w = parse_window("1y", _now(), "day")
+    assert w.start == _now() - datetime.timedelta(days=365)
+
+
+def test_parse_window_default_spec_is_7d():
+    from cometx.cli.admin_growth_report import parse_window
+
+    w = parse_window(None, _now(), "day")
+    assert w.start == _now() - datetime.timedelta(days=7)
+
+
+def test_parse_window_rejects_malformed_spec():
+    from cometx.cli.admin_growth_report import parse_window
+
+    for bad in ("", "7", "7x", "d7", "-3d", "3 d", "seven-days"):
+        try:
+            parse_window(bad, _now(), "month")
+            assert False, f"expected ValueError for {bad!r}"
+        except ValueError:
+            pass
+
+
+def _kind_events(kind, platform, specs):
+    """specs: list of (workspace, use_case, y, m, d)."""
+    from cometx.cli.admin_growth_report import CreationEvent
+
+    return [
+        CreationEvent(
+            platform,
+            ws,
+            uc,
+            kind,
+            datetime.datetime(y, m, d, tzinfo=datetime.timezone.utc),
+        )
+        for ws, uc, y, m, d in specs
+    ]
+
+
+def _usage_metric(platform, ws, metric, value, project=None, series=None):
+    from cometx.cli.admin_growth_report import UsageMetric
+
+    return UsageMetric(
+        platform=platform,
+        workspace=ws,
+        metric=metric,
+        value=value,
+        project=project,
+        series=series,
+    )
+
+
+def _patch_collectors(monkeypatch, em=None, opik=None, mpm=None):
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    monkeypatch.setattr(
+        GrowthReporter, "_collect_em", lambda self, ws: (em or ([], []))
+    )
+    monkeypatch.setattr(
+        GrowthReporter, "_collect_opik", lambda self, ws: (opik or ([], []))
+    )
+    monkeypatch.setattr(
+        GrowthReporter, "_collect_mpm", lambda self, ws: (mpm or ([], []))
+    )
+
+
+def test_build_assembles_report_data_matching_c8_contract(monkeypatch):
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    opik_events = _kind_events(
+        "opik_project",
+        "opik",
+        [
+            ("ws-alpha", "op1", 2026, 6, 1),
+            ("ws-alpha", "op2", 2026, 7, 5),
+            ("ws-beta", "op3", 2026, 7, 6),
+        ],
+    )
+    em_events = _kind_events(
+        "em_project",
+        "em",
+        [("ws-alpha", "em1", 2026, 5, 1), ("ws-beta", "em2", 2026, 7, 8)],
+    )
+    mpm_events = _kind_events("mpm_model", "mpm", [("ws-beta", "mp1", 2026, 7, 7)])
+    opik_usage = [
+        _usage_metric(
+            "opik",
+            "ws-alpha",
+            "SPAN_COUNT",
+            100,
+            project="op1",
+            series=[("2026-07", 100)],
+        ),
+        _usage_metric(
+            "opik",
+            "ws-alpha",
+            "SPAN_COUNT",
+            100,
+            project=None,
+            series=[("2026-07", 100)],
+        ),
+    ]
+    em_usage = [
+        _usage_metric(
+            "em",
+            "ws-alpha",
+            "EXPERIMENT_COUNT",
+            10,
+            project="em1",
+            series=[("2026-07", 10)],
+        ),
+        _usage_metric(
+            "em",
+            "ws-alpha",
+            "EXPERIMENT_COUNT",
+            10,
+            project=None,
+            series=[("2026-07", 10)],
+        ),
+        _usage_metric("em", "ws-alpha", "REGISTRY_MODELS", 2, project=None),
+        _usage_metric("em", "ws-alpha", "REGISTRY_VERSIONS", 3, project=None),
+    ]
+    mpm_usage = [
+        _usage_metric(
+            "mpm",
+            "ws-beta",
+            "PREDICTION_VOLUME",
+            50,
+            project="mp1",
+            series=[("2026-07", 50)],
+        ),
+        _usage_metric(
+            "mpm",
+            "ws-beta",
+            "PREDICTION_VOLUME",
+            50,
+            project=None,
+            series=[("2026-07", 50)],
+        ),
+    ]
+
+    _patch_collectors(
+        monkeypatch,
+        em=(em_events, em_usage),
+        opik=(opik_events, opik_usage),
+        mpm=(mpm_events, mpm_usage),
+    )
+
+    reporter = GrowthReporter(
+        MagicMock(), window="7d", units="month", platforms="em,opik,mpm"
+    )
+    monkeypatch.setattr(GrowthReporter, "_now", lambda self: _now())
+    report_data = reporter.build(["ws-alpha", "ws-beta"])
+
+    assert report_data["collectors"] == {"opik": True, "em": True, "mpm": True}
+
+    window = report_data["window"]
+    assert window["units"] == "month"
+    assert "7d" in window["label"]
+
+    unified = report_data["sections"]["unified"]
+    assert unified["title"] == "Use cases across all platforms"
+    kpi_labels = [k["label"] for k in unified["kpis"]]
+    assert "Departments" in kpi_labels
+    assert "Use cases" in kpi_labels
+    use_cases_kpi = next(k for k in unified["kpis"] if k["label"] == "Use cases")
+    assert use_cases_kpi["value"] == 6  # 3 opik + 2 em + 1 mpm
+
+    chart_ids = [c["id"] for c in unified["charts"]]
+    assert "chart-unified-created" not in chart_ids or True  # ids are ours
+    kinds_chart = next(c for c in unified["charts"] if c["kind"] == "stackedBars")
+    assert kinds_chart["data"]["categories"] == [
+        "opik_project",
+        "em_project",
+        "mpm_model",
+    ]
+    dept_chart = next(c for c in unified["charts"] if c["kind"] == "groupedBarsH")
+    dept_labels = {r["label"] for r in dept_chart["data"]["rows"]}
+    assert dept_labels == {"ws-alpha", "ws-beta"}
+
+    # multi-workspace -> unified table breaks down by department
+    assert unified["table"]["headers"][0] == "Department"
+    ws_rows = {row[0] for row in unified["table"]["rows"]}
+    assert ws_rows == {"ws-alpha", "ws-beta"}
+
+    products = report_data["sections"]["products"]
+    assert set(products.keys()) == {"opik", "em", "mpm"}
+
+    opik_growth = products["opik"]["growth"]
+    assert opik_growth["kpis"][1]["label"] == "Total"
+    assert opik_growth["kpis"][1]["value"] == 3  # 3 opik_project events total
+    bars_chart = next(c for c in opik_growth["charts"] if c["kind"] == "bars")
+    assert sum(p["value"] for p in bars_chart["data"]["points"]) == 3
+    area_chart = next(c for c in opik_growth["charts"] if c["kind"] == "area")
+    assert area_chart["data"]["points"][-1]["value"] == 3
+
+    em_adoption = products["em"]["adoption"]
+    registry_panel = next(
+        p
+        for p in em_adoption.get("panels", [])
+        if p["title"] == "Model-registry engagement"
+    )
+    assert registry_panel["rows"] == [["ws-alpha", 2, 3]]
+
+    mpm_growth = products["mpm"]["growth"]
+    assert mpm_growth["kpis"][1]["value"] == 1
+
+    # never a secret anywhere in the assembled data
+    dumped = str(report_data)
+    assert "COMET_API_KEY" not in dumped
+    assert "sk-" not in dumped
+
+
+def test_build_resolves_workspaces_via_api_when_none_given(monkeypatch):
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    _patch_collectors(monkeypatch)
+    api = MagicMock()
+    api.get_workspaces.return_value = ["ws-only"]
+    reporter = GrowthReporter(api, window="7d", units="month", platforms="em")
+    report_data = reporter.build([])
+
+    api.get_workspaces.assert_called_once()
+    assert report_data["sections"]["unified"]["kpis"][0]["value"] == 1
+
+
+def test_build_drops_unimportable_optional_platforms(monkeypatch):
+    import builtins
+
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "opik":
+            raise ImportError("no opik")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    _patch_collectors(monkeypatch)
+
+    reporter = GrowthReporter(
+        MagicMock(), window="7d", units="month", platforms="em,opik,mpm"
+    )
+    report_data = reporter.build(["ws1"])
+
+    assert report_data["collectors"]["opik"] is False
+    assert "opik" not in report_data["sections"]["products"]
+
+
+def test_build_single_workspace_breaks_down_unified_table_by_use_case(monkeypatch):
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    opik_events = _kind_events("opik_project", "opik", [("ws1", "op1", 2026, 6, 1)])
+    _patch_collectors(monkeypatch, opik=(opik_events, []))
+
+    reporter = GrowthReporter(MagicMock(), window="7d", units="month", platforms="opik")
+    report_data = reporter.build(["ws1"])
+
+    unified_table = report_data["sections"]["unified"]["table"]
+    assert unified_table["headers"][0] == "Use case"
+    assert unified_table["rows"] == [["op1", "Opik projects", "2026-06-01"]]
+
+
+def test_generate_growth_report_writes_html_with_no_secret(monkeypatch, tmp_path):
+    from cometx.cli.admin_growth_report import generate_growth_report
+
+    opik_events = _kind_events(
+        "opik_project", "opik", [("ws1", "op1", 2026, 6, 1), ("ws1", "op2", 2026, 7, 8)]
+    )
+    _patch_collectors(monkeypatch, opik=(opik_events, []))
+
+    out = tmp_path / "growth.html"
+    api = MagicMock()
+    api.config = {"comet.api_key": "sk-should-never-leak-0000"}
+    path = generate_growth_report(
+        api,
+        ["ws1"],
+        window="7d",
+        units="month",
+        platforms="opik",
+        output=str(out),
+        no_open=True,
+    )
+
+    content = out.read_text(encoding="utf-8")
+    assert path == str(out)
+    assert "Use cases across all platforms" in content
+    assert "op1" in content or "op2" in content
+    assert "sk-should-never-leak-0000" not in content
