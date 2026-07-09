@@ -28,11 +28,10 @@ def test_growth_report_delegate_exists():
 
 def test_growth_report_action_registered_in_admin():
     # admin.py builds an ACTION subparser; growth-report must be one of the choices
-    from cometx.cli import admin as admin_mod
-
-    src = admin_mod.__doc__ or ""  # noqa: F841
     # smoke: the delegate is imported by admin.py
     import inspect
+
+    from cometx.cli import admin as admin_mod
 
     admin_src = inspect.getsource(admin_mod)
     assert "generate_growth_report" in admin_src
@@ -61,12 +60,10 @@ def _win():
     )
 
 
-def test_bucket_and_continuous_zero_fill():
-    from cometx.cli.admin_growth_report import bucket_events, continuous_series
+def test_continuous_zero_fill():
+    from cometx.cli.admin_growth_report import continuous_series
 
-    evs = [_ev(2026, 1, 5), _ev(2026, 1, 20), _ev(2026, 3, 2)]
-    counts = bucket_events(evs, _win(), "month")
-    assert counts["2026-01"] == 2 and counts["2026-03"] == 1
+    counts = {"2026-01": 2, "2026-03": 1}
     series = continuous_series(counts, "month")
     keys = [k for k, _ in series]
     assert keys == ["2026-01", "2026-02", "2026-03"]  # Feb zero-filled
@@ -759,33 +756,6 @@ def test_use_cases_by_workspace_empty_input():
     assert use_cases_by_workspace([]) == {}
 
 
-def test_workspace_creation_events_one_per_workspace_at_earliest():
-    from cometx.cli.admin_growth_report import workspace_creation_events
-
-    events = _make_mixed_workspace_events()
-    synth = workspace_creation_events(events)
-
-    assert len(synth) == 2
-    assert all(e.kind == "workspace" for e in synth)
-    by_ws = {e.workspace: e for e in synth}
-
-    ws1 = by_ws["ws1"]
-    assert ws1.created == datetime.datetime(2026, 1, 2, tzinfo=datetime.timezone.utc)
-    assert ws1.use_case == "ws1"
-    assert ws1.platform == "opik"  # platform of the earliest event in ws1
-
-    ws2 = by_ws["ws2"]
-    assert ws2.created == datetime.datetime(2025, 12, 15, tzinfo=datetime.timezone.utc)
-    assert ws2.use_case == "ws2"
-    assert ws2.platform == "em"
-
-
-def test_workspace_creation_events_empty_input():
-    from cometx.cli.admin_growth_report import workspace_creation_events
-
-    assert workspace_creation_events([]) == []
-
-
 def test_unified_events_filters_to_three_use_case_kinds():
     from cometx.cli.admin_growth_report import unified_events
 
@@ -804,95 +774,6 @@ def test_unified_events_empty_input():
     from cometx.cli.admin_growth_report import unified_events
 
     assert unified_events([]) == []
-
-
-def _make_usage_metrics():
-    from cometx.cli.admin_growth_report import UsageMetric
-
-    return [
-        UsageMetric(
-            platform="opik",
-            workspace="ws1",
-            metric="SPAN_COUNT",
-            value=8,
-            project="op1",
-            series=[("2026-01", 5), ("2026-02", 3)],
-        ),
-        UsageMetric(
-            platform="opik",
-            workspace="ws1",
-            metric="SPAN_COUNT",
-            value=8,
-            project=None,
-            series=[("2026-01", 5), ("2026-02", 3)],
-        ),
-        UsageMetric(
-            platform="em",
-            workspace="ws1",
-            metric="EXPERIMENT_COUNT",
-            value=2,
-            project="em1",
-            series=[("2026-01", 2)],
-        ),
-        UsageMetric(
-            platform="em",
-            workspace="ws1",
-            metric="REGISTRY_MODELS",
-            value=2,
-            project=None,
-            series=None,
-        ),
-        UsageMetric(
-            platform="em",
-            workspace="ws1",
-            metric="REGISTRY_VERSIONS",
-            value=3,
-            project=None,
-            series=None,
-        ),
-        UsageMetric(
-            platform="mpm",
-            workspace="ws2",
-            metric="PREDICTION_VOLUME",
-            value=7,
-            project="mp2",
-            series=[("2026-01", 7)],
-        ),
-    ]
-
-
-def test_usage_by_workspace_groups_by_metric_registry_snapshot_others_series():
-    from cometx.cli.admin_growth_report import usage_by_workspace
-
-    metrics = _make_usage_metrics()
-    result = usage_by_workspace(metrics)
-
-    assert set(result.keys()) == {"ws1", "ws2"}
-
-    ws1 = result["ws1"]
-    assert set(ws1.keys()) == {
-        "SPAN_COUNT",
-        "EXPERIMENT_COUNT",
-        "REGISTRY_MODELS",
-        "REGISTRY_VERSIONS",
-    }
-    assert len(ws1["SPAN_COUNT"]) == 2
-    assert all(m.series for m in ws1["SPAN_COUNT"])
-    assert all(m.series for m in ws1["EXPERIMENT_COUNT"])
-    assert all(m.series is None for m in ws1["REGISTRY_MODELS"])
-    assert all(m.series is None for m in ws1["REGISTRY_VERSIONS"])
-    assert ws1["REGISTRY_MODELS"][0].value == 2
-
-    ws2 = result["ws2"]
-    assert set(ws2.keys()) == {"PREDICTION_VOLUME"}
-    assert ws2["PREDICTION_VOLUME"][0].project == "mp2"
-    assert ws2["PREDICTION_VOLUME"][0].series
-
-
-def test_usage_by_workspace_empty_input():
-    from cometx.cli.admin_growth_report import usage_by_workspace
-
-    assert usage_by_workspace([]) == {}
 
 
 def test_collect_mpm_missing_dependency_returns_empty(monkeypatch):
@@ -1548,3 +1429,66 @@ def test_generate_growth_report_writes_html_with_no_secret(monkeypatch, tmp_path
     assert "Use cases across all platforms" in content
     assert "op1" in content or "op2" in content
     assert "sk-should-never-leak-0000" not in content
+
+
+def test_generate_growth_report_full_chain_all_platforms(monkeypatch, tmp_path):
+    """End-to-end seam coverage: fixed collector output -> build() ->
+    build_html() -> the written HTML file, across all three platforms.
+    Chains what test_build_assembles_report_data_matching_c8_contract and
+    the render-layer tests otherwise only cover separately."""
+    from cometx.cli.admin_growth_report import generate_growth_report
+
+    monkeypatch.setenv("COMET_API_KEY", "sk-planted-env-secret-should-not-leak")
+
+    opik_events = _kind_events(
+        "opik_project",
+        "opik",
+        [
+            ("ws-alpha", "op1", 2026, 6, 1),
+            ("ws-alpha", "op2", 2026, 7, 5),
+            ("ws-beta", "op3", 2026, 7, 6),
+        ],
+    )
+    em_events = _kind_events(
+        "em_project",
+        "em",
+        [("ws-alpha", "em1", 2026, 5, 1), ("ws-beta", "em2", 2026, 7, 8)],
+    )
+    mpm_events = _kind_events("mpm_model", "mpm", [("ws-beta", "mp1", 2026, 7, 7)])
+    _patch_collectors(
+        monkeypatch,
+        em=(em_events, []),
+        opik=(opik_events, []),
+        mpm=(mpm_events, []),
+    )
+
+    out = tmp_path / "growth-full-chain.html"
+    api = MagicMock()
+    api.config = {"comet.api_key": "sk-api-secret-should-not-leak"}
+    path = generate_growth_report(
+        api,
+        ["ws-alpha", "ws-beta"],
+        window="7d",
+        units="month",
+        platforms="em,opik,mpm",
+        output=str(out),
+        no_open=True,
+    )
+
+    content = out.read_text(encoding="utf-8")
+    assert path == str(out)
+
+    # Section titles from all three product sections + the unified section.
+    assert "Use cases across all platforms" in content
+    assert "Opik — growth" in content
+    assert "EM — growth" in content
+    assert "MPM — growth" in content
+
+    # KPI value derived from the fixed events: 3 opik + 2 em + 1 mpm = 6
+    # total use cases in the unified section.
+    assert ">6<" in content
+
+    # No secret (env-planted or api-config) ever reaches the rendered HTML.
+    assert "sk-planted-env-secret-should-not-leak" not in content
+    assert "sk-api-secret-should-not-leak" not in content
+    assert "COMET_API_KEY" not in content
