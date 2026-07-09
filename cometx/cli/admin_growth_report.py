@@ -26,6 +26,8 @@ import os
 import re
 from collections import defaultdict
 
+from tqdm import tqdm
+
 from cometx.cli.admin_growth_render import build_html, write_html
 from cometx.utils import format_time_key, get_next_time_key
 
@@ -273,8 +275,14 @@ class GrowthReporter:
         window = parse_window(self.window, now, self.units)
 
         platforms = self._resolve_platforms()
+        print("Resolving workspaces...")
         resolved_workspaces = self._resolve_workspaces(workspaces)
+        print(
+            f"Collecting {', '.join(platforms) or 'no'} data for "
+            f"{len(resolved_workspaces)} workspace(s)..."
+        )
         events, usage, ran = self._collect_selected(platforms, resolved_workspaces)
+        print("Building report...")
 
         return self._assemble_report_data(
             events, usage, ran, resolved_workspaces, window
@@ -335,6 +343,7 @@ class GrowthReporter:
         usage: list = []
         ran = {"opik": False, "em": False, "mpm": False}
         for platform in platforms:
+            print(f"[{PLATFORM_LABELS.get(platform, platform)}] collecting...")
             collector = getattr(self, self._COLLECTOR_METHODS[platform])
             platform_events, platform_usage = collector(workspaces)
             events.extend(platform_events)
@@ -784,6 +793,19 @@ class GrowthReporter:
             "sections": {"unified": unified_section, "products": products},
         }
 
+    def _workspace_usage_metric(self, platform, metric, workspace, value, counts):
+        """Build the workspace-level (`project=None`) summary `UsageMetric`
+        appended by every collector, so the summary shape lives in one place
+        instead of being duplicated across EM/Opik/MPM."""
+        return UsageMetric(
+            platform=platform,
+            workspace=workspace,
+            metric=metric,
+            value=value,
+            project=None,
+            series=(continuous_series(dict(counts), self.units) if counts else []),
+        )
+
     def _collect_em(self, workspaces):
         """Collect EM `em_project` CreationEvents + EXPERIMENT_COUNT /
         REGISTRY_MODELS / REGISTRY_VERSIONS UsageMetrics.
@@ -800,7 +822,7 @@ class GrowthReporter:
         if self.limit is not None:
             workspaces = list(workspaces)[: self.limit]
 
-        for ws in workspaces:
+        for ws in tqdm(list(workspaces), desc="EM workspaces", unit="ws"):
             try:
                 response = self.api._client.get_from_endpoint(
                     "projects", {"workspaceName": ws}
@@ -829,7 +851,9 @@ class GrowthReporter:
             ws_experiment_total = 0
             ws_counts: dict = defaultdict(int)
 
-            for project in projects:
+            for project in tqdm(
+                projects, desc=f"EM {ws}", unit="proj", leave=False
+            ):
                 proj_name = project.get("projectName")
                 try:
                     # Fetch the project's experiments once and reuse the list
@@ -871,15 +895,8 @@ class GrowthReporter:
                     continue
 
             usage.append(
-                UsageMetric(
-                    platform="em",
-                    workspace=ws,
-                    metric="EXPERIMENT_COUNT",
-                    value=ws_experiment_total,
-                    project=None,
-                    series=(
-                        continuous_series(ws_counts, self.units) if ws_counts else []
-                    ),
+                self._workspace_usage_metric(
+                    "em", "EXPERIMENT_COUNT", ws, ws_experiment_total, ws_counts
                 )
             )
 
@@ -973,7 +990,7 @@ class GrowthReporter:
 
         now = datetime.datetime.now(datetime.timezone.utc)
 
-        for ws in workspaces:
+        for ws in tqdm(list(workspaces), desc="Opik workspaces", unit="ws"):
             try:
                 client = opik.Opik(workspace=ws, api_key=api_key, host=host)
             except Exception as exc:
@@ -1000,7 +1017,9 @@ class GrowthReporter:
 
             ws_counts: dict = defaultdict(float)
 
-            for project in projects:
+            for project in tqdm(
+                projects, desc=f"Opik {ws}", unit="proj", leave=False
+            ):
                 try:
                     if project.created_at is not None:
                         events.append(
@@ -1054,17 +1073,8 @@ class GrowthReporter:
                     continue
 
             usage.append(
-                UsageMetric(
-                    platform="opik",
-                    workspace=ws,
-                    metric="SPAN_COUNT",
-                    value=sum(ws_counts.values()),
-                    project=None,
-                    series=(
-                        continuous_series(dict(ws_counts), self.units)
-                        if ws_counts
-                        else []
-                    ),
+                self._workspace_usage_metric(
+                    "opik", "SPAN_COUNT", ws, sum(ws_counts.values()), ws_counts
                 )
             )
 
@@ -1113,20 +1123,24 @@ class GrowthReporter:
         )
 
         requested = set(workspaces)
-        for ws_entry in all_workspaces:
+        selected_entries = [
+            ws_entry
+            for ws_entry in all_workspaces
             # The MPM inventory shape is not verifiable live; guard against
             # malformed elements so one bad entry can't crash the report.
-            if not isinstance(ws_entry, dict):
-                continue
+            if isinstance(ws_entry, dict)
+            and ws_entry.get("workspaceName") in requested
+        ]
+        for ws_entry in tqdm(selected_entries, desc="MPM workspaces", unit="ws"):
             ws = ws_entry.get("workspaceName")
-            if ws not in requested:
-                continue
 
             models = ws_entry.get("models", []) or []
             ws_counts: dict = defaultdict(float)
             ws_total = 0.0
 
-            for model in models:
+            for model in tqdm(
+                models, desc=f"MPM {ws}", unit="model", leave=False
+            ):
                 if not isinstance(model, dict):
                     continue
                 model_name = model.get("modelName")
@@ -1176,17 +1190,8 @@ class GrowthReporter:
                     continue
 
             usage.append(
-                UsageMetric(
-                    platform="mpm",
-                    workspace=ws,
-                    metric="PREDICTION_VOLUME",
-                    value=ws_total,
-                    project=None,
-                    series=(
-                        continuous_series(dict(ws_counts), self.units)
-                        if ws_counts
-                        else []
-                    ),
+                self._workspace_usage_metric(
+                    "mpm", "PREDICTION_VOLUME", ws, ws_total, ws_counts
                 )
             )
 
