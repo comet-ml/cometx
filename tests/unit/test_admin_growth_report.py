@@ -1,6 +1,22 @@
 import datetime
 import importlib
+import importlib.util
 from unittest.mock import MagicMock, patch
+
+import pytest
+
+# opik and comet_mpm are OPTIONAL extras (cometx[all]); CI installs neither by
+# default (opik happens to be in requirements.txt, comet_mpm is not). Tests that
+# patch those SDKs must be skipped when the extra isn't importable, otherwise
+# `@patch("comet_mpm.API")` errors at setup with ModuleNotFoundError.
+requires_opik = pytest.mark.skipif(
+    importlib.util.find_spec("opik") is None,
+    reason="opik extra not installed (cometx[all])",
+)
+requires_mpm = pytest.mark.skipif(
+    importlib.util.find_spec("comet_mpm") is None,
+    reason="comet_mpm extra not installed (cometx[all])",
+)
 
 
 def test_creation_event_and_window():
@@ -300,6 +316,7 @@ def _make_opik_metrics_response(datapoints):
     "cometx.cli.smoke_test.get_opik_config",
     return_value="https://example.com/opik/api/",
 )
+@requires_opik
 @patch("opik.Opik")
 def test_collect_opik_creation_events_and_span_count_usage(mock_opik_ctor, _mock_host):
     from cometx.cli.admin_growth_report import GrowthReporter
@@ -371,6 +388,7 @@ def test_collect_opik_creation_events_and_span_count_usage(mock_opik_ctor, _mock
     "cometx.cli.smoke_test.get_opik_config",
     return_value="https://example.com/opik/api/",
 )
+@requires_opik
 @patch("opik.Opik")
 def test_collect_opik_respects_limit_on_workspaces(mock_opik_ctor, _mock_host):
     from cometx.cli.admin_growth_report import GrowthReporter
@@ -404,6 +422,7 @@ def test_collect_opik_respects_limit_on_workspaces(mock_opik_ctor, _mock_host):
     "cometx.cli.smoke_test.get_opik_config",
     return_value="https://example.com/opik/api/",
 )
+@requires_opik
 @patch("opik.Opik")
 def test_collect_opik_skips_bad_workspace_and_continues(
     mock_opik_ctor, _mock_host, capsys
@@ -516,6 +535,7 @@ def _mpm_workspaces_resp(models_by_ws):
     }
 
 
+@requires_mpm
 @patch("comet_mpm.API")
 def test_collect_mpm_creation_scenarios_a_b_c(mock_api_ctor):
     from cometx.cli.admin_growth_report import GrowthReporter
@@ -579,6 +599,7 @@ def test_collect_mpm_creation_scenarios_a_b_c(mock_api_ctor):
     assert modelC_metric.platform == "mpm" and modelC_metric.workspace == "ws1"
 
 
+@requires_mpm
 @patch("comet_mpm.API")
 def test_collect_mpm_prediction_volume_usage_per_model_and_per_workspace(
     mock_api_ctor,
@@ -626,6 +647,7 @@ def test_collect_mpm_prediction_volume_usage_per_model_and_per_workspace(
     assert client.get_nb_predictions.call_count == 2
 
 
+@requires_mpm
 @patch("comet_mpm.API")
 def test_collect_mpm_respects_limit_on_workspaces(mock_api_ctor):
     from cometx.cli.admin_growth_report import GrowthReporter
@@ -652,6 +674,7 @@ def test_collect_mpm_respects_limit_on_workspaces(mock_api_ctor):
     assert not any(e.use_case == "modelZ" for e in events)
 
 
+@requires_mpm
 @patch("comet_mpm.API")
 def test_collect_mpm_skips_bad_model_and_continues(mock_api_ctor, capsys):
     from cometx.cli.admin_growth_report import GrowthReporter
@@ -686,6 +709,7 @@ def test_collect_mpm_skips_bad_model_and_continues(mock_api_ctor, capsys):
     assert not any(m.project == "modelBad" for m in usage)
 
 
+@requires_mpm
 @patch("comet_mpm.API")
 def test_collect_mpm_workspaces_endpoint_error_returns_empty(mock_api_ctor):
     from cometx.cli.admin_growth_report import GrowthReporter
@@ -704,6 +728,7 @@ def test_collect_mpm_workspaces_endpoint_error_returns_empty(mock_api_ctor):
     assert usage == []
 
 
+@requires_mpm
 @patch("comet_mpm.API")
 def test_collect_mpm_skips_malformed_enumeration_elements(mock_api_ctor):
     # The MPM inventory shape is unverifiable live; malformed workspace/model
@@ -1308,7 +1333,7 @@ def _usage_metric(platform, ws, metric, value, project=None, series=None):
     )
 
 
-def _patch_collectors(monkeypatch, em=None, opik=None, mpm=None):
+def _patch_collectors(monkeypatch, em=None, opik=None, mpm=None, force_platforms=None):
     from cometx.cli.admin_growth_report import GrowthReporter
 
     monkeypatch.setattr(
@@ -1320,6 +1345,14 @@ def _patch_collectors(monkeypatch, em=None, opik=None, mpm=None):
     monkeypatch.setattr(
         GrowthReporter, "_collect_mpm", lambda self, ws: (mpm or ([], []))
     )
+    # Decouple platform resolution from the environment: `_resolve_platforms`
+    # imports opik/comet_mpm to decide availability, but these are optional
+    # extras not always installed in CI. Force the set so cross-platform
+    # assembly tests are deterministic regardless of what's pip-installed.
+    if force_platforms is not None:
+        monkeypatch.setattr(
+            GrowthReporter, "_resolve_platforms", lambda self: list(force_platforms)
+        )
 
 
 def test_build_assembles_report_data_matching_c8_contract(monkeypatch):
@@ -1402,6 +1435,7 @@ def test_build_assembles_report_data_matching_c8_contract(monkeypatch):
         em=(em_events, em_usage),
         opik=(opik_events, opik_usage),
         mpm=(mpm_events, mpm_usage),
+        force_platforms=["opik", "em", "mpm"],
     )
 
     reporter = GrowthReporter(
@@ -1589,6 +1623,7 @@ def test_generate_growth_report_full_chain_all_platforms(monkeypatch, tmp_path):
         em=(em_events, []),
         opik=(opik_events, []),
         mpm=(mpm_events, []),
+        force_platforms=["opik", "em", "mpm"],
     )
 
     out = tmp_path / "growth-full-chain.html"
