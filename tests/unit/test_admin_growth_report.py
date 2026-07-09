@@ -703,6 +703,198 @@ def test_collect_mpm_skips_malformed_enumeration_elements(mock_api_ctor):
     assert any(m.metric == "PREDICTION_VOLUME" and m.project == "good" for m in usage)
 
 
+def _uc_ev(platform, ws, uc, kind, y, m, d):
+    from cometx.cli.admin_growth_report import CreationEvent
+
+    return CreationEvent(
+        platform,
+        ws,
+        uc,
+        kind,
+        datetime.datetime(y, m, d, tzinfo=datetime.timezone.utc),
+    )
+
+
+def _make_mixed_workspace_events():
+    """Two workspaces w/ mixed opik_project/em_project/mpm_model events."""
+    return [
+        # ws1: 2 opik, 1 em, 1 mpm; earliest = 2026-01-02 (opik)
+        _uc_ev("opik", "ws1", "op1", "opik_project", 2026, 1, 2),
+        _uc_ev("opik", "ws1", "op2", "opik_project", 2026, 3, 1),
+        _uc_ev("em", "ws1", "em1", "em_project", 2026, 2, 1),
+        _uc_ev("mpm", "ws1", "mp1", "mpm_model", 2026, 4, 1),
+        # ws2: 1 em, 2 mpm; earliest = 2025-12-15 (em)
+        _uc_ev("em", "ws2", "em2", "em_project", 2025, 12, 15),
+        _uc_ev("mpm", "ws2", "mp2", "mpm_model", 2026, 1, 10),
+        _uc_ev("mpm", "ws2", "mp3", "mpm_model", 2026, 2, 20),
+    ]
+
+
+def test_use_cases_by_workspace_by_kind_totals_and_first_created():
+    from cometx.cli.admin_growth_report import use_cases_by_workspace
+
+    events = _make_mixed_workspace_events()
+    result = use_cases_by_workspace(events)
+
+    assert set(result.keys()) == {"ws1", "ws2"}
+
+    ws1 = result["ws1"]
+    assert ws1["use_cases_total"] == 4
+    assert ws1["by_kind"] == {"opik_project": 2, "em_project": 1, "mpm_model": 1}
+    assert ws1["first_created"] == datetime.datetime(
+        2026, 1, 2, tzinfo=datetime.timezone.utc
+    )
+
+    ws2 = result["ws2"]
+    assert ws2["use_cases_total"] == 3
+    assert ws2["by_kind"] == {"opik_project": 0, "em_project": 1, "mpm_model": 2}
+    assert ws2["first_created"] == datetime.datetime(
+        2025, 12, 15, tzinfo=datetime.timezone.utc
+    )
+
+
+def test_use_cases_by_workspace_empty_input():
+    from cometx.cli.admin_growth_report import use_cases_by_workspace
+
+    assert use_cases_by_workspace([]) == {}
+
+
+def test_workspace_creation_events_one_per_workspace_at_earliest():
+    from cometx.cli.admin_growth_report import workspace_creation_events
+
+    events = _make_mixed_workspace_events()
+    synth = workspace_creation_events(events)
+
+    assert len(synth) == 2
+    assert all(e.kind == "workspace" for e in synth)
+    by_ws = {e.workspace: e for e in synth}
+
+    ws1 = by_ws["ws1"]
+    assert ws1.created == datetime.datetime(2026, 1, 2, tzinfo=datetime.timezone.utc)
+    assert ws1.use_case == "ws1"
+    assert ws1.platform == "opik"  # platform of the earliest event in ws1
+
+    ws2 = by_ws["ws2"]
+    assert ws2.created == datetime.datetime(2025, 12, 15, tzinfo=datetime.timezone.utc)
+    assert ws2.use_case == "ws2"
+    assert ws2.platform == "em"
+
+
+def test_workspace_creation_events_empty_input():
+    from cometx.cli.admin_growth_report import workspace_creation_events
+
+    assert workspace_creation_events([]) == []
+
+
+def test_unified_events_filters_to_three_use_case_kinds():
+    from cometx.cli.admin_growth_report import unified_events
+
+    events = _make_mixed_workspace_events()
+    other = _uc_ev("em", "ws1", "reg1", "registry_model", 2026, 1, 1)
+    result = unified_events(events + [other])
+
+    assert len(result) == len(events)
+    assert all(e.kind in ("opik_project", "em_project", "mpm_model") for e in result)
+    assert other not in result
+    # does not mutate input
+    assert (events + [other]) == events + [other]
+
+
+def test_unified_events_empty_input():
+    from cometx.cli.admin_growth_report import unified_events
+
+    assert unified_events([]) == []
+
+
+def _make_usage_metrics():
+    from cometx.cli.admin_growth_report import UsageMetric
+
+    return [
+        UsageMetric(
+            platform="opik",
+            workspace="ws1",
+            metric="SPAN_COUNT",
+            value=8,
+            project="op1",
+            series=[("2026-01", 5), ("2026-02", 3)],
+        ),
+        UsageMetric(
+            platform="opik",
+            workspace="ws1",
+            metric="SPAN_COUNT",
+            value=8,
+            project=None,
+            series=[("2026-01", 5), ("2026-02", 3)],
+        ),
+        UsageMetric(
+            platform="em",
+            workspace="ws1",
+            metric="EXPERIMENT_COUNT",
+            value=2,
+            project="em1",
+            series=[("2026-01", 2)],
+        ),
+        UsageMetric(
+            platform="em",
+            workspace="ws1",
+            metric="REGISTRY_MODELS",
+            value=2,
+            project=None,
+            series=None,
+        ),
+        UsageMetric(
+            platform="em",
+            workspace="ws1",
+            metric="REGISTRY_VERSIONS",
+            value=3,
+            project=None,
+            series=None,
+        ),
+        UsageMetric(
+            platform="mpm",
+            workspace="ws2",
+            metric="PREDICTION_VOLUME",
+            value=7,
+            project="mp2",
+            series=[("2026-01", 7)],
+        ),
+    ]
+
+
+def test_usage_by_workspace_groups_by_metric_registry_snapshot_others_series():
+    from cometx.cli.admin_growth_report import usage_by_workspace
+
+    metrics = _make_usage_metrics()
+    result = usage_by_workspace(metrics)
+
+    assert set(result.keys()) == {"ws1", "ws2"}
+
+    ws1 = result["ws1"]
+    assert set(ws1.keys()) == {
+        "SPAN_COUNT",
+        "EXPERIMENT_COUNT",
+        "REGISTRY_MODELS",
+        "REGISTRY_VERSIONS",
+    }
+    assert len(ws1["SPAN_COUNT"]) == 2
+    assert all(m.series for m in ws1["SPAN_COUNT"])
+    assert all(m.series for m in ws1["EXPERIMENT_COUNT"])
+    assert all(m.series is None for m in ws1["REGISTRY_MODELS"])
+    assert all(m.series is None for m in ws1["REGISTRY_VERSIONS"])
+    assert ws1["REGISTRY_MODELS"][0].value == 2
+
+    ws2 = result["ws2"]
+    assert set(ws2.keys()) == {"PREDICTION_VOLUME"}
+    assert ws2["PREDICTION_VOLUME"][0].project == "mp2"
+    assert ws2["PREDICTION_VOLUME"][0].series
+
+
+def test_usage_by_workspace_empty_input():
+    from cometx.cli.admin_growth_report import usage_by_workspace
+
+    assert usage_by_workspace([]) == {}
+
+
 def test_collect_mpm_missing_dependency_returns_empty(monkeypatch):
     import builtins
 

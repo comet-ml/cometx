@@ -117,6 +117,93 @@ def growth_stats(events, window, units) -> dict:
     return {"total": total, "new_in_window": new_in, "pct_growth": round(pct, 1)}
 
 
+USE_CASE_KINDS = ("opik_project", "em_project", "mpm_model")
+
+
+def unified_events(events) -> list:
+    """All three use-case kinds combined for the unified created-over-time
+    series.
+
+    The collectors already emit only the three use-case kinds
+    (`opik_project`/`em_project`/`mpm_model`), so this is effectively a
+    defensive filter -- any other kind (e.g. a synthetic `workspace` event)
+    is excluded. Returns a new list; never mutates `events`.
+    """
+    return [e for e in events if e.kind in USE_CASE_KINDS]
+
+
+def use_cases_by_workspace(events) -> dict:
+    """Per-workspace use-case roll-up.
+
+    Returns ``{workspace: {"use_cases_total": int, "by_kind": {...},
+    "first_created": datetime}}``. `by_kind` always contains all three
+    use-case kinds (0 if absent). `first_created` is the workspace-creation
+    proxy: the earliest use-case `created` timestamp seen in that workspace.
+    Only the three use-case kinds are considered (via `unified_events`).
+    """
+    result: dict = {}
+    for ev in unified_events(events):
+        entry = result.setdefault(
+            ev.workspace,
+            {
+                "use_cases_total": 0,
+                "by_kind": {kind: 0 for kind in USE_CASE_KINDS},
+                "first_created": ev.created,
+            },
+        )
+        entry["use_cases_total"] += 1
+        entry["by_kind"][ev.kind] += 1
+        if ev.created < entry["first_created"]:
+            entry["first_created"] = ev.created
+    return result
+
+
+def workspace_creation_events(events) -> list:
+    """One synthetic workspace-creation event per workspace, at its earliest
+    use-case `created` timestamp (the workspace-creation proxy).
+
+    Convention: the synthetic event uses `kind="workspace"` (distinct from
+    the three use-case kinds so it's never picked up by `unified_events`),
+    `use_case=<workspace name>`, and `platform=<platform of the earliest
+    event in that workspace>` (the platform that "founded" the workspace).
+    Used to chart department/workspace creation over time.
+    """
+    earliest: dict = {}
+    for ev in unified_events(events):
+        current = earliest.get(ev.workspace)
+        if current is None or ev.created < current.created:
+            earliest[ev.workspace] = ev
+    return [
+        CreationEvent(
+            platform=ev.platform,
+            workspace=ws,
+            use_case=ws,
+            kind="workspace",
+            created=ev.created,
+        )
+        for ws, ev in earliest.items()
+    ]
+
+
+def usage_by_workspace(usage: list) -> dict:
+    """Per-workspace secondary adoption metrics, grouped by `metric`.
+
+    Shape: ``{workspace: {metric_name: [UsageMetric, ...]}}``. Each list
+    preserves the per-project detail entries AND the workspace-total entry
+    (`project=None`) as emitted by the collectors, in their original order
+    -- this function only groups, it does not aggregate or drop data.
+    Registry metrics (`REGISTRY_MODELS`/`REGISTRY_VERSIONS`) stay snapshot
+    (`series=None`, unchanged from the collectors); the other metrics
+    (`SPAN_COUNT`/`EXPERIMENT_COUNT`/`PREDICTION_VOLUME`) retain their
+    over-time `series`.
+    """
+    result: dict = {}
+    for metric in usage:
+        by_metric = result.setdefault(metric.workspace, {})
+        by_metric.setdefault(metric.metric, []).append(metric)
+    return result
+
+
 def generate_growth_report(
     api,
     workspaces,
