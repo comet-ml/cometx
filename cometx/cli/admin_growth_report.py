@@ -24,12 +24,13 @@ import dataclasses
 import datetime
 from collections import defaultdict
 
-from cometx.cli.admin_growth_render import build_html, write_html  # noqa: F401
-from cometx.utils import (  # noqa: F401
-    format_time_key,
-    get_next_time_key,
-    parse_time_key,
-)
+from cometx.cli.admin_growth_render import build_html, write_html
+from cometx.utils import format_time_key, get_next_time_key
+
+# `build_html` is re-exported here so the growth-report module is the single
+# import surface (tests + callers import it from here). Declaring it in
+# `__all__` documents the intentional re-export without a per-line noqa.
+__all__ = ["generate_growth_report", "GrowthReporter", "build_html", "write_html"]
 
 
 @dataclasses.dataclass(frozen=True)

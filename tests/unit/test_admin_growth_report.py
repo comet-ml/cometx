@@ -1,6 +1,5 @@
 import datetime
 import importlib
-import json
 from unittest.mock import MagicMock, patch
 
 
@@ -1169,13 +1168,23 @@ def test_build_html_escapes_workspace_and_project_names():
     assert "&lt;img" in doc
 
 
-def test_build_html_never_leaks_a_secret_value():
+def test_build_html_takes_only_report_data_and_ignores_env_secrets(monkeypatch):
+    import inspect
+
     from cometx.cli.admin_growth_report import build_html
 
-    report_data = _sample_report_data()
-    # report_data never carries an api key; build_html must not either.
-    doc = build_html(report_data)
-    assert "api_key" not in doc.lower() or "api_key" not in json.dumps(report_data)
+    # Architectural guarantee: build_html's ONLY input channel is report_data
+    # (no api/key parameter), so it has no way to reach the API key.
+    params = list(inspect.signature(build_html).parameters)
+    assert params == ["report_data"]
+
+    # And it must not pull secrets out of the environment/config: plant a
+    # secret-shaped COMET_API_KEY in the env, render normal data, and assert
+    # it never appears in the output.
+    secret = "sk-not-a-real-secret-DEADBEEF-0123456789"
+    monkeypatch.setenv("COMET_API_KEY", secret)
+    doc = build_html(_sample_report_data())
+    assert secret not in doc
 
 
 def test_build_html_handles_missing_sections_gracefully():
