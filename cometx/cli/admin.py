@@ -154,6 +154,7 @@ from urllib.parse import urlparse
 from comet_ml import API
 
 from .admin_gpu_report import main as gpu_report_main
+from .admin_growth_report import generate_growth_report
 from .admin_optimizer_report import generate_json_report
 from .admin_usage_report import generate_usage_report
 
@@ -461,6 +462,79 @@ Examples:
         action="store_true",
     )
 
+    # growth-report subcommand
+    growth_report_description = """Generate a cross-platform use-case growth report for one or more workspaces.
+
+Arguments:
+    WORKSPACE (optional, one or more)
+        One or more workspaces to run the growth report for.
+        If not provided, all workspaces are included.
+
+Output:
+    Generates a self-contained HTML page containing cross-platform (Opik + EM + MPM)
+    use-case growth and rate charts, broken down by workspace/department.
+
+Examples:
+    cometx admin growth-report
+    cometx admin growth-report my-workspace
+    cometx admin growth-report workspace1 workspace2 --units week
+    cometx admin growth-report my-workspace --window 30d
+    cometx admin growth-report my-workspace --platforms em,opik
+    cometx admin growth-report my-workspace --output report.html --no-open
+"""
+    growth_parser = subparsers.add_parser(
+        "growth-report",
+        help="Generate a cross-platform use-case growth report for one or more workspaces",
+        description=growth_report_description,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    # Add global arguments to subparser so they show in help
+    add_global_arguments(growth_parser)
+    growth_parser.add_argument(
+        "WORKSPACE",
+        nargs="*",
+        help="One or more workspaces to run the growth report for (empty = all)",
+        metavar="WORKSPACE",
+        type=str,
+    )
+    growth_parser.add_argument(
+        "--units",
+        help="Time unit for chart bucket granularity (default: month)",
+        choices=["month", "week", "day", "hour"],
+        default="month",
+        type=str,
+    )
+    growth_parser.add_argument(
+        "--window",
+        help="Relative analysis window for KPIs, e.g. 7d/14d/30d/90d (default: 7d)",
+        default="7d",
+        type=str,
+    )
+    growth_parser.add_argument(
+        "--platforms",
+        help="Comma-separated list of platforms to include (default: em,opik,mpm)",
+        default="em,opik,mpm",
+        type=str,
+    )
+    growth_parser.add_argument(
+        "--output",
+        help="Output HTML file path (default: growth_report.html)",
+        default="growth_report.html",
+        type=str,
+    )
+    growth_parser.add_argument(
+        "--limit",
+        help="Optional limit on the number of items collected per platform",
+        type=int,
+        default=None,
+    )
+    growth_parser.add_argument(
+        "--no-open",
+        help="Don't automatically open the generated HTML file",
+        default=False,
+        action="store_true",
+    )
+
 
 def admin(parsed_args, remaining=None):
     # Called via `cometx admin ...`
@@ -746,6 +820,25 @@ def admin(parsed_args, remaining=None):
 
                         traceback.print_exc()
                     return
+        elif parsed_args.ACTION == "growth-report":
+            try:
+                generate_growth_report(
+                    api,
+                    parsed_args.WORKSPACE,
+                    window=parsed_args.window,
+                    units=parsed_args.units,
+                    platforms=parsed_args.platforms,
+                    output=parsed_args.output,
+                    no_open=parsed_args.no_open,
+                    limit=parsed_args.limit,
+                )
+            except Exception as e:
+                print("ERROR: " + str(e))
+                if parsed_args.debug:
+                    import traceback
+
+                    traceback.print_exc()
+                return
 
     except KeyboardInterrupt:
         if parsed_args.debug:
