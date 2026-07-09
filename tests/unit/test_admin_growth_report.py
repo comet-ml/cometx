@@ -1,5 +1,6 @@
 import datetime
 import importlib
+from unittest.mock import MagicMock
 
 
 def test_creation_event_and_window():
@@ -87,3 +88,140 @@ def test_cumulative_and_growth():
     ]
     g = growth_stats(evs, _win(), "month")
     assert g["new_in_window"] == 3 and g["total"] == 5 and round(g["pct_growth"]) == 150
+
+
+def _make_em_api():
+    """MagicMock api mimicking verified EM endpoints (see task-C4-context.md)."""
+    api = MagicMock()
+    api._client.get_from_endpoint.return_value = {
+        "projects": [
+            {
+                "projectId": "p1",
+                "projectName": "proj1",
+                "ownerUserName": "someone",
+                "projectDescription": "",
+                "workspaceName": "ws1",
+                "numberOfExperiments": 2,
+                "lastUpdated": 1700000000000,
+                "public": False,
+            },
+            {
+                "projectId": "p2",
+                "projectName": "proj2",
+                "ownerUserName": "someone",
+                "projectDescription": "",
+                "workspaceName": "ws1",
+                "numberOfExperiments": 0,
+                "lastUpdated": 1650000000000,
+                "public": False,
+            },
+        ]
+    }
+
+    def get_experiments(ws, proj):
+        if proj == "proj1":
+            return [
+                MagicMock(start_server_timestamp=1695000000000),
+                MagicMock(start_server_timestamp=1690000000000),
+            ]
+        return []
+
+    api.get_experiments.side_effect = get_experiments
+    api.get_registry_model_names.return_value = ["modelA", "modelB"]
+
+    def get_registry_model_versions(ws, name):
+        return {"modelA": ["1.0.0", "1.0.1"], "modelB": ["1.0.0"]}[name]
+
+    api.get_registry_model_versions.side_effect = get_registry_model_versions
+    return api
+
+
+def test_collect_em_creation_events_use_experiment_proxy():
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    api = _make_em_api()
+    reporter = GrowthReporter(api, window="7d", units="month", platforms="em")
+    events, _usage = reporter._collect_em(["ws1"])
+
+    assert len(events) == 2
+    assert all(e.kind == "em_project" for e in events)
+    assert all(e.platform == "em" for e in events)
+    assert all(e.workspace == "ws1" for e in events)
+    assert not any(e.kind == "registry_model" for e in events)
+
+    by_proj = {e.use_case: e for e in events}
+    # proj1: earliest experiment start_server_timestamp used as creation proxy
+    assert by_proj["proj1"].created == datetime.datetime.fromtimestamp(
+        1690000000000 / 1000, tz=datetime.timezone.utc
+    )
+    # proj2: no experiments -> falls back to lastUpdated
+    assert by_proj["proj2"].created == datetime.datetime.fromtimestamp(
+        1650000000000 / 1000, tz=datetime.timezone.utc
+    )
+
+
+def test_collect_em_usage_metrics_experiment_count_and_registry_snapshot():
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    api = _make_em_api()
+    reporter = GrowthReporter(api, window="7d", units="month", platforms="em")
+    _events, usage = reporter._collect_em(["ws1"])
+
+    exp_metrics = [m for m in usage if m.metric == "EXPERIMENT_COUNT"]
+
+    proj1_metric = next(m for m in exp_metrics if m.project == "proj1")
+    assert proj1_metric.value == 2
+    assert proj1_metric.platform == "em" and proj1_metric.workspace == "ws1"
+    assert proj1_metric.series  # non-empty over-time series
+
+    proj2_metric = next(m for m in exp_metrics if m.project == "proj2")
+    assert proj2_metric.value == 0
+
+    ws_total_metric = next(m for m in exp_metrics if m.project is None)
+    assert ws_total_metric.value == 2
+    assert ws_total_metric.workspace == "ws1"
+
+    reg_models = next(m for m in usage if m.metric == "REGISTRY_MODELS")
+    assert reg_models.value == 2
+    assert reg_models.series is None
+    assert reg_models.workspace == "ws1" and reg_models.platform == "em"
+
+    reg_versions = next(m for m in usage if m.metric == "REGISTRY_VERSIONS")
+    assert reg_versions.value == 3
+    assert reg_versions.series is None
+
+    # registry metrics are never CreationEvents / never a use case
+    assert not any(m.metric.startswith("REGISTRY") and m.series for m in usage)
+
+
+def test_collect_em_respects_limit_on_workspaces():
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    api = _make_em_api()
+    reporter = GrowthReporter(api, window="7d", units="month", platforms="em", limit=1)
+    events, usage = reporter._collect_em(["ws1", "ws2"])
+
+    assert all(e.workspace == "ws1" for e in events)
+    assert all(m.workspace == "ws1" for m in usage)
+    # only one workspace's projects endpoint should have been queried
+    assert api._client.get_from_endpoint.call_count == 1
+
+
+def test_collect_em_skips_bad_project_and_continues(capsys):
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    api = _make_em_api()
+
+    def get_experiments(ws, proj):
+        if proj == "proj1":
+            raise RuntimeError("boom")
+        return []
+
+    api.get_experiments.side_effect = get_experiments
+    reporter = GrowthReporter(api, window="7d", units="month", platforms="em")
+    events, usage = reporter._collect_em(["ws1"])
+
+    # proj1 blew up but proj2 (and registry metrics) still collected
+    assert any(e.use_case == "proj2" for e in events)
+    assert not any(e.use_case == "proj1" for e in events)
+    assert any(m.metric == "REGISTRY_MODELS" for m in usage)

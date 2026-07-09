@@ -71,6 +71,12 @@ KIND_LABELS = {
 PLATFORM_LABELS = {"em": "EM", "opik": "Opik", "mpm": "MPM"}
 
 
+def _ms_to_utc(ms) -> datetime.datetime:
+    """Convert an epoch-milliseconds timestamp to a timezone-aware UTC
+    datetime."""
+    return datetime.datetime.fromtimestamp(ms / 1000, tz=datetime.timezone.utc)
+
+
 def bucket_events(events, window, units) -> dict:
     """Count events by creation time-key within the window."""
     counts: dict = defaultdict(int)
@@ -142,6 +148,148 @@ class GrowthReporter:
 
     def build(self, workspaces):
         raise NotImplementedError  # filled in C2-C7
+
+    def _collect_em(self, workspaces):
+        """Collect EM `em_project` CreationEvents + EXPERIMENT_COUNT /
+        REGISTRY_MODELS / REGISTRY_VERSIONS UsageMetrics.
+
+        EM projects have no creation timestamp, so `created` is resolved via
+        a proxy chain (see task-C4-context.md): probe a creation-timestamp
+        key on the project json -> earliest experiment
+        `start_server_timestamp` -> `lastUpdated`. This is ALL-TIME data;
+        `self.window` is not applied here (that happens later for KPIs).
+        """
+        events: list = []
+        usage: list = []
+
+        if self.limit is not None:
+            workspaces = list(workspaces)[: self.limit]
+
+        for ws in workspaces:
+            try:
+                response = self.api._client.get_from_endpoint(
+                    "projects", {"workspaceName": ws}
+                )
+                projects = (response or {}).get("projects", []) or []
+            except Exception as exc:
+                print(f"Warning: failed to list EM projects for workspace {ws}: {exc}")
+                continue
+
+            ws_experiment_total = 0
+            ws_counts: dict = defaultdict(int)
+
+            for project in projects:
+                proj_name = project.get("projectName")
+                try:
+                    created = self._em_project_created(ws, proj_name, project)
+                    counts = self._em_experiment_counts(ws, proj_name)
+                    total = project.get("numberOfExperiments", sum(counts.values()))
+
+                    events.append(
+                        CreationEvent(
+                            platform="em",
+                            workspace=ws,
+                            use_case=proj_name,
+                            kind="em_project",
+                            created=created,
+                        )
+                    )
+                    usage.append(
+                        UsageMetric(
+                            platform="em",
+                            workspace=ws,
+                            metric="EXPERIMENT_COUNT",
+                            value=total,
+                            project=proj_name,
+                            series=(
+                                continuous_series(counts, self.units) if counts else []
+                            ),
+                        )
+                    )
+                    ws_experiment_total += total
+                    for key, n in counts.items():
+                        ws_counts[key] += n
+                except Exception as exc:
+                    print(
+                        f"Warning: failed to collect EM project "
+                        f"{ws}/{proj_name}: {exc}"
+                    )
+                    continue
+
+            usage.append(
+                UsageMetric(
+                    platform="em",
+                    workspace=ws,
+                    metric="EXPERIMENT_COUNT",
+                    value=ws_experiment_total,
+                    project=None,
+                    series=(
+                        continuous_series(ws_counts, self.units) if ws_counts else []
+                    ),
+                )
+            )
+
+            try:
+                model_names = self.api.get_registry_model_names(ws) or []
+                version_total = sum(
+                    len(self.api.get_registry_model_versions(ws, name) or [])
+                    for name in model_names
+                )
+                usage.append(
+                    UsageMetric(
+                        platform="em",
+                        workspace=ws,
+                        metric="REGISTRY_MODELS",
+                        value=len(model_names),
+                        project=None,
+                        series=None,
+                    )
+                )
+                usage.append(
+                    UsageMetric(
+                        platform="em",
+                        workspace=ws,
+                        metric="REGISTRY_VERSIONS",
+                        value=version_total,
+                        project=None,
+                        series=None,
+                    )
+                )
+            except Exception as exc:
+                print(f"Warning: failed to collect EM registry stats for {ws}: {exc}")
+
+        return events, usage
+
+    def _em_project_created(self, ws, proj_name, project):
+        """Resolve an EM project's creation time via the documented proxy
+        chain: creation-timestamp key (future-proof, currently absent) ->
+        earliest experiment start_server_timestamp -> lastUpdated."""
+        for key in ("createdAt", "creationDate", "creationDateMillis"):
+            ms = project.get(key)
+            if ms:
+                return _ms_to_utc(ms)
+
+        experiments = self.api.get_experiments(ws, proj_name) or []
+        starts = [
+            exp.start_server_timestamp
+            for exp in experiments
+            if getattr(exp, "start_server_timestamp", None)
+        ]
+        if starts:
+            return _ms_to_utc(min(starts))
+
+        return _ms_to_utc(project.get("lastUpdated"))
+
+    def _em_experiment_counts(self, ws, proj_name):
+        """Bucket this project's experiment start timestamps by `self.units`
+        to build the all-time EXPERIMENT_COUNT over-time series."""
+        experiments = self.api.get_experiments(ws, proj_name) or []
+        counts: dict = defaultdict(int)
+        for exp in experiments:
+            ms = getattr(exp, "start_server_timestamp", None)
+            if ms:
+                counts[format_time_key(_ms_to_utc(ms), self.units)] += 1
+        return dict(counts)
 
 
 def write_growth_html(report_data, output):
