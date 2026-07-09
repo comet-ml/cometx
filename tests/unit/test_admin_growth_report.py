@@ -1,4 +1,23 @@
+import datetime
 import importlib
+
+
+def test_creation_event_and_window():
+    from cometx.cli.admin_growth_report import CreationEvent, Window
+
+    ev = CreationEvent(
+        "opik",
+        "wsA",
+        "proj-1",
+        "project",
+        datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc),
+    )
+    assert ev.kind == "project" and ev.workspace == "wsA"
+    w = Window(
+        datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc),
+        datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc),
+    )
+    assert w.units == "month"
 
 
 def test_growth_report_delegate_exists():

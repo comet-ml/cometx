@@ -20,6 +20,49 @@ growth-report tracks cross-platform use-case creation growth and rates.
 
 from __future__ import annotations
 
+import dataclasses
+import datetime
+
+
+@dataclasses.dataclass(frozen=True)
+class CreationEvent:
+    """A single use-case creation event (one of the 3 use-case kinds only)."""
+
+    platform: str  # em | opik | mpm
+    workspace: str
+    use_case: str  # project or monitored-model name
+    kind: str  # opik_project | em_project | mpm_model
+    created: datetime.datetime
+
+
+@dataclasses.dataclass(frozen=True)
+class UsageMetric:
+    """Secondary per-product adoption-depth metric (NOT a use case)."""
+
+    platform: str  # opik | em | mpm
+    workspace: str
+    metric: str  # SPAN_COUNT | EXPERIMENT_COUNT | REGISTRY_MODELS |
+    # REGISTRY_VERSIONS | PREDICTION_VOLUME
+    value: float  # total (or snapshot for registry)
+    project: str | None = None
+    series: list | None = None  # [(time_key, value), ...]; None for snapshot
+
+
+@dataclasses.dataclass(frozen=True)
+class Window:
+    start: datetime.datetime
+    end: datetime.datetime
+    units: str = "month"
+
+
+KIND_LABELS = {
+    "opik_project": "Opik projects",
+    "em_project": "EM projects",
+    "mpm_model": "Monitored models",
+}
+
+PLATFORM_LABELS = {"em": "EM", "opik": "Opik", "mpm": "MPM"}
+
 
 def generate_growth_report(
     api,
