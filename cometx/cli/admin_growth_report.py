@@ -22,6 +22,13 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+from collections import defaultdict
+
+from cometx.utils import (  # noqa: F401
+    format_time_key,
+    get_next_time_key,
+    parse_time_key,
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -62,6 +69,46 @@ KIND_LABELS = {
 }
 
 PLATFORM_LABELS = {"em": "EM", "opik": "Opik", "mpm": "MPM"}
+
+
+def bucket_events(events, window, units) -> dict:
+    """Count events by creation time-key within the window."""
+    counts: dict = defaultdict(int)
+    for ev in events:
+        if window.start <= ev.created <= window.end:
+            counts[format_time_key(ev.created, units)] += 1
+    return dict(counts)
+
+
+def continuous_series(counts: dict, units: str):
+    """Earliest->latest keys, zero-filled via get_next_time_key."""
+    if not counts:
+        return []
+    keys = sorted(counts)
+    out, k = [], keys[0]
+    while True:
+        out.append((k, counts.get(k, 0)))
+        if k == keys[-1]:
+            break
+        k = get_next_time_key(k, units)
+    return out
+
+
+def cumulative(series):
+    total, out = 0, []
+    for k, v in series:
+        total += v
+        out.append((k, total))
+    return out
+
+
+def growth_stats(events, window, units) -> dict:
+    """{total, new_in_window, pct_growth} relative to installed base before window."""
+    total = sum(1 for e in events if e.created <= window.end)
+    new_in = sum(1 for e in events if window.start <= e.created <= window.end)
+    before = sum(1 for e in events if e.created < window.start)
+    pct = (new_in / before * 100.0) if before > 0 else 0.0
+    return {"total": total, "new_in_window": new_in, "pct_growth": round(pct, 1)}
 
 
 def generate_growth_report(

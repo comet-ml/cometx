@@ -15,6 +15,7 @@ import base64
 import os
 import sys
 import time
+from datetime import datetime, timedelta
 
 import six
 from comet_ml.config import get_config
@@ -176,6 +177,131 @@ def download_url(
         raise Exception("unknown output_filename type: should end with html or pdf")
 
     driver.quit()
+
+
+def format_time_key(dt, unit):
+    """
+    Format a datetime object as a time key based on the specified unit.
+
+    Args:
+        dt: datetime object
+        unit: One of "month", "week", "day", "hour"
+
+    Returns:
+        str: Formatted time key
+    """
+    if unit == "month":
+        return dt.strftime("%Y-%m")
+    elif unit == "week":
+        # ISO week format: YYYY-WW
+        year, week, _ = dt.isocalendar()
+        return f"{year}-W{week:02d}"
+    elif unit == "day":
+        return dt.strftime("%Y-%m-%d")
+    elif unit == "hour":
+        return dt.strftime("%Y-%m-%d-%H")
+    else:
+        raise ValueError(f"Unknown unit: {unit}")
+
+
+def parse_time_key(time_key, unit):
+    """
+    Parse a time key string back to a datetime object.
+
+    Args:
+        time_key: Time key string (e.g., "2024-01", "2024-W01", "2024-01-01", "2024-01-01-12")
+        unit: One of "month", "week", "day", "hour"
+
+    Returns:
+        datetime: Parsed datetime object
+    """
+    if unit == "month":
+        return datetime.strptime(time_key, "%Y-%m")
+    elif unit == "week":
+        # Parse ISO week format: YYYY-WW
+        year_str, week_str = time_key.split("-W")
+        year = int(year_str)
+        week = int(week_str)
+        # Create datetime for January 4th of the year (which is always in week 1)
+        jan4 = datetime(year, 1, 4)
+        # Get the Monday of week 1
+        days_since_monday = jan4.weekday()
+        week1_monday = jan4 - timedelta(days=days_since_monday)
+        # Add weeks to get to the target week
+        target_monday = week1_monday + timedelta(weeks=(week - 1))
+        return target_monday
+    elif unit == "day":
+        return datetime.strptime(time_key, "%Y-%m-%d")
+    elif unit == "hour":
+        return datetime.strptime(time_key, "%Y-%m-%d-%H")
+    else:
+        raise ValueError(f"Unknown unit: {unit}")
+
+
+def get_next_time_key(time_key, unit):
+    """
+    Get the next time key after the given one.
+
+    Args:
+        time_key: Current time key string
+        unit: One of "month", "week", "day", "hour"
+
+    Returns:
+        str: Next time key
+    """
+    dt = parse_time_key(time_key, unit)
+    if unit == "month":
+        if dt.month == 12:
+            next_dt = dt.replace(year=dt.year + 1, month=1)
+        else:
+            next_dt = dt.replace(month=dt.month + 1)
+    elif unit == "week":
+        next_dt = dt + timedelta(weeks=1)
+    elif unit == "day":
+        next_dt = dt + timedelta(days=1)
+    elif unit == "hour":
+        next_dt = dt + timedelta(hours=1)
+    else:
+        raise ValueError(f"Unknown unit: {unit}")
+    return format_time_key(next_dt, unit)
+
+
+def get_unit_label(unit):
+    """
+    Get a human-readable label for a time unit.
+
+    Args:
+        unit: One of "month", "week", "day", "hour"
+
+    Returns:
+        str: Label (e.g., "Month", "Week", "Day", "Hour")
+    """
+    labels = {
+        "month": "Month",
+        "week": "Week",
+        "day": "Day",
+        "hour": "Hour",
+    }
+    return labels.get(unit, unit.capitalize())
+
+
+def get_unit_label_plural(unit):
+    """
+    Get a human-readable plural label for a time unit.
+
+    Args:
+        unit: One of "month", "week", "day", "hour"
+
+    Returns:
+        str: Plural label (e.g., "Months", "Weeks", "Days", "Hours")
+    """
+    labels = {
+        "month": "Months",
+        "week": "Weeks",
+        "day": "Days",
+        "hour": "Hours",
+    }
+    return labels.get(unit, unit.capitalize() + "s")
 
 
 def remove_extra_slashes(path):
