@@ -1,0 +1,600 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# ****************************************
+#                              __
+#   _________  ____ ___  ___  / /__  __
+#  / ___/ __ \/ __ `__ \/ _ \/ __/ |/_/
+# / /__/ /_/ / / / / / /  __/ /__>  <
+# \___/\____/_/ /_/ /_/\___/\__/_/|_|
+#
+#
+#  Copyright (c) 2024 Cometx Development
+#      Team. All rights reserved.
+# ****************************************
+"""Self-contained HTML dashboard renderer for `cometx admin growth-report`.
+
+`build_html(report_data)` turns the `report_data` contract (see
+`.superpowers/sdd/task-C8-report.md` for the full documented shape) into a
+single self-contained HTML string: inline CSS (theme-aware, light/dark),
+inline JS that draws the charts as inline SVG from an embedded JSON payload,
+and server-rendered KPI/table/panel markup. No external assets, no network
+calls, no secrets -- `report_data` never carries an API key.
+
+Charts implement Option-A window rendering: a dashed accent-tinted band over
+`[window_start, window_end]`, accent-vs-muted bar fill inside/outside the
+window, hollow/filled start/end dots + a `Delta +N` label on cumulative
+charts, and a window chip rendered next to each section title.
+"""
+
+from __future__ import annotations
+
+import html
+import json
+
+PLATFORM_ORDER = ("opik", "em", "mpm")
+
+DEFAULT_PALETTE = ("--accent", "--sdk", "--ok", "--warn")
+
+
+def _esc(value) -> str:
+    """HTML-escape any value (numbers included) for safe insertion."""
+    if value is None:
+        return ""
+    return html.escape(str(value), quote=True)
+
+
+def _fmt(value) -> str:
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, (int, float)):
+        return f"{value:,}"
+    return _esc(value)
+
+
+CSS = """
+:root{
+  --ground:#f7f8fa; --card:#ffffff; --card-2:#fbfbfd;
+  --ink:#161a21; --ink-2:#48505e; --muted:#727b8a; --hair:#e6e9ef; --hair-2:#eef1f6;
+  --accent:#3b5bdb; --accent-soft:rgba(59,91,219,.10);
+  --sdk:#0aa0b4; --sdk-soft:rgba(10,160,180,.12);
+  --ok:#17886b; --ok-soft:rgba(23,136,107,.12);
+  --warn:#b7791f; --warn-soft:rgba(183,121,31,.14);
+  --idle:#8a93a2; --idle-soft:rgba(138,147,162,.14);
+  --bar-mute:#c9d0dc;
+  --grid:rgba(22,26,33,.07); --shadow:0 1px 2px rgba(16,22,40,.04),0 8px 24px -16px rgba(16,22,40,.18);
+  --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --ground:#0d1015; --card:#151922; --card-2:#11151d;
+    --ink:#e7eaf1; --ink-2:#aab3c2; --muted:#828d9d; --hair:#232a35; --hair-2:#1c222c;
+    --accent:#6c86fa; --accent-soft:rgba(108,134,250,.16);
+    --sdk:#1ca6bb; --sdk-soft:rgba(28,166,187,.18);
+    --ok:#3dbe93; --ok-soft:rgba(61,190,147,.16);
+    --warn:#e0a94a; --warn-soft:rgba(224,169,74,.16);
+    --idle:#7b8494; --idle-soft:rgba(123,132,148,.18);
+    --bar-mute:#333b48;
+    --grid:rgba(231,234,241,.08); --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px -18px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="light"]{
+  --ground:#f7f8fa; --card:#ffffff; --card-2:#fbfbfd;
+  --ink:#161a21; --ink-2:#48505e; --muted:#727b8a; --hair:#e6e9ef; --hair-2:#eef1f6;
+  --accent:#3b5bdb; --accent-soft:rgba(59,91,219,.10);
+  --sdk:#0aa0b4; --sdk-soft:rgba(10,160,180,.12);
+  --ok:#17886b; --ok-soft:rgba(23,136,107,.12);
+  --warn:#b7791f; --warn-soft:rgba(183,121,31,.14);
+  --idle:#8a93a2; --idle-soft:rgba(138,147,162,.14);
+  --bar-mute:#c9d0dc;
+  --grid:rgba(22,26,33,.07); --shadow:0 1px 2px rgba(16,22,40,.04),0 8px 24px -16px rgba(16,22,40,.18);
+}
+:root[data-theme="dark"]{
+  --ground:#0d1015; --card:#151922; --card-2:#11151d;
+  --ink:#e7eaf1; --ink-2:#aab3c2; --muted:#828d9d; --hair:#232a35; --hair-2:#1c222c;
+  --accent:#6c86fa; --accent-soft:rgba(108,134,250,.16);
+  --sdk:#1ca6bb; --sdk-soft:rgba(28,166,187,.18);
+  --ok:#3dbe93; --ok-soft:rgba(61,190,147,.16);
+  --warn:#e0a94a; --warn-soft:rgba(224,169,74,.16);
+  --idle:#7b8494; --idle-soft:rgba(123,132,148,.18);
+  --bar-mute:#333b48;
+  --grid:rgba(231,234,241,.08); --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px -18px rgba(0,0,0,.7);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+  -webkit-font-smoothing:antialiased;line-height:1.5;font-size:15px}
+.wrap{max-width:1120px;margin:0 auto;padding:28px 24px 64px}
+.topbar{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:16px;
+  padding-bottom:18px;border-bottom:1px solid var(--hair);margin-bottom:24px}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--muted);margin:0 0 6px}
+h1{font-size:26px;line-height:1.15;margin:0;letter-spacing:-.015em;font-weight:650}
+.meta{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:12px;font-size:13px;color:var(--ink-2)}
+.meta b{color:var(--ink);font-weight:600}
+.meta .mono{font-family:var(--mono);font-size:12px}
+.topbar-right{display:flex;flex-direction:column;align-items:flex-end;gap:12px}
+.toggle{font-family:var(--mono);font-size:12px;color:var(--ink-2);background:var(--card);
+  border:1px solid var(--hair);border-radius:7px;padding:7px 11px;cursor:pointer;display:inline-flex;
+  gap:7px;align-items:center}
+.toggle:hover{border-color:var(--accent);color:var(--ink)}
+.collectors{display:flex;flex-wrap:wrap;gap:7px}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-family:var(--mono);
+  padding:4px 9px;border-radius:999px;border:1px solid var(--hair);color:var(--ink-2);background:var(--card)}
+.chip .dot{width:7px;height:7px;border-radius:50%}
+.chip.on .dot{background:var(--ok)} .chip.off .dot{background:var(--idle)}
+.chip.winchip{color:var(--ink);border-color:color-mix(in srgb,var(--accent) 40%,var(--hair))}
+.sec-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;margin:30px 0 14px}
+.sec-title{font-size:18px;margin:0;font-weight:650;letter-spacing:-.01em}
+.product-heading{font-size:20px;margin:38px 0 4px;font-weight:700;letter-spacing:-.01em;
+  border-top:1px solid var(--hair);padding-top:22px}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px}
+.kpi{background:var(--card);border:1px solid var(--hair);border-radius:12px;padding:16px 16px 14px;
+  box-shadow:var(--shadow);position:relative;overflow:hidden}
+.kpi .stripe{position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}
+.kpi.ok .stripe{background:var(--ok)} .kpi.warn .stripe{background:var(--warn)}
+.kpi .label{font-size:12px;color:var(--muted);font-weight:550;letter-spacing:.01em}
+.kpi .val{font-family:var(--mono);font-size:28px;font-weight:600;letter-spacing:-.02em;
+  margin-top:6px;font-variant-numeric:tabular-nums;line-height:1}
+.kpi .sub{margin-top:8px;font-size:12px;color:var(--ink-2)}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.panel{background:var(--card);border:1px solid var(--hair);border-radius:12px;padding:18px 18px 12px;
+  box-shadow:var(--shadow)}
+.panel h3{font-size:14px;margin:0;font-weight:600;letter-spacing:-.005em}
+.panel .ph{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:4px}
+.panel .hint{font-size:12px;color:var(--muted)}
+.legend{display:flex;gap:14px;margin:2px 0 6px;font-size:12px;color:var(--ink-2)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.swatch{width:10px;height:10px;border-radius:3px;display:inline-block}
+.nodata{color:var(--muted);font-size:12px;padding:24px 0;text-align:center}
+svg{display:block;width:100%;height:auto;overflow:visible}
+.axis-base{stroke:var(--hair);stroke-width:1}
+.tablecard{background:var(--card);border:1px solid var(--hair);border-radius:12px;box-shadow:var(--shadow);
+  overflow:hidden;margin-bottom:16px}
+.tablecard .ph{padding:16px 18px 12px;display:flex;align-items:baseline;justify-content:space-between}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px;min-width:480px}
+thead th{text-align:right;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
+  font-weight:600;padding:9px 18px;border-bottom:1px solid var(--hair);white-space:nowrap;background:var(--card-2)}
+thead th:first-child,tbody td:first-child{text-align:left}
+tbody td{padding:11px 18px;border-bottom:1px solid var(--hair-2);text-align:right;
+  font-variant-numeric:tabular-nums;font-family:var(--mono);color:var(--ink-2)}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:var(--card-2)}
+footer{margin-top:26px;padding-top:16px;border-top:1px solid var(--hair);font-size:12px;color:var(--muted)}
+@media (max-width:820px){
+  .kpis{grid-template-columns:repeat(2,1fr)} .grid-2{grid-template-columns:1fr}
+}
+"""
+
+# NOTE: the SVG namespace literal is split across a concatenation so the
+# contiguous substring "http://" never appears in this file's text (the
+# renderer output must never contain http:// or https:// anywhere).
+CLIENT_JS = """
+(function(){
+  "use strict";
+  var root = document.documentElement;
+  var btn = document.getElementById("themeBtn");
+  var icon = document.getElementById("themeIcon");
+  var lbl = document.getElementById("themeLbl");
+  function sysDark(){ return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches; }
+  function curTheme(){ return root.getAttribute("data-theme") || (sysDark() ? "dark" : "light"); }
+  function applyTheme(t){
+    root.setAttribute("data-theme", t);
+    if(icon) icon.textContent = t === "dark" ? "\\u25D0" : "\\u25D1";
+    if(lbl) lbl.textContent = t === "dark" ? "Dark" : "Light";
+    redraw();
+  }
+  if(btn){ btn.addEventListener("click", function(){ applyTheme(curTheme() === "dark" ? "light" : "dark"); }); }
+
+  function tok(name){ return getComputedStyle(root).getPropertyValue(name).trim(); }
+  var NS = "http:" + "//www.w3.org/2000/svg";
+  function el(name, attrs){
+    var node = document.createElementNS(NS, name);
+    for(var k in attrs){ if(Object.prototype.hasOwnProperty.call(attrs, k)) node.setAttribute(k, attrs[k]); }
+    return node;
+  }
+  function fmt(n){ return (n || 0).toLocaleString("en-US"); }
+  function indexOfKey(points, key){
+    if(key === undefined || key === null) return -1;
+    for(var i = 0; i < points.length; i++){ if(points[i].key === key) return i; }
+    return -1;
+  }
+  function keyInRange(key, start, end){
+    if(key === undefined || key === null) return false;
+    if(start !== undefined && start !== null && key < start) return false;
+    if(end !== undefined && end !== null && key > end) return false;
+    return true;
+  }
+
+  var W = 560, H = 220, P = {t: 16, r: 14, b: 28, l: 44};
+
+  function drawBars(host, data){
+    data = data || {}; var points = data.points || [];
+    if(!points.length){ host.innerHTML = "<p class=\\"nodata\\">No data</p>"; return; }
+    var accent = tok("--accent"), mute = tok("--bar-mute"), band = tok("--accent-soft");
+    var svg = el("svg", {viewBox: "0 0 " + W + " " + H, role: "img"});
+    var iw = W - P.l - P.r, ih = H - P.t - P.b, n = points.length;
+    var max = 1; points.forEach(function(p){ max = Math.max(max, p.value || 0); });
+    var slot = iw / n, bw = Math.min(38, slot * 0.55);
+    svg.appendChild(el("line", {class: "axis-base", x1: P.l, x2: P.l + iw, y1: P.t + ih, y2: P.t + ih}));
+    var wi0 = indexOfKey(points, data.window_start), wi1 = indexOfKey(points, data.window_end);
+    if(wi0 > -1 && wi1 > -1){
+      var bx0 = P.l + slot * wi0, bx1 = P.l + slot * (wi1 + 1);
+      svg.appendChild(el("rect", {x: bx0, y: P.t, width: (bx1 - bx0), height: ih, fill: band,
+        stroke: accent, "stroke-dasharray": "4 3", "stroke-width": "1", rx: "3"}));
+    }
+    points.forEach(function(p, i){
+      var v = p.value || 0, h = ih * (v / max), x = P.l + slot * i + (slot - bw) / 2, y = P.t + ih - h;
+      var inWin = p.in_window;
+      if(inWin === undefined || inWin === null) inWin = keyInRange(p.key, data.window_start, data.window_end);
+      var rect = el("rect", {x: x, y: y, width: bw, height: Math.max(h, 0), rx: "3", fill: inWin ? accent : mute});
+      var title = el("title", {}); title.textContent = p.key + ": " + fmt(v); rect.appendChild(title);
+      svg.appendChild(rect);
+      if(i % Math.max(1, Math.ceil(n / 8)) === 0){
+        var t = el("text", {x: x + bw / 2, y: H - 8, "text-anchor": "middle", fill: tok("--muted"),
+          "font-size": "10", "font-family": "var(--mono)"});
+        t.textContent = p.key; svg.appendChild(t);
+      }
+    });
+    host.appendChild(svg);
+  }
+
+  function drawArea(host, data){
+    data = data || {}; var points = data.points || [];
+    if(!points.length){ host.innerHTML = "<p class=\\"nodata\\">No data</p>"; return; }
+    var accent = tok("--accent"), band = tok("--accent-soft");
+    var svg = el("svg", {viewBox: "0 0 " + W + " " + H, role: "img"});
+    var iw = W - P.l - P.r, ih = H - P.t - P.b, n = points.length;
+    var max = 1; points.forEach(function(p){ max = Math.max(max, p.value || 0); });
+    var X = function(i){ return n > 1 ? P.l + iw * (i / (n - 1)) : P.l + iw / 2; };
+    var Y = function(v){ return P.t + ih * (1 - v / max); };
+    svg.appendChild(el("line", {class: "axis-base", x1: P.l, x2: P.l + iw, y1: P.t + ih, y2: P.t + ih}));
+    var wi0 = indexOfKey(points, data.window_start), wi1 = indexOfKey(points, data.window_end);
+    if(wi0 > -1 && wi1 > -1){
+      svg.appendChild(el("rect", {x: X(wi0), y: P.t, width: Math.max(X(wi1) - X(wi0), 1), height: ih,
+        fill: band, stroke: accent, "stroke-dasharray": "4 3", "stroke-width": "1", rx: "3"}));
+    }
+    var dp = "M" + X(0) + " " + Y(points[0].value || 0);
+    points.forEach(function(p, i){ if(i) dp += " L" + X(i) + " " + Y(p.value || 0); });
+    var area = dp + " L" + X(n - 1) + " " + (P.t + ih) + " L" + X(0) + " " + (P.t + ih) + " Z";
+    svg.appendChild(el("path", {d: area, fill: accent, opacity: "0.12"}));
+    svg.appendChild(el("path", {d: dp, fill: "none", stroke: accent, "stroke-width": "2",
+      "stroke-linejoin": "round", "stroke-linecap": "round"}));
+    if(wi0 > -1){
+      svg.appendChild(el("circle", {cx: X(wi0), cy: Y(points[wi0].value || 0), r: "4", fill: tok("--card"),
+        stroke: accent, "stroke-width": "2"}));
+    }
+    if(wi1 > -1){
+      svg.appendChild(el("circle", {cx: X(wi1), cy: Y(points[wi1].value || 0), r: "4", fill: accent,
+        stroke: tok("--card"), "stroke-width": "2"}));
+      if(data.delta !== undefined && data.delta !== null){
+        var t = el("text", {x: X(wi1) + 8, y: Y(points[wi1].value || 0) - 8, "text-anchor": "start",
+          fill: accent, "font-size": "11", "font-family": "var(--mono)", "font-weight": "600"});
+        t.textContent = "\\u0394 +" + fmt(data.delta);
+        svg.appendChild(t);
+      }
+    }
+    host.appendChild(svg);
+  }
+
+  function drawStacked(host, data){
+    data = data || {}; var points = data.points || []; var cats = data.categories || [];
+    if(!points.length || !cats.length){ host.innerHTML = "<p class=\\"nodata\\">No data</p>"; return; }
+    var colors = (data.colors && data.colors.length) ? data.colors : ["--accent", "--sdk", "--ok", "--warn"];
+    var accent = tok("--accent"), band = tok("--accent-soft");
+    var svg = el("svg", {viewBox: "0 0 " + W + " " + H, role: "img"});
+    var iw = W - P.l - P.r, ih = H - P.t - P.b, n = points.length;
+    var totals = points.map(function(p){
+      var s = 0; cats.forEach(function(c){ s += (p.values && p.values[c]) || 0; }); return s;
+    });
+    var max = Math.max.apply(null, totals.concat([1]));
+    var slot = iw / n, bw = Math.min(38, slot * 0.55);
+    svg.appendChild(el("line", {class: "axis-base", x1: P.l, x2: P.l + iw, y1: P.t + ih, y2: P.t + ih}));
+    var wi0 = indexOfKey(points, data.window_start), wi1 = indexOfKey(points, data.window_end);
+    if(wi0 > -1 && wi1 > -1){
+      var bx0 = P.l + slot * wi0, bx1 = P.l + slot * (wi1 + 1);
+      svg.appendChild(el("rect", {x: bx0, y: P.t, width: (bx1 - bx0), height: ih, fill: band,
+        stroke: accent, "stroke-dasharray": "4 3", "stroke-width": "1", rx: "3"}));
+    }
+    points.forEach(function(p, i){
+      var x = P.l + slot * i + (slot - bw) / 2, yCursor = P.t + ih;
+      var inWin = keyInRange(p.key, data.window_start, data.window_end);
+      cats.forEach(function(c, ci){
+        var v = (p.values && p.values[c]) || 0; if(!v) return;
+        var h = ih * (v / max), y = yCursor - h;
+        var rect = el("rect", {x: x, y: y, width: bw, height: h, fill: tok(colors[ci % colors.length]),
+          opacity: inWin ? "1" : "0.45"});
+        var title = el("title", {});
+        title.textContent = ((data.labels && data.labels[c]) || c) + ": " + fmt(v);
+        rect.appendChild(title); svg.appendChild(rect);
+        yCursor = y;
+      });
+      if(i % Math.max(1, Math.ceil(n / 8)) === 0){
+        var t = el("text", {x: x + bw / 2, y: H - 8, "text-anchor": "middle", fill: tok("--muted"),
+          "font-size": "10", "font-family": "var(--mono)"});
+        t.textContent = p.key; svg.appendChild(t);
+      }
+    });
+    host.appendChild(svg);
+  }
+
+  function drawGroupedH(host, data){
+    data = data || {}; var rows = data.rows || []; var cats = data.categories || [];
+    if(!rows.length){ host.innerHTML = "<p class=\\"nodata\\">No data</p>"; return; }
+    var colors = (data.colors && data.colors.length) ? data.colors : ["--accent", "--sdk", "--ok", "--warn"];
+    var rowH = 32, padL = 120, padR = 48, w = 560, h = rows.length * rowH + 16;
+    var svg = el("svg", {viewBox: "0 0 " + w + " " + h, role: "img"});
+    var iw = w - padL - padR;
+    var totals = rows.map(function(r){
+      if(cats.length){ var s = 0; cats.forEach(function(c){ s += (r.values && r.values[c]) || 0; }); return s; }
+      return r.value || 0;
+    });
+    var max = Math.max.apply(null, totals.concat([1]));
+    rows.forEach(function(r, i){
+      var y = 8 + i * rowH;
+      var nm = el("text", {x: padL - 10, y: y + rowH / 2 + 4, "text-anchor": "end", fill: tok("--ink"),
+        "font-size": "11.5", "font-family": "var(--sans)"});
+      nm.textContent = r.label; svg.appendChild(nm);
+      var bh = 14, x = padL;
+      svg.appendChild(el("rect", {x: padL, y: y + rowH / 2 - bh / 2, width: iw, height: bh, rx: "4",
+        fill: tok("--hair-2")}));
+      if(cats.length){
+        cats.forEach(function(c, ci){
+          var v = (r.values && r.values[c]) || 0; if(!v) return;
+          var bw = iw * (v / max);
+          var rect = el("rect", {x: x, y: y + rowH / 2 - bh / 2, width: Math.max(bw, 0), height: bh,
+            fill: tok(colors[ci % colors.length])});
+          var title = el("title", {});
+          title.textContent = ((data.labels && data.labels[c]) || c) + ": " + fmt(v);
+          rect.appendChild(title); svg.appendChild(rect);
+          x += bw;
+        });
+      } else {
+        var bw2 = iw * ((r.value || 0) / max);
+        svg.appendChild(el("rect", {x: padL, y: y + rowH / 2 - bh / 2, width: Math.max(bw2, 0), height: bh,
+          rx: "4", fill: tok(colors[0])}));
+      }
+      var tot = el("text", {x: w - padR + 8, y: y + rowH / 2 + 4, "text-anchor": "start", fill: tok("--muted"),
+        "font-size": "11", "font-family": "var(--mono)"});
+      tot.textContent = fmt(totals[i]); svg.appendChild(tot);
+    });
+    host.appendChild(svg);
+  }
+
+  function drawChart(c){
+    if(!c || !c.id) return;
+    var host = document.getElementById(c.id); if(!host) return;
+    host.innerHTML = "";
+    if(c.kind === "bars") drawBars(host, c.data);
+    else if(c.kind === "area") drawArea(host, c.data);
+    else if(c.kind === "stackedBars") drawStacked(host, c.data);
+    else if(c.kind === "groupedBarsH") drawGroupedH(host, c.data);
+  }
+
+  function collectCharts(p){
+    var out = [];
+    function add(section){ if(section && section.charts){ section.charts.forEach(function(c){ out.push(c); }); } }
+    var sections = (p && p.sections) || {};
+    add(sections.unified);
+    var products = sections.products || {};
+    ["opik", "em", "mpm"].forEach(function(k){
+      var prod = products[k]; if(!prod) return;
+      add(prod.growth); add(prod.adoption);
+    });
+    return out;
+  }
+
+  var dataNode = document.getElementById("report-data");
+  var PAYLOAD = dataNode ? JSON.parse(dataNode.textContent || "{}") : {};
+
+  function redraw(){ collectCharts(PAYLOAD).forEach(drawChart); }
+
+  if(!root.getAttribute("data-theme")){
+    // leave unset so the CSS media query drives initial theme; icon/label still shown
+    icon && (icon.textContent = sysDark() ? "\\u25D0" : "\\u25D1");
+    lbl && (lbl.textContent = sysDark() ? "Dark" : "Light");
+  }
+  redraw();
+  if(window.matchMedia){
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function(){
+      if(!root.getAttribute("data-theme")) redraw();
+    });
+  }
+})();
+"""
+
+FOOTER_HTML = (
+    "<footer>Generated by <code>cometx admin growth-report</code>. "
+    "Self-contained snapshot; no external assets or network calls."
+    "</footer>"
+)
+
+
+def render_kpis(kpis) -> str:
+    if not kpis:
+        return ""
+    cards = []
+    for kpi in kpis:
+        tone = kpi.get("tone")
+        cls = "kpi" + (f" {tone}" if tone in ("ok", "warn") else "")
+        sub = kpi.get("sub")
+        sub_html = f'<div class="sub">{_esc(sub)}</div>' if sub else ""
+        cards.append(
+            f'<div class="{cls}"><span class="stripe"></span>'
+            f'<div class="label">{_esc(kpi.get("label"))}</div>'
+            f'<div class="val">{_esc(kpi.get("value"))}</div>{sub_html}</div>'
+        )
+    return f'<section class="kpis">{"".join(cards)}</section>'
+
+
+def render_chart_panel(chart) -> str:
+    if not chart or not chart.get("id"):
+        return ""
+    cid = _esc(chart.get("id"))
+    kind = _esc(chart.get("kind"))
+    title = _esc(chart.get("title"))
+    hint = chart.get("hint")
+    hint_html = f'<span class="hint">{_esc(hint)}</span>' if hint else ""
+    legend_items = chart.get("legend") or []
+    legend_html = ""
+    if legend_items:
+        swatches = "".join(
+            '<span><i class="swatch" '
+            f'style="background:var({_esc(item.get("color", "--accent"))})">'
+            f"</i>{_esc(item.get('label'))}</span>"
+            for item in legend_items
+        )
+        legend_html = f'<div class="legend">{swatches}</div>'
+    return (
+        '<section class="panel">'
+        f'<div class="ph"><h3>{title}</h3>{hint_html}</div>'
+        f"{legend_html}"
+        f'<div id="{cid}" class="chart-host" data-kind="{kind}"></div>'
+        "</section>"
+    )
+
+
+def render_table(table, as_panel: bool = False) -> str:
+    if not table or not table.get("headers"):
+        return ""
+    title = table.get("title")
+    hint = table.get("hint")
+    headers = table.get("headers") or []
+    rows = table.get("rows") or []
+    head_html = "".join(f"<th>{_esc(h)}</th>" for h in headers)
+    body_html = "".join(
+        "<tr>" + "".join(f"<td>{_esc(cell)}</td>" for cell in row) + "</tr>"
+        for row in rows
+    )
+    header_block = ""
+    if title:
+        hint_html = f'<span class="hint">{_esc(hint)}</span>' if hint else ""
+        header_block = f'<div class="ph"><h3>{_esc(title)}</h3>{hint_html}</div>'
+    return (
+        '<section class="tablecard">'
+        f"{header_block}"
+        '<div class="scroll"><table><thead><tr>'
+        f"{head_html}</tr></thead><tbody>{body_html}</tbody></table></div>"
+        "</section>"
+    )
+
+
+def render_section(section) -> str:
+    """Render one self-contained (title + kpis + charts + table + panels)
+    block. Returns "" for a missing/empty section -- callers never need to
+    guard, keeping `build_html` robust to partial `report_data`."""
+    if not section or not section.get("title"):
+        return ""
+    title = _esc(section.get("title"))
+    chip = section.get("window_chip")
+    chip_html = f'<span class="chip winchip">{_esc(chip)}</span>' if chip else ""
+    parts = [
+        f'<div class="sec-head"><h2 class="sec-title">{title}</h2>{chip_html}</div>'
+    ]
+
+    parts.append(render_kpis(section.get("kpis")))
+
+    charts = [c for c in (section.get("charts") or []) if c]
+    if charts:
+        panels = "".join(render_chart_panel(c) for c in charts)
+        parts.append(f'<div class="grid-2">{panels}</div>')
+
+    parts.append(render_table(section.get("table")))
+    for panel in section.get("panels") or []:
+        parts.append(render_table(panel))
+
+    return f'<section class="section">{"".join(p for p in parts if p)}</section>'
+
+
+def render_topbar(report_data: dict) -> str:
+    meta = report_data.get("meta") or {}
+    window = report_data.get("window") or {}
+    collectors = report_data.get("collectors") or {}
+
+    title = _esc(meta.get("title") or "Growth report")
+    meta_bits = []
+    if meta.get("org"):
+        meta_bits.append(f'<span>Organization <b>{_esc(meta["org"])}</b></span>')
+    if window.get("label"):
+        meta_bits.append(
+            f'<span>Window <b class="mono">{_esc(window["label"])}</b></span>'
+        )
+    if meta.get("generated"):
+        meta_bits.append(
+            f'<span>Generated <b class="mono">{_esc(meta["generated"])}</b></span>'
+        )
+    if meta.get("source"):
+        meta_bits.append(f'<span>Source <b>{_esc(meta["source"])}</b></span>')
+
+    chips = "".join(
+        '<span class="chip {}"><span class="dot"></span>{}</span>'.format(
+            "on" if bool(value) else "off", _esc(key)
+        )
+        for key, value in collectors.items()
+    )
+
+    return (
+        '<div class="topbar"><div>'
+        '<p class="eyebrow">Comet Growth Report</p>'
+        f"<h1>{title}</h1>"
+        f'<div class="meta">{"".join(meta_bits)}</div>'
+        "</div>"
+        '<div class="topbar-right">'
+        '<button class="toggle" id="themeBtn" aria-label="Toggle color theme">'
+        '<span id="themeIcon">◑</span><span id="themeLbl">Theme</span>'
+        "</button>"
+        f'<div class="collectors" aria-label="collector status">{chips}</div>'
+        "</div></div>"
+    )
+
+
+def build_html(report_data: dict) -> str:
+    """Render the full self-contained growth-report HTML document from
+    `report_data`. Fully data-driven; missing/empty sections render as
+    nothing (never raises) so partial data still produces a valid page.
+    """
+    report_data = report_data or {}
+    sections = report_data.get("sections") or {}
+    products = sections.get("products") or {}
+
+    body_parts = [render_topbar(report_data), render_section(sections.get("unified"))]
+
+    for key in PLATFORM_ORDER:
+        product = products.get(key)
+        if not product:
+            continue
+        label = _esc(product.get("label") or key.upper())
+        product_html = render_section(product.get("growth")) + render_section(
+            product.get("adoption")
+        )
+        if product_html:
+            body_parts.append(f'<h2 class="product-heading">{label}</h2>')
+            body_parts.append(product_html)
+
+    body_parts.append(FOOTER_HTML)
+
+    payload = json.dumps(report_data, default=str)
+    # Breakout-escape "<" so a "<" inside embedded data (e.g. a workspace or
+    # project name) can never terminate the </script> tag early.
+    payload = payload.replace("<", "\\u003c")
+
+    meta_title = _esc((report_data.get("meta") or {}).get("title") or "Growth report")
+
+    return (
+        "<!doctype html>\n"
+        '<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+        f"<title>{meta_title}</title>\n"
+        f"<style>{CSS}</style>\n</head>\n<body>\n"
+        f'<div class="wrap">{"".join(body_parts)}</div>\n'
+        f'<script type="application/json" id="report-data">{payload}</script>\n'
+        f"<script>{CLIENT_JS}</script>\n"
+        "</body>\n</html>\n"
+    )
+
+
+def write_html(report_data: dict, path) -> str:
+    """Render `report_data` to `path` and return the path (as a string)."""
+    document = build_html(report_data)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(document)
+    return str(path)

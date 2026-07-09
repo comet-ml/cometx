@@ -1,5 +1,6 @@
 import datetime
 import importlib
+import json
 from unittest.mock import MagicMock, patch
 
 
@@ -915,3 +916,300 @@ def test_collect_mpm_missing_dependency_returns_empty(monkeypatch):
 
     assert events == []
     assert usage == []
+
+
+# ---------------------------------------------------------------------------
+# C8: self-contained HTML dashboard renderer
+# ---------------------------------------------------------------------------
+
+
+def _sample_report_data():
+    """A representative `report_data` payload matching the documented C8
+    contract: a top-level `window`, a unified section, and per-product
+    (opik/em/mpm) growth + adoption sections (EM additionally carries a
+    registry-engagement snapshot panel)."""
+    return {
+        "meta": {
+            "title": "Growth report — acme <script> & Co",
+            "org": "acme-research",
+            "generated": "2026-07-09",
+            "source": "Comet Admin API",
+        },
+        "window": {
+            "start": "2026-07-02",
+            "end": "2026-07-09",
+            "units": "day",
+            "label": "Analysis window: Jul 2 – Jul 9, 2026 (7d)",
+            "count_before": 65,
+        },
+        "collectors": {"opik": True, "em": True, "mpm": False},
+        "sections": {
+            "unified": {
+                "title": "Use cases across all platforms",
+                "window_chip": "Analysis window: Jul 2 – Jul 9, 2026 (7d)",
+                "kpis": [
+                    {"label": "Departments", "value": 4},
+                    {"label": "Use cases", "value": 77, "tone": "ok"},
+                    {"label": "New (7d)", "value": "+12"},
+                    {
+                        "label": "Growth (7d)",
+                        "value": "18.5%",
+                        "sub": "vs 65 before window",
+                    },
+                ],
+                "charts": [
+                    {
+                        "id": "chart-unified-created",
+                        "kind": "stackedBars",
+                        "title": "Use cases created",
+                        "hint": "by kind · monthly",
+                        "legend": [
+                            {"label": "Opik", "color": "--accent"},
+                            {"label": "EM", "color": "--sdk"},
+                            {"label": "MPM", "color": "--ok"},
+                        ],
+                        "data": {
+                            "categories": [
+                                "opik_project",
+                                "em_project",
+                                "mpm_model",
+                            ],
+                            "labels": {
+                                "opik_project": "Opik",
+                                "em_project": "EM",
+                                "mpm_model": "MPM",
+                            },
+                            "colors": ["--accent", "--sdk", "--ok"],
+                            "points": [
+                                {
+                                    "key": "2026-06",
+                                    "values": {
+                                        "opik_project": 3,
+                                        "em_project": 1,
+                                        "mpm_model": 0,
+                                    },
+                                },
+                                {
+                                    "key": "2026-07",
+                                    "values": {
+                                        "opik_project": 2,
+                                        "em_project": 2,
+                                        "mpm_model": 1,
+                                    },
+                                },
+                            ],
+                            "window_start": "2026-07",
+                            "window_end": "2026-07",
+                        },
+                    },
+                    {
+                        "id": "chart-unified-by-department",
+                        "kind": "groupedBarsH",
+                        "title": "Use cases by department",
+                        "hint": "current totals",
+                        "data": {
+                            "rows": [
+                                {"label": "ws-alpha", "value": 40},
+                                {"label": "ws-beta", "value": 37},
+                            ]
+                        },
+                    },
+                ],
+                "table": {
+                    "title": "By department",
+                    "headers": ["Department", "Opik", "EM", "MPM", "Total"],
+                    "rows": [
+                        ["ws-alpha", 20, 15, 5, 40],
+                        ["ws-beta", 10, 20, 7, 37],
+                    ],
+                },
+            },
+            "products": {
+                "opik": {
+                    "label": "Opik",
+                    "growth": {
+                        "title": "Opik — growth",
+                        "window_chip": "Analysis window: Jul 2 – Jul 9, 2026 (7d)",
+                        "kpis": [
+                            {"label": "Workspaces", "value": 2},
+                            {"label": "Total", "value": 30},
+                            {"label": "New (7d)", "value": "+5"},
+                            {
+                                "label": "Growth (7d)",
+                                "value": "20.0%",
+                                "sub": "vs 25 before window",
+                            },
+                        ],
+                        "charts": [
+                            {
+                                "id": "chart-opik-bars",
+                                "kind": "bars",
+                                "title": "New Opik projects",
+                                "hint": "by month",
+                                "data": {
+                                    "points": [
+                                        {"key": "2026-06", "value": 3},
+                                        {"key": "2026-07", "value": 5},
+                                    ],
+                                    "window_start": "2026-07",
+                                    "window_end": "2026-07",
+                                },
+                            },
+                            {
+                                "id": "chart-opik-area",
+                                "kind": "area",
+                                "title": "Opik projects — cumulative",
+                                "hint": "all-time",
+                                "data": {
+                                    "points": [
+                                        {"key": "2026-06", "value": 25},
+                                        {"key": "2026-07", "value": 30},
+                                    ],
+                                    "window_start": "2026-07",
+                                    "window_end": "2026-07",
+                                    "delta": 5,
+                                },
+                            },
+                        ],
+                        "table": {
+                            "headers": ["Workspace", "Opik projects"],
+                            "rows": [["ws-alpha", 20], ["ws-beta", 10]],
+                        },
+                    },
+                    "adoption": {
+                        "title": "Opik — adoption / usage",
+                        "kpis": [{"label": "Span count", "value": 154200}],
+                        "charts": [
+                            {
+                                "id": "chart-opik-spans",
+                                "kind": "bars",
+                                "title": "Span count",
+                                "hint": "by month",
+                                "data": {
+                                    "points": [
+                                        {"key": "2026-06", "value": 70000},
+                                        {"key": "2026-07", "value": 84200},
+                                    ],
+                                    "window_start": "2026-07",
+                                    "window_end": "2026-07",
+                                },
+                            }
+                        ],
+                        "table": {
+                            "title": "Span count by project",
+                            "headers": ["Project", "Span count"],
+                            "rows": [["proj-1", 100000], ["proj-2", 54200]],
+                        },
+                    },
+                },
+                "em": {
+                    "label": "EM",
+                    "growth": {
+                        "title": "EM — growth",
+                        "kpis": [{"label": "Workspaces", "value": 2}],
+                        "charts": [],
+                        "table": None,
+                    },
+                    "adoption": {
+                        "title": "EM — adoption / usage",
+                        "kpis": [{"label": "Experiment count", "value": 900}],
+                        "charts": [],
+                        "panels": [
+                            {
+                                "title": "Model-registry engagement",
+                                "hint": "snapshot, not over-time",
+                                "headers": [
+                                    "Workspace",
+                                    "Registered models",
+                                    "Model versions",
+                                ],
+                                "rows": [
+                                    ["ws-alpha", 2, 3],
+                                    ["ws-beta", 1, 1],
+                                ],
+                            }
+                        ],
+                    },
+                },
+                # mpm intentionally omitted to exercise the "missing section"
+                # robustness path.
+            },
+        },
+    }
+
+
+def test_build_html_is_self_contained_and_secure():
+    from cometx.cli.admin_growth_report import build_html
+
+    doc = build_html(_sample_report_data())
+
+    assert "<style>" in doc
+    assert 'id="report-data"' in doc
+    assert "http://" not in doc
+    assert "https://" not in doc
+    assert "Use cases across all platforms" in doc
+    assert "<svg" not in doc  # charts are drawn client-side, not server-side
+    assert "createElementNS" in doc  # the inline SVG-drawing JS
+    assert '"window"' in doc  # the embedded json payload
+    assert "COMET_API_KEY" not in doc
+    assert "sk-" not in doc
+    assert "not-a-real-secret-12345" not in doc
+
+
+def test_build_html_escapes_workspace_and_project_names():
+    from cometx.cli.admin_growth_report import build_html
+
+    report_data = _sample_report_data()
+    report_data["sections"]["unified"]["table"]["rows"][0][
+        0
+    ] = "<img src=x onerror=alert(1)>"
+    doc = build_html(report_data)
+
+    assert "<img src=x onerror=alert(1)>" not in doc
+    assert "&lt;img" in doc
+
+
+def test_build_html_never_leaks_a_secret_value():
+    from cometx.cli.admin_growth_report import build_html
+
+    report_data = _sample_report_data()
+    # report_data never carries an api key; build_html must not either.
+    doc = build_html(report_data)
+    assert "api_key" not in doc.lower() or "api_key" not in json.dumps(report_data)
+
+
+def test_build_html_handles_missing_sections_gracefully():
+    from cometx.cli.admin_growth_report import build_html
+
+    # No products at all, and an empty unified section -- must not raise.
+    doc = build_html({"sections": {"unified": {}, "products": {}}})
+    assert "<style>" in doc
+    assert 'id="report-data"' in doc
+
+    # Completely empty payload must also not raise.
+    assert "<style>" in build_html({})
+    assert "<style>" in build_html(None)
+
+
+def test_write_html_writes_file_and_returns_path(tmp_path):
+    from cometx.cli.admin_growth_report import write_html
+
+    out = tmp_path / "growth_report.html"
+    result = write_html(_sample_report_data(), str(out))
+
+    assert result == str(out)
+    assert out.exists()
+    content = out.read_text(encoding="utf-8")
+    assert "<style>" in content
+    assert 'id="report-data"' in content
+    assert "Use cases across all platforms" in content
+
+
+def test_write_growth_html_delegates_to_renderer(tmp_path):
+    from cometx.cli.admin_growth_report import write_growth_html
+
+    out = tmp_path / "growth_report.html"
+    result = write_growth_html(_sample_report_data(), str(out))
+
+    assert result == str(out)
+    assert out.exists()

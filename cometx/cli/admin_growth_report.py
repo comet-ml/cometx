@@ -24,6 +24,7 @@ import dataclasses
 import datetime
 from collections import defaultdict
 
+from cometx.cli.admin_growth_render import build_html, write_html  # noqa: F401
 from cometx.utils import (  # noqa: F401
     format_time_key,
     get_next_time_key,
@@ -713,7 +714,11 @@ class GrowthReporter:
 
 
 def write_growth_html(report_data, output):
-    raise NotImplementedError  # filled in C8
+    """Render `report_data` to a self-contained HTML file at `output`.
+
+    Delegates to `cometx.cli.admin_growth_render.write_html` (C8).
+    """
+    return write_html(report_data, output)
 
 
 def _open(path):
