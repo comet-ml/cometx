@@ -229,6 +229,45 @@ def test_collect_em_skips_bad_project_and_continues(capsys):
     assert any(m.metric == "REGISTRY_MODELS" for m in usage)
 
 
+def test_collect_em_filters_projects_not_belonging_to_workspace(capsys):
+    # The EM `projects` endpoint returns a fallback set from another workspace
+    # when the key isn't a member of the requested one, ignoring workspaceName.
+    # Those foreign projects must NOT be attributed to the requested workspace;
+    # the workspace is still reported at 0, and a warning is printed.
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    api = MagicMock()
+    api._client.get_from_endpoint.return_value = {
+        "projects": [
+            {
+                "projectName": "foreign-proj",
+                "projectId": "x1",
+                "workspaceName": "team-comet-ml",  # != requested workspace
+                "numberOfExperiments": 5,
+                "lastUpdated": 1700000000000,
+            }
+        ]
+    }
+    api.get_registry_model_names.return_value = []
+    api.get_registry_model_versions.return_value = []
+    reporter = GrowthReporter(api, window="7d", units="month", platforms="em")
+    events, usage = reporter._collect_em(["opik-demos"])
+
+    # foreign project is not attributed to opik-demos
+    assert events == []
+    assert not any(m.project == "foreign-proj" for m in usage)
+    # experiments are never fetched for a filtered-out project
+    api.get_experiments.assert_not_called()
+    # workspace is still listed, at an experiment total of 0
+    ws_totals = [
+        m for m in usage if m.metric == "EXPERIMENT_COUNT" and m.project is None
+    ]
+    assert len(ws_totals) == 1
+    assert ws_totals[0].workspace == "opik-demos" and ws_totals[0].value == 0
+    # and a warning was surfaced
+    assert "not belonging to workspace opik-demos" in capsys.readouterr().out
+
+
 def _make_opik_api():
     """MagicMock api with a REAL dict `.config` (see task-C5-context.md) so
     host/api_key resolution works without touching MagicMock magic."""

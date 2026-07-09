@@ -702,6 +702,22 @@ class GrowthReporter:
                 print(f"Warning: failed to list EM projects for workspace {ws}: {exc}")
                 continue
 
+            # The EM `projects` endpoint returns a FALLBACK set (projects from
+            # another workspace) when the API key isn't a member of `ws`,
+            # ignoring the requested workspaceName. Keep only projects whose
+            # own `workspaceName` actually matches `ws` so those fallback
+            # projects aren't mis-attributed here. The workspace is still
+            # reported (with a 0 experiment total below) rather than dropped.
+            matched = [p for p in projects if p.get("workspaceName") == ws]
+            dropped = len(projects) - len(matched)
+            if dropped:
+                print(
+                    f"Warning: EM projects endpoint returned {dropped} project(s) "
+                    f"not belonging to workspace {ws} (API key likely lacks EM "
+                    f"access there); skipping them and reporting {ws} at 0."
+                )
+            projects = matched
+
             ws_experiment_total = 0
             ws_counts: dict = defaultdict(int)
 
