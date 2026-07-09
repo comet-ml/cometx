@@ -150,7 +150,15 @@ svg{display:block;width:100%;height:auto;overflow:visible}
 .axis-base{stroke:var(--hair);stroke-width:1}
 .tablecard{background:var(--card);border:1px solid var(--hair);border-radius:12px;box-shadow:var(--shadow);
   overflow:hidden;margin-bottom:16px}
-.tablecard .ph{padding:16px 18px 12px;display:flex;align-items:baseline;justify-content:space-between}
+.tablecard .ph{padding:16px 18px 12px;display:flex;align-items:center;justify-content:space-between}
+details.tablecard>summary{cursor:pointer;list-style:none;user-select:none}
+details.tablecard>summary::-webkit-details-marker{display:none}
+details.tablecard>summary::marker{content:""}
+details.tablecard>summary:hover{background:var(--hair-2)}
+.ph-title{display:flex;align-items:center;gap:8px;min-width:0}
+.disc{flex:none;width:0;height:0;border-left:6px solid currentColor;border-top:4px solid transparent;border-bottom:4px solid transparent;opacity:.55;transition:transform .15s ease}
+details.tablecard[open]>summary .disc{transform:rotate(90deg)}
+.count{font-family:var(--mono);font-size:11px;line-height:1;background:var(--hair);border-radius:999px;padding:3px 8px;opacity:.85}
 .scroll{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:13px;min-width:480px}
 thead th{text-align:right;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
@@ -466,16 +474,26 @@ def render_table(table, as_panel: bool = False) -> str:
         "<tr>" + "".join(f"<td>{_esc(cell)}</td>" for cell in row) + "</tr>"
         for row in rows
     )
-    header_block = ""
-    if title:
-        hint_html = f'<span class="hint">{_esc(hint)}</span>' if hint else ""
-        header_block = f'<div class="ph"><h3>{_esc(title)}</h3>{hint_html}</div>'
+    # Collapsible table: native <details>/<summary> (no JS). Collapsed by
+    # default so large tables don't dominate the page; the summary shows the
+    # title + row count so you can scan without expanding.
+    hint_html = f'<span class="hint">{_esc(hint)}</span>' if hint else ""
+    summary_title = _esc(title) if title else "Table"
+    summary = (
+        '<summary class="ph">'
+        '<span class="ph-title">'
+        '<span class="disc" aria-hidden="true"></span>'
+        f"<h3>{summary_title}</h3>"
+        f'<span class="count">{len(rows)}</span>'
+        "</span>"
+        f"{hint_html}</summary>"
+    )
     return (
-        '<section class="tablecard">'
-        f"{header_block}"
+        '<details class="tablecard">'
+        f"{summary}"
         '<div class="scroll"><table><thead><tr>'
         f"{head_html}</tr></thead><tbody>{body_html}</tbody></table></div>"
-        "</section>"
+        "</details>"
     )
 
 

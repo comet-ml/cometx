@@ -382,11 +382,13 @@ class GrowthReporter:
                 by_ws[ev.workspace] += 1
             rows = sorted(by_ws.items(), key=lambda kv: -kv[1])
             return {
+                "title": f"{kind_label} by department",
                 "headers": ["Workspace", kind_label],
                 "rows": [[ws, count] for ws, count in rows],
             }
         rows = sorted(events, key=lambda ev: ev.created, reverse=True)
         return {
+            "title": kind_label,
             "headers": ["Use case", "Created"],
             "rows": [[ev.use_case, ev.created.date().isoformat()] for ev in rows],
         }

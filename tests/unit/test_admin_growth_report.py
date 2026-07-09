@@ -1075,6 +1075,32 @@ def test_build_html_is_self_contained_and_secure():
     assert "not-a-real-secret-12345" not in doc
 
 
+def test_build_html_tables_are_collapsible_and_collapsed_by_default():
+    from cometx.cli.admin_growth_render import render_table
+
+    table = {
+        "title": "By department",
+        "headers": ["Department", "Total"],
+        "rows": [["opik-demos", 16], ["scout-test-leo", 5]],
+    }
+    html = render_table(table)
+
+    # native <details>/<summary> disclosure, no JS
+    assert "<details" in html and "<summary" in html
+    # collapsed by default -> no `open` attribute on the details element
+    assert '<details class="tablecard" open' not in html
+    assert '<details class="tablecard">' in html
+    # summary shows the title + the row count (2 rows)
+    assert "By department" in html
+    assert '<span class="count">2</span>' in html
+    # the rows are still present (inside the collapsed body)
+    assert "opik-demos" in html and "scout-test-leo" in html
+    # and the whole thing renders into the full document too
+    from cometx.cli.admin_growth_report import build_html
+
+    assert "<details" in build_html(_sample_report_data())
+
+
 def test_build_html_escapes_workspace_and_project_names():
     from cometx.cli.admin_growth_report import build_html
 
