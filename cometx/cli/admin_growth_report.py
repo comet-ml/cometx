@@ -286,6 +286,139 @@ class GrowthReporter:
 
         return _ms_to_utc(project.get("lastUpdated"))
 
+    def _collect_opik(self, workspaces):
+        """Collect Opik `opik_project` CreationEvents + SPAN_COUNT
+        UsageMetrics.
+
+        This is ALL-TIME data (interval_start=project.created_at,
+        interval_end=now); `self.window` is not applied here (that happens
+        later for KPIs). Degrades gracefully to `([], [])` if `opik` is not
+        installed.
+        """
+        try:
+            import opik
+        except ImportError:
+            print("Warning: opik not installed; skipping Opik collection")
+            return [], []
+
+        from cometx.cli.smoke_test import get_opik_config
+
+        events: list = []
+        usage: list = []
+
+        if self.limit is not None:
+            workspaces = list(workspaces)[: self.limit]
+
+        api_key = self.api.config["comet.api_key"]
+        comet_base_url = self.api.config["comet.url_override"].rstrip("/")
+        host = get_opik_config(comet_base_url)
+
+        interval = {
+            "hour": "HOURLY",
+            "day": "DAILY",
+            "week": "WEEKLY",
+            "month": "WEEKLY",
+        }.get(self.units, "WEEKLY")
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+        for ws in workspaces:
+            try:
+                client = opik.Opik(workspace=ws, api_key=api_key, host=host)
+            except Exception as exc:
+                print(f"Warning: failed to init Opik client for workspace {ws}: {exc}")
+                continue
+
+            try:
+                projects = []
+                page_num = 1
+                while True:
+                    page = client.rest_client.projects.find_projects(
+                        page=page_num, size=100
+                    )
+                    content = page.content or []
+                    projects.extend(content)
+                    if not content or len(projects) >= page.total:
+                        break
+                    page_num += 1
+            except Exception as exc:
+                print(
+                    f"Warning: failed to list Opik projects for workspace {ws}: {exc}"
+                )
+                continue
+
+            ws_counts: dict = defaultdict(float)
+
+            for project in projects:
+                try:
+                    if project.created_at is not None:
+                        events.append(
+                            CreationEvent(
+                                platform="opik",
+                                workspace=ws,
+                                use_case=project.name,
+                                kind="opik_project",
+                                created=project.created_at,
+                            )
+                        )
+
+                    interval_start = project.created_at or datetime.datetime(
+                        1970, 1, 1, tzinfo=datetime.timezone.utc
+                    )
+                    resp = client.rest_client.projects.get_project_metrics(
+                        project.id,
+                        metric_type="SPAN_COUNT",
+                        interval=interval,
+                        interval_start=interval_start,
+                        interval_end=now,
+                    )
+                    counts: dict = defaultdict(float)
+                    for result in resp.results or []:
+                        for dp in result.data or []:
+                            counts[format_time_key(dp.time, self.units)] += (
+                                dp.value or 0
+                            )
+
+                    usage.append(
+                        UsageMetric(
+                            platform="opik",
+                            workspace=ws,
+                            metric="SPAN_COUNT",
+                            value=sum(counts.values()),
+                            project=project.name,
+                            series=(
+                                continuous_series(dict(counts), self.units)
+                                if counts
+                                else []
+                            ),
+                        )
+                    )
+                    for key, val in counts.items():
+                        ws_counts[key] += val
+                except Exception as exc:
+                    print(
+                        f"Warning: failed to collect Opik project "
+                        f"{ws}/{getattr(project, 'name', '?')}: {exc}"
+                    )
+                    continue
+
+            usage.append(
+                UsageMetric(
+                    platform="opik",
+                    workspace=ws,
+                    metric="SPAN_COUNT",
+                    value=sum(ws_counts.values()),
+                    project=None,
+                    series=(
+                        continuous_series(dict(ws_counts), self.units)
+                        if ws_counts
+                        else []
+                    ),
+                )
+            )
+
+        return events, usage
+
     def _em_experiment_counts(self, experiments):
         """Bucket the project's pre-fetched experiment start timestamps by
         `self.units` to build the all-time EXPERIMENT_COUNT over-time series."""
