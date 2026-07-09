@@ -149,6 +149,11 @@ def test_collect_em_creation_events_use_experiment_proxy():
     assert all(e.workspace == "ws1" for e in events)
     assert not any(e.kind == "registry_model" for e in events)
 
+    # Experiments must be fetched exactly ONCE per project (not once per
+    # helper) — the list is fetched in _collect_em and shared between the
+    # creation-proxy and the over-time series. 2 projects -> 2 calls.
+    assert api.get_experiments.call_count == 2
+
     by_proj = {e.use_case: e for e in events}
     # proj1: earliest experiment start_server_timestamp used as creation proxy
     assert by_proj["proj1"].created == datetime.datetime.fromtimestamp(

@@ -181,8 +181,11 @@ class GrowthReporter:
             for project in projects:
                 proj_name = project.get("projectName")
                 try:
-                    created = self._em_project_created(ws, proj_name, project)
-                    counts = self._em_experiment_counts(ws, proj_name)
+                    # Fetch the project's experiments once and reuse the list
+                    # for both the creation proxy and the over-time series.
+                    experiments = self.api.get_experiments(ws, proj_name) or []
+                    created = self._em_project_created(project, experiments)
+                    counts = self._em_experiment_counts(experiments)
                     total = project.get("numberOfExperiments", sum(counts.values()))
 
                     events.append(
@@ -260,16 +263,19 @@ class GrowthReporter:
 
         return events, usage
 
-    def _em_project_created(self, ws, proj_name, project):
+    def _em_project_created(self, project, experiments):
         """Resolve an EM project's creation time via the documented proxy
         chain: creation-timestamp key (future-proof, currently absent) ->
-        earliest experiment start_server_timestamp -> lastUpdated."""
+        earliest experiment start_server_timestamp -> lastUpdated.
+
+        `experiments` is the pre-fetched experiment list for the project
+        (fetched once by the caller and shared with `_em_experiment_counts`).
+        """
         for key in ("createdAt", "creationDate", "creationDateMillis"):
             ms = project.get(key)
             if ms:
                 return _ms_to_utc(ms)
 
-        experiments = self.api.get_experiments(ws, proj_name) or []
         starts = [
             exp.start_server_timestamp
             for exp in experiments
@@ -280,10 +286,9 @@ class GrowthReporter:
 
         return _ms_to_utc(project.get("lastUpdated"))
 
-    def _em_experiment_counts(self, ws, proj_name):
-        """Bucket this project's experiment start timestamps by `self.units`
-        to build the all-time EXPERIMENT_COUNT over-time series."""
-        experiments = self.api.get_experiments(ws, proj_name) or []
+    def _em_experiment_counts(self, experiments):
+        """Bucket the project's pre-fetched experiment start timestamps by
+        `self.units` to build the all-time EXPERIMENT_COUNT over-time series."""
         counts: dict = defaultdict(int)
         for exp in experiments:
             ms = getattr(exp, "start_server_timestamp", None)
