@@ -463,6 +463,10 @@ class GrowthReporter:
 
         requested = set(workspaces)
         for ws_entry in all_workspaces:
+            # The MPM inventory shape is not verifiable live; guard against
+            # malformed elements so one bad entry can't crash the report.
+            if not isinstance(ws_entry, dict):
+                continue
             ws = ws_entry.get("workspaceName")
             if ws not in requested:
                 continue
@@ -472,6 +476,8 @@ class GrowthReporter:
             ws_total = 0.0
 
             for model in models:
+                if not isinstance(model, dict):
+                    continue
                 model_name = model.get("modelName")
                 model_id = model.get("modelId")
                 try:

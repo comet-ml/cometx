@@ -668,6 +668,41 @@ def test_collect_mpm_workspaces_endpoint_error_returns_empty(mock_api_ctor):
     assert usage == []
 
 
+@patch("comet_mpm.API")
+def test_collect_mpm_skips_malformed_enumeration_elements(mock_api_ctor):
+    # The MPM inventory shape is unverifiable live; malformed workspace/model
+    # elements must be skipped, not crash the whole report.
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    workspaces_resp = {
+        "workspaces": [
+            "not-a-dict",  # malformed workspace entry
+            {
+                "workspaceName": "ws1",
+                "models": [
+                    "not-a-dict",  # malformed model entry
+                    {"modelName": "good", "modelId": "idG"},
+                ],
+            },
+        ]
+    }
+    predictions_map = {"idG": _mpm_pred_envelope([(1690000000000, 5)])}
+    client = _make_mpm_client(
+        workspaces_resp, details_map={}, predictions_map=predictions_map
+    )
+    mock_mpm = MagicMock()
+    mock_mpm._client = client
+    mock_api_ctor.return_value = mock_mpm
+
+    api = _make_mpm_api()
+    reporter = GrowthReporter(api, window="7d", units="month", platforms="mpm")
+    events, usage = reporter._collect_mpm(["ws1"])
+
+    # The one good model is still collected; malformed entries are ignored.
+    assert [e.use_case for e in events] == ["good"]
+    assert any(m.metric == "PREDICTION_VOLUME" and m.project == "good" for m in usage)
+
+
 def test_collect_mpm_missing_dependency_returns_empty(monkeypatch):
     import builtins
 
