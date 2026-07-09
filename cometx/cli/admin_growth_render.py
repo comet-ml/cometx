@@ -149,6 +149,13 @@ h1{font-size:26px;line-height:1.15;margin:0;letter-spacing:-.015em;font-weight:6
 svg{display:block;width:100%;height:auto;overflow:visible}
 .axis-base{stroke:var(--hair);stroke-width:1}
 .gridline{stroke:var(--hair);stroke-width:1;stroke-dasharray:2 4;opacity:.7}
+.guide{stroke:var(--accent);stroke-width:1;opacity:0;pointer-events:none}
+.chart-host{position:relative}
+.charttip{position:absolute;pointer-events:none;transform:translate(-50%,-115%);white-space:nowrap;
+  background:var(--card);color:var(--ink);border:1px solid var(--hair);border-radius:6px;
+  padding:4px 8px;font-family:var(--mono);font-size:11px;box-shadow:var(--shadow);
+  opacity:0;transition:opacity .08s;z-index:5}
+.charttip.show{opacity:1}
 .tablecard{background:var(--card);border:1px solid var(--hair);border-radius:12px;box-shadow:var(--shadow);
   overflow:hidden;margin-bottom:16px}
 .tablecard .ph{padding:16px 18px 12px;display:flex;align-items:center;justify-content:space-between}
@@ -217,6 +224,36 @@ CLIENT_JS = """
 
   var W = 560, H = 220, P = {t: 16, r: 14, b: 28, l: 44};
 
+  // Interactive hover: a positioned tooltip div + a vertical guide line,
+  // driven by one full-height transparent hit rect per column. Reliable
+  // across browsers (unlike native SVG <title>, which is delayed/flaky).
+  function attachTip(host, svg, cols){
+    if(!cols || !cols.length) return;
+    host.style.position = "relative";
+    var tip = host.querySelector(".charttip");
+    if(!tip){ tip = document.createElement("div"); tip.className = "charttip"; host.appendChild(tip); }
+    var guide = el("line", {class: "guide", y1: P.t, y2: H - P.b, x1: 0, x2: 0, opacity: "0"});
+    svg.appendChild(guide);
+    function show(col){
+      tip.textContent = col.key + ": " + fmt(col.value);
+      tip.classList.add("show");
+      var r = host.getBoundingClientRect();
+      tip.style.left = (col.x / W) * r.width + "px";
+      tip.style.top = ((P.t / H) * r.height) + "px";
+      guide.setAttribute("x1", col.x); guide.setAttribute("x2", col.x);
+      guide.setAttribute("opacity", "1");
+    }
+    function hide(){ tip.classList.remove("show"); guide.setAttribute("opacity", "0"); }
+    cols.forEach(function(col){
+      var hit = el("rect", {x: col.x0, y: P.t, width: Math.max(col.w, 1),
+        height: (H - P.t - P.b), fill: "transparent"});
+      hit.addEventListener("mouseenter", function(){ show(col); });
+      hit.addEventListener("mousemove", function(){ show(col); });
+      hit.addEventListener("mouseleave", hide);
+      svg.appendChild(hit);
+    });
+  }
+
   function drawBars(host, data){
     data = data || {}; var points = data.points || [];
     if(!points.length){ host.innerHTML = "<p class=\\"nodata\\">No data</p>"; return; }
@@ -232,19 +269,20 @@ CLIENT_JS = """
       svg.appendChild(el("rect", {x: bx0, y: P.t, width: (bx1 - bx0), height: ih, fill: band,
         stroke: accent, "stroke-dasharray": "4 3", "stroke-width": "1", rx: "3"}));
     }
+    var cols = [];
     points.forEach(function(p, i){
       var v = p.value || 0, h = ih * (v / max), x = P.l + slot * i + (slot - bw) / 2, y = P.t + ih - h;
       var inWin = p.in_window;
       if(inWin === undefined || inWin === null) inWin = keyInRange(p.key, data.window_start, data.window_end);
-      var rect = el("rect", {x: x, y: y, width: bw, height: Math.max(h, 0), rx: "3", fill: inWin ? accent : mute});
-      var title = el("title", {}); title.textContent = p.key + ": " + fmt(v); rect.appendChild(title);
-      svg.appendChild(rect);
+      svg.appendChild(el("rect", {x: x, y: y, width: bw, height: Math.max(h, 0), rx: "3", fill: inWin ? accent : mute}));
+      cols.push({x: P.l + slot * i + slot / 2, x0: P.l + slot * i, w: slot, key: p.key, value: v});
       if(i % Math.max(1, Math.ceil(n / 8)) === 0){
         var t = el("text", {x: x + bw / 2, y: H - 8, "text-anchor": "middle", fill: tok("--muted"),
           "font-size": "10", "font-family": "var(--mono)"});
         t.textContent = p.key; svg.appendChild(t);
       }
     });
+    attachTip(host, svg, cols);
     host.appendChild(svg);
   }
 
@@ -295,22 +333,19 @@ CLIENT_JS = """
         "font-size": "11", "font-family": "var(--mono)", "font-weight": "600"});
       eL.textContent = fmt(endV); svg.appendChild(eL);
     }
-    // per-point hover values (transparent hit circles carry a native tooltip)
-    points.forEach(function(p, i){
-      var hc = el("circle", {cx: X(i), cy: Y(p.value || 0), r: "7", fill: "transparent"});
-      var ht = el("title", {}); ht.textContent = p.key + ": " + fmt(p.value || 0); hc.appendChild(ht);
-      svg.appendChild(hc);
+    // x-axis: cumulative charts show only the earliest and latest dates
+    var slotA = n > 1 ? iw / (n - 1) : iw;
+    [0, n - 1].forEach(function(i){
+      if(i < 0) return;
+      var xl = el("text", {x: X(i), y: H - 8, "text-anchor": i === 0 ? "start" : "end",
+        fill: tok("--muted"), "font-size": "10", "font-family": "var(--mono)"});
+      xl.textContent = points[i].key; svg.appendChild(xl);
     });
-    // x-axis time labels: every ~n/8, always including both edges
-    var xstep = Math.max(1, Math.ceil(n / 8));
-    points.forEach(function(p, i){
-      if(i % xstep === 0 || i === n - 1){
-        var anchor = i === 0 ? "start" : (i === n - 1 ? "end" : "middle");
-        var xl = el("text", {x: X(i), y: H - 8, "text-anchor": anchor, fill: tok("--muted"),
-          "font-size": "10", "font-family": "var(--mono)"});
-        xl.textContent = p.key; svg.appendChild(xl);
-      }
+    // interactive hover tooltip over each point
+    var cols = points.map(function(p, i){
+      return {x: X(i), x0: X(i) - slotA / 2, w: slotA, key: p.key, value: p.value || 0};
     });
+    attachTip(host, svg, cols);
     host.appendChild(svg);
   }
 
@@ -333,25 +368,25 @@ CLIENT_JS = """
       svg.appendChild(el("rect", {x: bx0, y: P.t, width: (bx1 - bx0), height: ih, fill: band,
         stroke: accent, "stroke-dasharray": "4 3", "stroke-width": "1", rx: "3"}));
     }
+    var cols = [];
     points.forEach(function(p, i){
       var x = P.l + slot * i + (slot - bw) / 2, yCursor = P.t + ih;
       var inWin = keyInRange(p.key, data.window_start, data.window_end);
       cats.forEach(function(c, ci){
         var v = (p.values && p.values[c]) || 0; if(!v) return;
         var h = ih * (v / max), y = yCursor - h;
-        var rect = el("rect", {x: x, y: y, width: bw, height: h, fill: tok(colors[ci % colors.length]),
-          opacity: inWin ? "1" : "0.45"});
-        var title = el("title", {});
-        title.textContent = ((data.labels && data.labels[c]) || c) + ": " + fmt(v);
-        rect.appendChild(title); svg.appendChild(rect);
+        svg.appendChild(el("rect", {x: x, y: y, width: bw, height: h, fill: tok(colors[ci % colors.length]),
+          opacity: inWin ? "1" : "0.45"}));
         yCursor = y;
       });
+      cols.push({x: P.l + slot * i + slot / 2, x0: P.l + slot * i, w: slot, key: p.key, value: totals[i]});
       if(i % Math.max(1, Math.ceil(n / 8)) === 0){
         var t = el("text", {x: x + bw / 2, y: H - 8, "text-anchor": "middle", fill: tok("--muted"),
           "font-size": "10", "font-family": "var(--mono)"});
         t.textContent = p.key; svg.appendChild(t);
       }
     });
+    attachTip(host, svg, cols);
     host.appendChild(svg);
   }
 

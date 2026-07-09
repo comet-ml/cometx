@@ -614,6 +614,9 @@ class GrowthReporter:
                 "sub": f"vs {_num(stats['before'])} before window",
             },
         ]
+        # Always surface the fastest-growing project (for every product,
+        # incl. EM = most new experiments in the window); "-" when nothing
+        # grew in-window so the KPI is consistently present, not missing.
         fastest = self._fastest_growing_project(metric, usage, window_start, window_end)
         if fastest:
             kpis.append(
@@ -621,6 +624,14 @@ class GrowthReporter:
                     "label": "Fastest-growing project",
                     "value": fastest[0],
                     "sub": f"+{_num(fastest[1])} in window",
+                }
+            )
+        else:
+            kpis.append(
+                {
+                    "label": "Fastest-growing project",
+                    "value": "—",
+                    "sub": "no activity in window",
                 }
             )
 

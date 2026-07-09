@@ -1101,6 +1101,58 @@ def test_build_html_tables_are_collapsible_and_collapsed_by_default():
     assert "<details" in build_html(_sample_report_data())
 
 
+def test_charts_have_interactive_hover_tooltip_infra():
+    # Hover must be a real interactive tooltip (div + guide via attachTip),
+    # not flaky native SVG <title> elements.
+    from cometx.cli.admin_growth_report import build_html
+
+    doc = build_html(_sample_report_data())
+    assert "attachTip" in doc  # the shared hover helper
+    assert "charttip" in doc  # the positioned tooltip element/class
+    assert 'class: "guide"' in doc  # the vertical hover guide line
+
+
+def test_adoption_fastest_growing_always_present():
+    # The fastest-growing-project KPI is shown for every product (incl. EM),
+    # with "—" when nothing grew in the window, so it never looks missing.
+    import datetime as dt
+
+    from cometx.cli.admin_growth_report import GrowthReporter, UsageMetric, Window
+
+    reporter = GrowthReporter(MagicMock(), window="7d", units="month", platforms="em")
+    window = Window(
+        dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc),
+        dt.datetime(2026, 7, 8, tzinfo=dt.timezone.utc),
+        "month",
+    )
+
+    # in-window activity -> the project is named
+    usage_active = [
+        UsageMetric(
+            "em", "ws", "EXPERIMENT_COUNT", 4, project="p1", series=[("2026-07", 4)]
+        ),
+        UsageMetric(
+            "em", "ws", "EXPERIMENT_COUNT", 4, project=None, series=[("2026-07", 4)]
+        ),
+    ]
+    kpis = reporter._build_adoption_section("em", usage_active, window)["kpis"]
+    fg = next(k for k in kpis if k["label"] == "Fastest-growing project")
+    assert fg["value"] == "p1" and "+4" in fg["sub"]
+
+    # no in-window activity (all before the window) -> still present, as "—"
+    usage_stale = [
+        UsageMetric(
+            "em", "ws", "EXPERIMENT_COUNT", 9, project="p1", series=[("2026-01", 9)]
+        ),
+        UsageMetric(
+            "em", "ws", "EXPERIMENT_COUNT", 9, project=None, series=[("2026-01", 9)]
+        ),
+    ]
+    kpis = reporter._build_adoption_section("em", usage_stale, window)["kpis"]
+    fg = next(k for k in kpis if k["label"] == "Fastest-growing project")
+    assert fg["value"] == "—"
+
+
 def test_build_html_escapes_workspace_and_project_names():
     from cometx.cli.admin_growth_report import build_html
 
