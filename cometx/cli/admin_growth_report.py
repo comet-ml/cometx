@@ -382,7 +382,7 @@ class GrowthReporter:
                 by_ws[ev.workspace] += 1
             rows = sorted(by_ws.items(), key=lambda kv: -kv[1])
             return {
-                "title": f"{kind_label} by department",
+                "title": f"{kind_label} by workspace",
                 "headers": ["Workspace", kind_label],
                 "rows": [[ws, count] for ws, count in rows],
             }
@@ -398,8 +398,8 @@ class GrowthReporter:
             by_ws = use_cases_by_workspace(events)
             rows = sorted(by_ws.items(), key=lambda kv: -kv[1]["use_cases_total"])
             return {
-                "title": "By department",
-                "headers": ["Department", "Opik", "EM", "MPM", "Total"],
+                "title": "By workspace",
+                "headers": ["Workspace", "Opik", "EM", "MPM", "Total"],
                 "rows": [
                     [
                         ws,
@@ -462,10 +462,10 @@ class GrowthReporter:
             key=lambda r: -r["value"],
         )
         return {
-            "id": "chart-unified-by-department",
+            "id": "chart-unified-by-workspace",
             "kind": "groupedBarsH",
-            "title": "Use cases by department",
-            "hint": "current totals",
+            "title": "Use cases by workspace",
+            "hint": "workspaces proxy teams / departments · current totals",
             "data": {"rows": rows},
         }
 
@@ -478,7 +478,11 @@ class GrowthReporter:
             "title": "Use cases across all platforms",
             "window_chip": self._window_label(window),
             "kpis": [
-                {"label": "Departments", "value": workspaces_count},
+                {
+                    "label": "Workspaces",
+                    "value": workspaces_count,
+                    "sub": "proxy for teams / departments",
+                },
                 {"label": "Use cases", "value": stats["total"], "tone": "ok"},
                 {"label": f"New ({spec})", "value": f"+{stats['new_in_window']}"},
                 {
@@ -544,6 +548,44 @@ class GrowthReporter:
             ],
         }
 
+    def _series_window_stats(self, points, window_start, window_end):
+        """Growth of a per-period value series over the window. Bucket keys
+        are zero-padded and lexicographically sortable, so window membership
+        is a string comparison. Returns total / new_in_window / before /
+        pct_growth (0-guarded), mirroring `growth_stats` for value series."""
+        total = new_in = before = 0.0
+        for p in points:
+            key, value = p.get("key"), p.get("value", 0) or 0
+            total += value
+            if window_start <= key <= window_end:
+                new_in += value
+            elif key < window_start:
+                before += value
+        pct = (new_in / before * 100.0) if before > 0 else 0.0
+        return {
+            "total": total,
+            "new_in_window": new_in,
+            "before": before,
+            "pct_growth": round(pct, 1),
+        }
+
+    def _fastest_growing_project(self, metric_name, metrics, window_start, window_end):
+        """The project with the largest in-window increase for `metric_name`
+        (absolute new-in-window, which is robust to tiny-base % noise).
+        Returns (project, new_in_window) or None if nothing grew in-window."""
+        best = None
+        for m in metrics:
+            if m.metric != metric_name or m.project is None:
+                continue
+            new_in = sum(
+                value
+                for key, value in (m.series or [])
+                if window_start <= key <= window_end
+            )
+            if new_in > 0 and (best is None or new_in > best[1]):
+                best = (m.project, new_in)
+        return best
+
     def _build_adoption_section(self, platform, usage, window):
         """Per-product adoption/usage section. Registry counts (EM) are
         NEVER merged with MPM's monitored-model metrics -- they live in
@@ -558,12 +600,37 @@ class GrowthReporter:
         total, points, window_start, window_end = self._adoption_metric_series(
             metric, usage, window
         )
-        charts = (
-            [
+        stats = self._series_window_stats(points, window_start, window_end)
+        spec = self.window or "7d"
+
+        # Usage growth KPIs (not just the total), plus the fastest-growing
+        # project so a bare "total" section reads as a trend.
+        kpis = [
+            {"label": value_label, "value": _num(total)},
+            {"label": f"New ({spec})", "value": f"+{_num(stats['new_in_window'])}"},
+            {
+                "label": f"Growth ({spec})",
+                "value": f"{stats['pct_growth']}%",
+                "sub": f"vs {_num(stats['before'])} before window",
+            },
+        ]
+        fastest = self._fastest_growing_project(metric, usage, window_start, window_end)
+        if fastest:
+            kpis.append(
+                {
+                    "label": "Fastest-growing project",
+                    "value": fastest[0],
+                    "sub": f"+{_num(fastest[1])} in window",
+                }
+            )
+
+        charts = []
+        if points:
+            charts.append(
                 {
                     "id": f"chart-{platform}-adoption",
                     "kind": "bars",
-                    "title": value_label,
+                    "title": f"{value_label} — new per period",
                     "hint": f"by {self.units}",
                     "data": {
                         "points": points,
@@ -571,13 +638,29 @@ class GrowthReporter:
                         "window_end": window_end,
                     },
                 }
+            )
+            cum_points = [
+                {"key": k, "value": v}
+                for k, v in cumulative([(p["key"], p["value"]) for p in points])
             ]
-            if points
-            else []
-        )
+            charts.append(
+                {
+                    "id": f"chart-{platform}-adoption-cumulative",
+                    "kind": "area",
+                    "title": f"{value_label} — cumulative",
+                    "hint": "all-time",
+                    "data": {
+                        "points": cum_points,
+                        "window_start": window_start,
+                        "window_end": window_end,
+                        "delta": _num(stats["new_in_window"]),
+                    },
+                }
+            )
+
         section = {
             "title": f"{PLATFORM_LABELS[platform]} — adoption / usage",
-            "kpis": [{"label": value_label, "value": total}],
+            "kpis": kpis,
             "charts": charts,
             "table": self._adoption_table_by_project(metric, usage, value_label),
         }

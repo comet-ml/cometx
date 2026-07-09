@@ -148,6 +148,7 @@ h1{font-size:26px;line-height:1.15;margin:0;letter-spacing:-.015em;font-weight:6
 .nodata{color:var(--muted);font-size:12px;padding:24px 0;text-align:center}
 svg{display:block;width:100%;height:auto;overflow:visible}
 .axis-base{stroke:var(--hair);stroke-width:1}
+.gridline{stroke:var(--hair);stroke-width:1;stroke-dasharray:2 4;opacity:.7}
 .tablecard{background:var(--card);border:1px solid var(--hair);border-radius:12px;box-shadow:var(--shadow);
   overflow:hidden;margin-bottom:16px}
 .tablecard .ph{padding:16px 18px 12px;display:flex;align-items:center;justify-content:space-between}
@@ -282,6 +283,34 @@ CLIENT_JS = """
         svg.appendChild(t);
       }
     }
+    // y max gridline + label so the scale is readable
+    svg.appendChild(el("line", {class: "gridline", x1: P.l, x2: P.l + iw, y1: Y(max), y2: Y(max)}));
+    var maxL = el("text", {x: P.l - 6, y: Y(max) + 3, "text-anchor": "end", fill: tok("--muted"),
+      "font-size": "10", "font-family": "var(--mono)"});
+    maxL.textContent = fmt(max); svg.appendChild(maxL);
+    // final cumulative value label (skip if it would collide with the window-end marker)
+    var endV = points[n - 1].value || 0;
+    if(wi1 < 0){
+      var eL = el("text", {x: X(n - 1), y: Y(endV) - 8, "text-anchor": "end", fill: accent,
+        "font-size": "11", "font-family": "var(--mono)", "font-weight": "600"});
+      eL.textContent = fmt(endV); svg.appendChild(eL);
+    }
+    // per-point hover values (transparent hit circles carry a native tooltip)
+    points.forEach(function(p, i){
+      var hc = el("circle", {cx: X(i), cy: Y(p.value || 0), r: "7", fill: "transparent"});
+      var ht = el("title", {}); ht.textContent = p.key + ": " + fmt(p.value || 0); hc.appendChild(ht);
+      svg.appendChild(hc);
+    });
+    // x-axis time labels: every ~n/8, always including both edges
+    var xstep = Math.max(1, Math.ceil(n / 8));
+    points.forEach(function(p, i){
+      if(i % xstep === 0 || i === n - 1){
+        var anchor = i === 0 ? "start" : (i === n - 1 ? "end" : "middle");
+        var xl = el("text", {x: X(i), y: H - 8, "text-anchor": anchor, fill: tok("--muted"),
+          "font-size": "10", "font-family": "var(--mono)"});
+        xl.textContent = p.key; svg.appendChild(xl);
+      }
+    });
     host.appendChild(svg);
   }
 

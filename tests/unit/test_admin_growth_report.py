@@ -867,7 +867,7 @@ def _sample_report_data():
                 "title": "Use cases across all platforms",
                 "window_chip": "Analysis window: Jul 2 – Jul 9, 2026 (7d)",
                 "kpis": [
-                    {"label": "Departments", "value": 4},
+                    {"label": "Workspaces", "value": 4},
                     {"label": "Use cases", "value": 77, "tone": "ok"},
                     {"label": "New (7d)", "value": "+12"},
                     {
@@ -922,9 +922,9 @@ def _sample_report_data():
                         },
                     },
                     {
-                        "id": "chart-unified-by-department",
+                        "id": "chart-unified-by-workspace",
                         "kind": "groupedBarsH",
-                        "title": "Use cases by department",
+                        "title": "Use cases by workspace",
                         "hint": "current totals",
                         "data": {
                             "rows": [
@@ -935,8 +935,8 @@ def _sample_report_data():
                     },
                 ],
                 "table": {
-                    "title": "By department",
-                    "headers": ["Department", "Opik", "EM", "MPM", "Total"],
+                    "title": "By workspace",
+                    "headers": ["Workspace", "Opik", "EM", "MPM", "Total"],
                     "rows": [
                         ["ws-alpha", 20, 15, 5, 40],
                         ["ws-beta", 10, 20, 7, 37],
@@ -1079,8 +1079,8 @@ def test_build_html_tables_are_collapsible_and_collapsed_by_default():
     from cometx.cli.admin_growth_render import render_table
 
     table = {
-        "title": "By department",
-        "headers": ["Department", "Total"],
+        "title": "By workspace",
+        "headers": ["Workspace", "Total"],
         "rows": [["opik-demos", 16], ["scout-test-leo", 5]],
     }
     html = render_table(table)
@@ -1091,7 +1091,7 @@ def test_build_html_tables_are_collapsible_and_collapsed_by_default():
     assert '<details class="tablecard" open' not in html
     assert '<details class="tablecard">' in html
     # summary shows the title + the row count (2 rows)
-    assert "By department" in html
+    assert "By workspace" in html
     assert '<span class="count">2</span>' in html
     # the rows are still present (inside the collapsed body)
     assert "opik-demos" in html and "scout-test-leo" in html
@@ -1367,7 +1367,8 @@ def test_build_assembles_report_data_matching_c8_contract(monkeypatch):
     unified = report_data["sections"]["unified"]
     assert unified["title"] == "Use cases across all platforms"
     kpi_labels = [k["label"] for k in unified["kpis"]]
-    assert "Departments" in kpi_labels
+    assert "Workspaces" in kpi_labels
+    assert "Departments" not in kpi_labels
     assert "Use cases" in kpi_labels
     use_cases_kpi = next(k for k in unified["kpis"] if k["label"] == "Use cases")
     assert use_cases_kpi["value"] == 6  # 3 opik + 2 em + 1 mpm
@@ -1384,8 +1385,9 @@ def test_build_assembles_report_data_matching_c8_contract(monkeypatch):
     dept_labels = {r["label"] for r in dept_chart["data"]["rows"]}
     assert dept_labels == {"ws-alpha", "ws-beta"}
 
-    # multi-workspace -> unified table breaks down by department
-    assert unified["table"]["headers"][0] == "Department"
+    # multi-workspace -> unified table breaks down by workspace
+    assert unified["table"]["title"] == "By workspace"
+    assert unified["table"]["headers"][0] == "Workspace"
     ws_rows = {row[0] for row in unified["table"]["rows"]}
     assert ws_rows == {"ws-alpha", "ws-beta"}
 
@@ -1407,6 +1409,16 @@ def test_build_assembles_report_data_matching_c8_contract(monkeypatch):
         if p["title"] == "Model-registry engagement"
     )
     assert registry_panel["rows"] == [["ws-alpha", 2, 3]]
+
+    # adoption sections carry usage growth (not just totals) + a cumulative chart
+    em_adoption_kpis = {k["label"]: k for k in em_adoption["kpis"]}
+    assert em_adoption_kpis["Experiment count"]["value"] == 10
+    assert any(lbl.startswith("New (") for lbl in em_adoption_kpis)
+    assert any(lbl.startswith("Growth (") for lbl in em_adoption_kpis)
+    # em1 is the only project with in-window experiments -> fastest-growing
+    assert em_adoption_kpis["Fastest-growing project"]["value"] == "em1"
+    adoption_chart_kinds = {c["kind"] for c in em_adoption["charts"]}
+    assert "bars" in adoption_chart_kinds and "area" in adoption_chart_kinds
 
     mpm_growth = products["mpm"]["growth"]
     assert mpm_growth["kpis"][1]["value"] == 1
