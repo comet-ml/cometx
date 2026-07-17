@@ -1,0 +1,65 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""Unit tests for cometx.cli.admin_growth_users (people layer parse +
+adoption/leaderboard derivations)."""
+
+NOW = 1_720_000_000_000  # fixed ms; ~2024-07, tests pass now_ms explicitly
+
+
+def _cb():
+    return {
+        "workspaces": [
+            {"name": "team-a", "members": [{"userName": "alice"}, {"userName": "bob"}]},
+            {"name": "team-b", "members": [{"userName": "alice"}]},
+        ],
+        "users": {"licensedUsers": [
+            {"username": "alice", "email": "a@x.com", "createdAt": NOW - 100,
+             "lastUsedAt": NOW - 10, "experimentCount": 40, "dataLoggedMb": 100.0,
+             "opikSpanCount": 5000, "emLastUsedAt": NOW - 10, "opikLastUsedAt": NOW - 10,
+             "suspended": False, "deletedAt": None},
+            {"username": "bob", "email": "b@x.com", "createdAt": NOW - 100,
+             "lastUsedAt": NOW - (60 * 86400 * 1000), "experimentCount": 1,
+             "dataLoggedMb": 2.0, "opikSpanCount": 0, "suspended": False, "deletedAt": None},
+            {"username": "carol", "email": "c@x.com", "createdAt": NOW - 100,
+             "lastUsedAt": NOW - 5, "experimentCount": 0, "dataLoggedMb": 0.0,
+             "opikSpanCount": 0, "suspended": True, "deletedAt": None},
+        ]},
+    }
+
+
+def test_parse_users_maps_workspaces_and_fields():
+    from cometx.cli.admin_growth_users import parse_users
+    users = {u.username: u for u in parse_users(_cb())}
+    assert set(users["alice"].workspaces) == {"team-a", "team-b"}
+    assert users["alice"].opik_span_count == 5000
+    assert users["bob"].opik_last_used_at is None  # absent field -> None
+
+
+def test_adoption_excludes_suspended_and_respects_window():
+    from cometx.cli.admin_growth_users import parse_users, adoption_stats
+    users = parse_users(_cb())
+    stats = adoption_stats(users, now_ms=NOW, active_window_days=30)
+    # total = alice + bob (carol suspended, excluded); active = alice only (bob 60d ago)
+    assert stats["total"] == 2
+    assert stats["active"] == 1
+    assert stats["adoption_pct"] == 50.0
+
+
+def test_top_and_bottom_users_by_em_score():
+    from cometx.cli.admin_growth_users import parse_users, top_users, bottom_users
+    users = parse_users(_cb())
+    top = top_users(users, key="em_score", n=1)
+    assert top[0].username == "alice"
+    # bottom = active-aware: only users with em_score > 0, ascending -> bob before alice
+    bot = bottom_users(users, key="em_score", n=1)
+    assert bot[0].username == "bob"
+
+
+def test_top_users_absent_span_field_excluded():
+    from cometx.cli.admin_growth_users import parse_users, top_users
+    # a report with NO opikSpanCount anywhere
+    cb = {"workspaces": [], "users": {"licensedUsers": [
+        {"username": "x", "email": "x@x", "lastUsedAt": NOW, "experimentCount": 1}]}}
+    users = parse_users(cb)
+    assert users[0].opik_span_count is None
+    assert top_users(users, key="opik_span_count", n=5) == []  # nothing has the metric
