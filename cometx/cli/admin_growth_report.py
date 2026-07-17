@@ -331,6 +331,8 @@ def generate_growth_report(
     active_window="60d",
     include_users=True,
     leaderboard_top_n=5,
+    exclude_personal=False,
+    personal_pattern=None,
 ):
     reporter = GrowthReporter(
         api,
@@ -341,6 +343,8 @@ def generate_growth_report(
         active_window=active_window,
         include_users=include_users,
         leaderboard_top_n=leaderboard_top_n,
+        exclude_personal=exclude_personal,
+        personal_pattern=personal_pattern,
     )
     report_data = reporter.build(workspaces)  # events + usage -> report_data (C2-C7)
     path = write_growth_html(report_data, output)  # C8
@@ -361,6 +365,8 @@ class GrowthReporter:
         active_window="60d",
         include_users=True,
         leaderboard_top_n=5,
+        exclude_personal=False,
+        personal_pattern=None,
     ):
         self.api = api
         self.window = window
@@ -370,6 +376,9 @@ class GrowthReporter:
         self.active_window = active_window
         self.include_users = include_users
         self.leaderboard_top_n = leaderboard_top_n
+        self.exclude_personal = exclude_personal
+        self.personal_pattern = personal_pattern
+        self._warned_no_personal_pattern = False
 
     def build(self, workspaces):
         """Resolve window/platforms/workspaces, run the selected collectors,
@@ -440,9 +449,43 @@ class GrowthReporter:
         resolved = (
             list(workspaces) if workspaces else list(self.api.get_workspaces() or [])
         )
+        resolved = self._filter_personal(resolved)
         if self.limit is not None:
             resolved = resolved[: self.limit]
         return resolved
+
+    def _filter_personal(self, workspaces):
+        """Drop workspaces matching `self.personal_pattern` when
+        `self.exclude_personal` is set (Task 9). A no-op unless BOTH the
+        flag is on AND a pattern was supplied -- an on flag with no pattern
+        can't identify anything to drop, so it's a no-op too, with a
+        once-per-reporter warning since that combination is almost
+        certainly a user mistake (they meant to also pass
+        `--personal-pattern`). An invalid regex degrades the same way
+        (warn once, return unchanged) rather than crashing the whole run.
+        """
+        if not self.exclude_personal:
+            return list(workspaces)
+        if not self.personal_pattern:
+            if not self._warned_no_personal_pattern:
+                print(
+                    "Warning: --exclude-personal has no effect without "
+                    "--personal-pattern; skipping personal-workspace exclusion"
+                )
+                self._warned_no_personal_pattern = True
+            return list(workspaces)
+        try:
+            pattern = re.compile(self.personal_pattern)
+        except re.error as exc:
+            if not self._warned_no_personal_pattern:
+                print(
+                    f"Warning: invalid --personal-pattern "
+                    f"{self.personal_pattern!r} ({exc}); skipping "
+                    "personal-workspace exclusion"
+                )
+                self._warned_no_personal_pattern = True
+            return list(workspaces)
+        return [ws for ws in workspaces if not pattern.search(ws)]
 
     _COLLECTOR_METHODS = {
         "em": "_collect_em",

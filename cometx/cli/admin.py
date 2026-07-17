@@ -548,6 +548,23 @@ Examples:
         help="Skip the chargeback-based users/people layer",
     )
     growth_parser.add_argument(
+        "--exclude-personal",
+        action="store_true",
+        default=False,
+        help=(
+            "Drop workspaces whose name matches --personal-pattern before "
+            "collection (default: off; has no effect without --personal-pattern)"
+        ),
+    )
+    growth_parser.add_argument(
+        "--personal-pattern",
+        default=None,
+        help=(
+            "Regex used with --exclude-personal to identify personal-workspace "
+            "names to drop, e.g. '^user-' (default: none)"
+        ),
+    )
+    growth_parser.add_argument(
         "--no-open",
         help="Don't automatically open the generated HTML file",
         default=False,
@@ -831,6 +848,8 @@ def admin(parsed_args, remaining=None):
                     active_window=parsed_args.active_window,
                     include_users=parsed_args.include_users,
                     leaderboard_top_n=parsed_args.leaderboard_top_n,
+                    exclude_personal=parsed_args.exclude_personal,
+                    personal_pattern=parsed_args.personal_pattern,
                 )
             except Exception as e:
                 print("ERROR: " + str(e))

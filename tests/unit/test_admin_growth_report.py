@@ -2034,3 +2034,20 @@ def test_assemble_report_data_degrades_personal_vs_service_without_crashing(monk
     data = r.build([])  # must not raise
 
     assert "personal_vs_service" not in data["sections"]
+
+
+def test_exclude_personal_filters_by_pattern():
+    from cometx.cli.admin_growth_report import GrowthReporter
+    api = MagicMock()
+    r = GrowthReporter(api, window="7d", units="month", platforms="em",
+                       exclude_personal=True, personal_pattern=r"^user-")
+    kept = r._filter_personal(["team-a", "user-alice", "team-b"])
+    assert kept == ["team-a", "team-b"]
+
+
+def test_exclude_personal_without_pattern_is_noop():
+    from cometx.cli.admin_growth_report import GrowthReporter
+    api = MagicMock()
+    r = GrowthReporter(api, window="7d", units="month", platforms="em",
+                       exclude_personal=True, personal_pattern=None)
+    assert r._filter_personal(["a", "b"]) == ["a", "b"]
