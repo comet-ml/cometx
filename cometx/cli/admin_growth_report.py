@@ -133,7 +133,7 @@ def _num(value):
     return value
 
 
-def _extract_service_account_names(payload) -> "set[str]":
+def _extract_service_account_names(payload) -> "set[str] | None":
     """Defensively unwrap the `/admin/service-accounts` response into a
     flat set of account names, tolerating several plausible response
     shapes since the exact schema isn't documented in this codebase: a
@@ -141,24 +141,42 @@ def _extract_service_account_names(payload) -> "set[str]":
     container key (`serviceAccounts`, `accounts`, `users`). Each entry may
     be a plain string, or a dict carrying the name under `name`,
     `username`, or `email` (mirrors `_extract_licensed_users`'s defensive
-    style in `admin_growth_users.py`)."""
+    style in `admin_growth_users.py`).
+
+    Returns `None` (not an empty set) when the payload cannot be honestly
+    parsed as a service-account container -- either because its shape
+    isn't recognized at all, or because a recognized, non-empty container
+    yielded zero extractable names. An empty set is returned only for a
+    recognized container that is genuinely empty (e.g. `[]` or
+    `{"serviceAccounts": []}`), which is a real "zero service accounts"
+    answer, not a parse failure. Distinguishing these two lets callers
+    (`_fetch_service_accounts`) fall back to the labeled regex heuristic
+    on a parse failure instead of silently reporting zero via the
+    (misleading) admin_api source."""
+    container = payload
+    recognized = isinstance(payload, list)
     if isinstance(payload, dict):
         for key in ("serviceAccounts", "accounts", "users"):
             if key in payload:
-                payload = payload[key]
+                container = payload[key]
+                recognized = isinstance(container, list)
                 break
-    if not isinstance(payload, list):
+
+    if not recognized:
+        return None
+    if not container:
         return set()
 
     names = set()
-    for entry in payload:
+    for entry in container:
         if isinstance(entry, str):
             names.add(entry)
         elif isinstance(entry, dict):
             name = entry.get("name") or entry.get("username") or entry.get("email")
             if name:
                 names.add(name)
-    return names
+
+    return names or None
 
 
 def _fetch_service_accounts(api) -> "set[str] | None":
@@ -166,8 +184,11 @@ def _fetch_service_accounts(api) -> "set[str] | None":
     `/admin/service-accounts` endpoint (same request shape as
     `fetch_chargeback_report` in `cometx.utils`), for `classify_accounts`'s
     admin_api path. Returns `None` on ANY failure -- endpoint disabled,
-    403/404, network error, unexpected response shape -- so callers
-    degrade to the labeled regex heuristic instead of crashing."""
+    403/404, network error, unexpected response shape, or a successful
+    response that could not be honestly parsed into any names (see
+    `_extract_service_account_names`) -- so callers degrade to the
+    labeled regex heuristic instead of crashing or silently reporting a
+    zero split under the admin_api label."""
     try:
         parsed = urlparse(api.config["comet.url_override"])
         base = "%s://%s" % (parsed.scheme, parsed.netloc)

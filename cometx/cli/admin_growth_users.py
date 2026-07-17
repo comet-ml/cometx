@@ -154,26 +154,39 @@ def bottom_users(users, key: str, n: int) -> "list[UserRecord]":
 
 # Labeled regex fallback used by `classify_accounts` when the admin
 # `/admin/service-accounts` endpoint is unavailable (disabled, 403/404, or
-# any other fetch failure). Matched case-insensitively against username OR
-# email, since either field may carry the naming convention.
-_SERVICE_ACCOUNT_PATTERNS = [
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"svc-",
-        r"sa-",
-        r"-service-account",
-        r"bot-",
-        r"sagemaker-integration\.com",
-    )
-]
+# any other fetch failure). Anchored to name-segment/domain boundaries so a
+# real user like "lisa-brown" or "abbot-jones" (which merely CONTAIN "sa-"
+# / "bot-" mid-string) is never mislabeled as a service account.
+
+# Prefix-style tokens: match only at the start of the username, or right
+# after a `.`/`_`/`-` separator (i.e. as a whole name-segment prefix).
+_SERVICE_ACCOUNT_PREFIX_PATTERN = re.compile(
+    r"(?:^|[._-])(?:svc|sa|bot)-", re.IGNORECASE
+)
+# Segment token: matched as-is against the username (already has a leading
+# hyphen boundary, so no separate anchoring is needed).
+_SERVICE_ACCOUNT_SEGMENT_PATTERN = re.compile(r"-service-account", re.IGNORECASE)
+# Domain token: matched against the email's domain only, anchored to the
+# END of the domain, so "sagemaker-integration.com" matches but a lookalike
+# domain like "sagemaker-integration.com.evil.com" does not.
+_SERVICE_ACCOUNT_DOMAIN_PATTERN = re.compile(
+    r"(?:^|\.)sagemaker-integration\.com$", re.IGNORECASE
+)
 
 
 def _looks_like_service_account(user: UserRecord) -> bool:
     """Heuristic-only check (used when no authoritative service-account set
-    is available): does the username or email match one of the known
-    service-account naming conventions."""
-    haystack = "{} {}".format(user.username or "", user.email or "")
-    return any(pattern.search(haystack) for pattern in _SERVICE_ACCOUNT_PATTERNS)
+    is available): does the username match one of the known service-account
+    naming conventions, or does the email's domain match a known
+    service-account domain."""
+    username = user.username or ""
+    if _SERVICE_ACCOUNT_PREFIX_PATTERN.search(username):
+        return True
+    if _SERVICE_ACCOUNT_SEGMENT_PATTERN.search(username):
+        return True
+    email = user.email or ""
+    domain = email.rsplit("@", 1)[-1] if "@" in email else ""
+    return bool(domain and _SERVICE_ACCOUNT_DOMAIN_PATTERN.search(domain))
 
 
 def classify_accounts(users, service_account_names=None) -> dict:

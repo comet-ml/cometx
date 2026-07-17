@@ -99,3 +99,33 @@ def test_classify_accounts_regex_fallback_labeled():
     assert out["service"]["experiments"] == 3
     assert out["personal"]["experiments"] == 7
     assert out["source"] == "heuristic"
+
+
+def _classify_username(username, email=None):
+    """Helper: classify a single synthetic user (heuristic path) and return
+    "personal" or "service"."""
+    from cometx.cli.admin_growth_users import parse_users, classify_accounts
+    cb = {"workspaces": [], "users": {"licensedUsers": [
+        {"username": username, "email": email or (username + "@x.com"),
+         "experimentCount": 1, "lastUsedAt": 1}]}}
+    users = parse_users(cb)
+    out = classify_accounts(users, service_account_names=None)
+    return "service" if out["service"]["experiments"] == 1 else "personal"
+
+
+def test_classify_accounts_regex_does_not_mislabel_substring_matches():
+    # "lisa-brown" contains "sa-"; "abbot-jones" contains "bot-". Neither is
+    # a service-account naming convention -- both are plain personal users.
+    assert _classify_username("lisa-brown") == "personal"
+    assert _classify_username("abbot-jones") == "personal"
+
+
+def test_classify_accounts_regex_matches_anchored_prefix_tokens():
+    assert _classify_username("sa-pipeline") == "service"
+    assert _classify_username("svc-x") == "service"
+    assert _classify_username("bot-runner") == "service"
+
+
+def test_classify_accounts_regex_matches_sagemaker_domain_anchored():
+    assert _classify_username("dana", email="dana@sagemaker-integration.com") == "service"
+    assert _classify_username("dana2", email="dana2@sagemaker-integration.com.evil.com") == "personal"

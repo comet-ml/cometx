@@ -1891,6 +1891,40 @@ def test_fetch_service_accounts_returns_none_on_failure():
     assert _fetch_service_accounts(api) is None
 
 
+def _fetch_with_payload(payload):
+    from cometx.cli.admin_growth_report import _fetch_service_accounts
+
+    api = MagicMock()
+    api.config = {"comet.url_override": "https://c.example.com"}
+    api.api_key = "K"
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = payload
+    api._client.get.return_value = resp
+    return _fetch_service_accounts(api)
+
+
+def test_fetch_service_accounts_returns_none_on_unrecognized_shape():
+    # A successful response whose shape isn't a list and doesn't carry any
+    # known container key -- unparseable, so callers must fall back to the
+    # regex heuristic (None), not silently report zero service accounts.
+    assert _fetch_with_payload({"weird": 123}) is None
+
+
+def test_fetch_service_accounts_returns_none_when_entries_all_unparseable():
+    # A recognized bare-list container, but every entry is a type we can't
+    # extract a name from -- still unparseable overall, so None (not an
+    # empty set, which would misleadingly imply "admin API says zero").
+    assert _fetch_with_payload([1, 2, 3]) is None
+
+
+def test_fetch_service_accounts_returns_empty_set_for_genuinely_empty_container():
+    # A recognized, genuinely-empty container IS a real "zero service
+    # accounts" answer from the admin API -- keep it as an empty set (not
+    # None) so classify_accounts still reports source="admin_api".
+    assert _fetch_with_payload({"serviceAccounts": []}) == set()
+    assert _fetch_with_payload([]) == set()
+
+
 def test_build_personal_vs_service_section_admin_api_source():
     from cometx.cli.admin_growth_report import GrowthReporter
     from cometx.cli.admin_growth_users import parse_users
