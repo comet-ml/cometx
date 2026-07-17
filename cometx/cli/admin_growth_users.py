@@ -164,8 +164,12 @@ _SERVICE_ACCOUNT_PREFIX_PATTERN = re.compile(
     r"(?:^|[._-])(?:svc|sa|bot)-", re.IGNORECASE
 )
 # Segment token: matched as-is against the username (already has a leading
-# hyphen boundary, so no separate anchoring is needed).
-_SERVICE_ACCOUNT_SEGMENT_PATTERN = re.compile(r"-service-account", re.IGNORECASE)
+# hyphen boundary, so no separate anchoring is needed). Bounded at the tail
+# to end-of-string or the next separator so "jane-service-accountant" is not
+# mislabeled as a service account.
+_SERVICE_ACCOUNT_SEGMENT_PATTERN = re.compile(
+    r"-service-account(?:$|[._-])", re.IGNORECASE
+)
 # Domain token: matched against the email's domain only, anchored to the
 # END of the domain, so "sagemaker-integration.com" matches but a lookalike
 # domain like "sagemaker-integration.com.evil.com" does not.

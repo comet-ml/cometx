@@ -206,6 +206,15 @@ def test_classify_accounts_regex_does_not_mislabel_substring_matches():
     assert _classify_username("abbot-jones") == "personal"
 
 
+def test_classify_accounts_regex_segment_boundary():
+    # "jane-service-accountant" merely CONTAINS the "-service-account"
+    # segment mid-word (as a prefix of "accountant") -- must not be
+    # mislabeled as a service account. "foo-service-account" is the real
+    # naming convention and must still classify as service.
+    assert _classify_username("jane-service-accountant") == "personal"
+    assert _classify_username("foo-service-account") == "service"
+
+
 def test_classify_accounts_regex_matches_anchored_prefix_tokens():
     assert _classify_username("sa-pipeline") == "service"
     assert _classify_username("svc-x") == "service"

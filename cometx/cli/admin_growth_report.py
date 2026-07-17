@@ -1192,7 +1192,6 @@ class GrowthReporter:
         return {
             "title": "Personal vs. service accounts",
             "charts": charts,
-            "hint": hint,
         }
 
     def _assemble_report_data(
@@ -1235,6 +1234,7 @@ class GrowthReporter:
             if people_section:
                 sections["people"] = people_section
 
+        leaderboard_users = []
         try:
             leaderboard_users = parse_users(chargeback) if chargeback else []
             leaderboards_section = self._build_leaderboards_section(

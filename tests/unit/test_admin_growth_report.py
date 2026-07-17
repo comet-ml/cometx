@@ -1870,6 +1870,53 @@ def test_malformed_chargeback_degrades_people_section_without_crashing(monkeypat
     assert "people" not in data["sections"]
 
 
+def test_malformed_chargeback_degrades_leaderboards_and_personal_vs_service(
+    monkeypatch, capsys
+):
+    """Same malformed chargeback as above, but exercising the leaderboards /
+    personal_vs_service wiring: `leaderboard_users` is assigned from
+    `parse_users(chargeback)` inside the leaderboards `try` block, then
+    referenced later (`if leaderboard_users:`) in the personal-vs-service
+    block. Before the fix, a `parse_users` failure left `leaderboard_users`
+    unbound, so the later reference raised `UnboundLocalError` -- masked by
+    the personal-vs-service `except`, but printing a misleading "referenced
+    before assignment" warning that misattributes the failure. `build()`
+    must not raise either way, but after the fix neither the leaderboards
+    nor personal_vs_service sections are present and no misleading
+    UnboundLocalError-style warning is printed."""
+    import cometx.cli.admin_growth_report as agr
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    api = MagicMock()
+    api.config = {"comet.url_override": "https://c.example.com"}
+    api.api_key = "K"
+    api.get_workspaces.return_value = []
+
+    malformed = {"workspaces": [], "users": {"licensedUsers": ["not-a-dict"]}}
+    monkeypatch.setattr(agr, "fetch_chargeback_report", lambda *a, **k: malformed)
+
+    r = GrowthReporter(
+        api,
+        window="7d",
+        units="month",
+        platforms="em",
+        active_window="60d",
+        include_users=True,
+        leaderboard_top_n=5,
+    )
+
+    data = r.build([])  # must not raise
+
+    assert "people" not in data["sections"]
+    assert "leaderboards" not in data["sections"]
+    assert "personal_vs_service" not in data["sections"]
+
+    captured = capsys.readouterr()
+    assert "referenced before assignment" not in captured.out
+    assert "not associated with a value" not in captured.out
+    assert "leaderboard_users" not in captured.out
+
+
 def test_leaderboards_rank_workspaces_top_n():
     from cometx.cli.admin_growth_report import GrowthReporter, UsageMetric
 
@@ -2005,8 +2052,9 @@ def test_build_personal_vs_service_section_admin_api_source():
     section = r._build_personal_vs_service_section(users, service_account_names={"bob"})
 
     assert section["title"] == "Personal vs. service accounts"
-    assert "admin API" in section["hint"]
+    assert "hint" not in section
     exp_chart = next(c for c in section["charts"] if "experiments" in c["title"])
+    assert "admin API" in exp_chart["hint"]
     rows = {row["label"]: row["value"] for row in exp_chart["data"]["rows"]}
     assert rows == {"Personal": 40, "Service": 1}
 
@@ -2042,10 +2090,11 @@ def test_build_personal_vs_service_section_heuristic_fallback_omits_empty_metric
 
     section = r._build_personal_vs_service_section(users, service_account_names=None)
 
-    assert "heuristic" in section["hint"]
+    assert "hint" not in section
     # No user has opik_span_count set -> spans metric all-zero -> omitted
     assert all("spans" not in c["title"] for c in section["charts"])
     exp_chart = next(c for c in section["charts"] if "experiments" in c["title"])
+    assert "heuristic" in exp_chart["hint"]
     rows = {row["label"]: row["value"] for row in exp_chart["data"]["rows"]}
     assert rows == {"Personal": 7, "Service": 3}
 
@@ -2109,7 +2158,8 @@ def test_assemble_report_data_wires_personal_vs_service_section(monkeypatch):
     data = r.build([])
 
     section = data["sections"]["personal_vs_service"]
-    assert "admin API" in section["hint"]
+    assert "hint" not in section
+    assert all("admin API" in c["hint"] for c in section["charts"])
 
 
 def test_assemble_report_data_degrades_personal_vs_service_without_crashing(
