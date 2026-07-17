@@ -530,6 +530,24 @@ Examples:
         default=None,
     )
     growth_parser.add_argument(
+        "--active-window",
+        default="60d",
+        help="Activity window for the users/people layer, e.g. 30d/60d (default: 60d)",
+    )
+    growth_parser.add_argument(
+        "--leaderboard-top-n",
+        type=int,
+        default=5,
+        help="Top/bottom N size for leaderboards (default: 5)",
+    )
+    growth_parser.add_argument(
+        "--no-users",
+        dest="include_users",
+        action="store_false",
+        default=True,
+        help="Skip the chargeback-based users/people layer",
+    )
+    growth_parser.add_argument(
         "--no-open",
         help="Don't automatically open the generated HTML file",
         default=False,
@@ -810,6 +828,9 @@ def admin(parsed_args, remaining=None):
                     output=parsed_args.output,
                     no_open=parsed_args.no_open,
                     limit=parsed_args.limit,
+                    active_window=parsed_args.active_window,
+                    include_users=parsed_args.include_users,
+                    leaderboard_top_n=parsed_args.leaderboard_top_n,
                 )
             except Exception as e:
                 print("ERROR: " + str(e))

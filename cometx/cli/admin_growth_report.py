@@ -29,7 +29,8 @@ from collections import defaultdict
 from tqdm import tqdm
 
 from cometx.cli.admin_growth_render import build_html, write_html
-from cometx.utils import format_time_key, get_next_time_key
+from cometx.cli.admin_growth_users import adoption_stats, parse_users, top_users
+from cometx.utils import fetch_chargeback_report, format_time_key, get_next_time_key
 
 # `build_html` is re-exported here so the growth-report module is the single
 # import surface (tests + callers import it from here). Declaring it in
@@ -247,9 +248,19 @@ def generate_growth_report(
     output="growth_report.html",
     no_open=False,
     limit=None,
+    active_window="60d",
+    include_users=True,
+    leaderboard_top_n=5,
 ):
     reporter = GrowthReporter(
-        api, window=window, units=units, platforms=platforms, limit=limit
+        api,
+        window=window,
+        units=units,
+        platforms=platforms,
+        limit=limit,
+        active_window=active_window,
+        include_users=include_users,
+        leaderboard_top_n=leaderboard_top_n,
     )
     report_data = reporter.build(workspaces)  # events + usage -> report_data (C2-C7)
     path = write_growth_html(report_data, output)  # C8
@@ -259,12 +270,26 @@ def generate_growth_report(
 
 
 class GrowthReporter:
-    def __init__(self, api, *, window, units, platforms, limit=None):
+    def __init__(
+        self,
+        api,
+        *,
+        window,
+        units,
+        platforms,
+        limit=None,
+        active_window="60d",
+        include_users=True,
+        leaderboard_top_n=5,
+    ):
         self.api = api
         self.window = window
         self.units = units
         self.platforms = platforms
         self.limit = limit
+        self.active_window = active_window
+        self.include_users = include_users
+        self.leaderboard_top_n = leaderboard_top_n
 
     def build(self, workspaces):
         """Resolve window/platforms/workspaces, run the selected collectors,
@@ -282,10 +307,21 @@ class GrowthReporter:
             f"{len(resolved_workspaces)} workspace(s)..."
         )
         events, usage, ran = self._collect_selected(platforms, resolved_workspaces)
+
+        chargeback = None
+        if self.include_users and platforms:
+            try:
+                print("Collecting users/people data (chargeback report)...")
+                chargeback = fetch_chargeback_report(self.api)
+            except Exception as exc:
+                print(f"Warning: failed to fetch chargeback report; skipping people layer: {exc}")
+                chargeback = None
+
         print("Building report...")
 
+        now_ms = int(now.timestamp() * 1000)
         return self._assemble_report_data(
-            events, usage, ran, resolved_workspaces, window
+            events, usage, ran, resolved_workspaces, window, chargeback, now_ms
         )
 
     def _now(self):
@@ -757,7 +793,87 @@ class GrowthReporter:
             "adoption": self._build_adoption_section(platform, usage, window),
         }
 
-    def _assemble_report_data(self, events, usage, ran, workspaces, window):
+    def _active_window_days(self, now):
+        """Resolve `self.active_window` (e.g. "60d") into an integer day
+        count, via the shared `parse_window` parser (same spec grammar as
+        `--window`)."""
+        active_window = parse_window(self.active_window, now, self.units)
+        return max(1, (active_window.end - active_window.start).days)
+
+    def _build_people_section(self, chargeback, now_ms):
+        """Users/adoption section, derived from the chargeback report (Task
+        4 helpers). Minimal-but-real for this task: KPIs (Total / Active /
+        Adoption %) plus a single-bucket `lines` chart of active vs. total;
+        a richer over-time series is Task 6."""
+        now = _ms_to_utc(now_ms)
+        active_window_days = self._active_window_days(now)
+
+        users = parse_users(chargeback)
+        stats = adoption_stats(users, now_ms, active_window_days)
+
+        kpis = [
+            {"label": "Total", "value": stats["total"]},
+            {
+                "label": f"Active ({self.active_window})",
+                "value": stats["active"],
+            },
+            {"label": "Adoption %", "value": f"{stats['adoption_pct']}%"},
+        ]
+
+        bucket_key = format_time_key(now, self.units)
+        categories = ["active", "total"]
+        chart = {
+            "id": "chart-people-active-total",
+            "kind": "lines",
+            "title": "Active vs. total users",
+            "hint": f"current period · active window {self.active_window}",
+            "legend": [
+                {"label": "Active", "color": "--ok"},
+                {"label": "Total", "color": "--sdk"},
+            ],
+            "data": {
+                "categories": categories,
+                "labels": {"active": "Active", "total": "Total"},
+                "colors": ["--ok", "--sdk"],
+                "points": [
+                    {
+                        "key": bucket_key,
+                        "values": {
+                            "active": stats["active"],
+                            "total": stats["total"],
+                        },
+                    }
+                ],
+                "window_start": bucket_key,
+                "window_end": bucket_key,
+            },
+        }
+
+        top = top_users(users, "em_score", self.leaderboard_top_n)
+        table = {
+            "title": f"Top {self.leaderboard_top_n} users by activity",
+            "headers": ["User", "Experiments", "Data logged (MB)", "Opik spans"],
+            "rows": [
+                [
+                    u.username,
+                    _num(u.experiment_count),
+                    _num(u.data_logged_mb),
+                    _num(u.opik_span_count) if u.opik_span_count is not None else "-",
+                ]
+                for u in top
+            ],
+        }
+
+        return {
+            "title": "Users & adoption",
+            "kpis": kpis,
+            "charts": [chart],
+            "table": table,
+        }
+
+    def _assemble_report_data(
+        self, events, usage, ran, workspaces, window, chargeback=None, now_ms=None
+    ):
         workspaces_count = len(workspaces)
         unified_section = self._build_unified_section(events, window, workspaces_count)
         count_before_unified = sum(
@@ -782,6 +898,12 @@ class GrowthReporter:
                 workspaces_count,
             )
 
+        sections = {"unified": unified_section, "products": products}
+        if chargeback:
+            people_section = self._build_people_section(chargeback, now_ms)
+            if people_section:
+                sections["people"] = people_section
+
         return {
             "meta": {
                 "title": "Comet growth report",
@@ -790,7 +912,7 @@ class GrowthReporter:
             },
             "window": self._build_window_block(window, count_before_unified),
             "collectors": ran,
-            "sections": {"unified": unified_section, "products": products},
+            "sections": sections,
         }
 
     def _workspace_usage_metric(self, platform, metric, workspace, value, counts):

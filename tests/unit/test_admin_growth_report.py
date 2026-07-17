@@ -1764,3 +1764,38 @@ def test_generate_growth_report_full_chain_all_platforms(monkeypatch, tmp_path):
     assert "sk-planted-env-secret-should-not-leak" not in content
     assert "sk-api-secret-should-not-leak" not in content
     assert "COMET_API_KEY" not in content
+
+
+def test_people_section_built_from_chargeback():
+    import datetime
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    api = MagicMock()
+    api.config = {"comet.url_override": "https://c.example.com"}
+    api.api_key = "K"
+    cb = {"workspaces": [], "users": {"licensedUsers": [
+        {"username": "alice", "email": "a@x", "lastUsedAt": 4_000, "createdAt": 1,
+         "experimentCount": 5, "dataLoggedMb": 1.0, "opikSpanCount": 9, "suspended": False},
+    ]}}
+    r = GrowthReporter(api, window="7d", units="month", platforms="em",
+                       active_window="60d", include_users=True, leaderboard_top_n=5)
+    section = r._build_people_section(cb, now_ms=4_500)
+    assert section["title"].startswith("Users")
+    labels = [k["label"] for k in section["kpis"]]
+    assert any("Active" in x for x in labels)
+    assert any("Adoption" in x for x in labels)
+
+
+def test_include_users_false_skips_people(monkeypatch):
+    from cometx.cli.admin_growth_report import GrowthReporter
+    api = MagicMock()
+    r = GrowthReporter(api, window="7d", units="month", platforms="em",
+                       include_users=False)
+    # build() must not call fetch_chargeback_report when include_users is False
+    import cometx.utils as U
+    called = {"n": 0}
+    monkeypatch.setattr(U, "fetch_chargeback_report", lambda *a, **k: called.__setitem__("n", called["n"] + 1) or {})
+    r.api.get_workspaces.return_value = []
+    data = r.build([])
+    assert "people" not in data["sections"]
+    assert called["n"] == 0

@@ -496,6 +496,7 @@ CLIENT_JS = """
     function add(section){ if(section && section.charts){ section.charts.forEach(function(c){ out.push(c); }); } }
     var sections = (p && p.sections) || {};
     add(sections.unified);
+    add(sections.people);
     var products = sections.products || {};
     ["opik", "em", "mpm"].forEach(function(k){
       var prod = products[k]; if(!prod) return;
