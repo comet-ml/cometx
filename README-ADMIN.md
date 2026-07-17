@@ -148,6 +148,11 @@ If no workspace is given, all workspaces visible to the current API key are used
 - **`--platforms PLATFORMS`**: Comma-separated platforms to include (default: `em,opik,mpm`).
 - **`--output PATH`**: Output HTML file path (default: `growth_report.html`).
 - **`--limit N`**: Limit the number of workspaces processed — useful for a fast smoke-test run.
+- **`--active-window WINDOW`**: Activity window for the users/people layer, e.g. `30d`/`60d` (default: `60d`). A user counts as *active* when their overall last-used timestamp falls within this window.
+- **`--leaderboard-top-n N`**: Top/bottom N size for the leaderboards section (default: `5`).
+- **`--no-users`**: Skip the chargeback-based users/people layer entirely (People, Leaderboards, and Personal-vs-Service sections). Use this when the chargeback report is unavailable or not needed.
+- **`--exclude-personal`**: Drop workspaces whose name matches `--personal-pattern` before collection (default: off; has no effect without `--personal-pattern`).
+- **`--personal-pattern REGEX`**: Regex used with `--exclude-personal` to identify personal-workspace names to drop, e.g. `'^user-'` (default: none).
 - **`--no-open`**: Don't automatically open the generated HTML file after generation.
 
 ### The two time concepts
@@ -173,6 +178,14 @@ cometx admin growth-report --platforms em,opik --window 30d my-workspace another
 
 # Fast smoke-test run against a single workspace, don't auto-open
 cometx admin growth-report --limit 1 --no-open --output growth.html my-workspace
+
+# People layer with a 30-day activity window and top/bottom-10 leaderboards,
+# excluding personal workspaces named like "user-..."
+cometx admin growth-report --active-window 30d --leaderboard-top-n 10 \
+  --exclude-personal --personal-pattern '^user-' my-workspace
+
+# Growth/adoption only, skipping the chargeback-based people layer
+cometx admin growth-report --no-users my-workspace
 ```
 
 ### Output
@@ -181,7 +194,13 @@ The growth report generates a single self-contained HTML file containing:
 
 - A **unified section** ("Use cases across all platforms") with department/use-case KPIs, a stacked created-per-period chart broken down by kind (Opik/EM/MPM), a use-cases-by-department chart, and a breakdown table.
 - Per-product **growth** sections (Opik / EM / MPM) with Total / New / % Growth KPIs, a new-use-cases bar chart, a cumulative area chart (both carrying the analysis window as a shaded band), and a breakdown table.
-- Per-product **adoption** sections with secondary usage metrics — Opik span counts, EM experiment counts, MPM prediction volume — each broken down by project.
+- Per-product **adoption** sections with secondary usage metrics — Opik span counts (and trace counts), EM experiment counts, MPM prediction volume — each broken down by project.
+
+When the chargeback report is available (and `--no-users` is not passed), three additional people/usage sections are included:
+
+- A **Users / People** section with Total / Active (`--active-window`) / Adoption % KPIs and active-vs-total and per-capability adoption line charts over time.
+- A **Leaderboards** section ranking workspaces and users by each available platform metric (EM experiments, Opik spans + traces, MPM predictions), as top-N and active-aware bottom-N. Platforms or metrics with no data are omitted.
+- A **Personal vs Service accounts** section splitting experiments / data / spans between personal and service accounts. Service accounts are identified from the admin service-accounts API when available, falling back to a labeled regex heuristic; the source is shown in the panel hint.
 
 The breakdown tables follow one rule throughout: when more than one workspace is included,
 tables break down **by workspace/department**; when only a single workspace is included,
@@ -195,3 +214,4 @@ would be uninformative).
 - **The EM model-registry engagement panel is a snapshot**, not an over-time series ("Registered models" / "Model versions" per workspace) — it is kept in its own labeled panel and is **never** combined with MPM's monitored-model counts, even though both are "model" concepts.
 - **MPM requires provisioning.** If the account/workspace has no MPM model-monitoring provisioned, the MPM collector degrades gracefully — an empty MPM section and `collectors.mpm: false` in the underlying report data — rather than failing the whole report.
 - Opik and MPM collection require their optional SDKs (`opik`, `comet_mpm`). Install them with `pip install 'cometx[all]'` if not already available; any platform whose SDK can't be imported is silently dropped from `--platforms` (a note is printed to the console) so the report still succeeds with the remaining platforms.
+- **The people/usage layer degrades independently.** The People, Leaderboards, and Personal-vs-Service sections are derived from the admin chargeback report (and the service-accounts endpoint). If either is unavailable or returns an unexpected shape, a warning is printed and only those sections are dropped — the rest of the report still generates. Some fields (per-user span counts, per-capability last-used timestamps) are optional in the chargeback payload; panels that depend on a missing field are omitted rather than faked.

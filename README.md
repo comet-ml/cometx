@@ -598,6 +598,11 @@ cometx admin growth-report [WORKSPACE ...]
 * `--platforms PLATFORMS` - Comma-separated list of platforms to include (default: `em,opik,mpm`). Any of `em`, `opik`, `mpm`.
 * `--output PATH` - Output HTML file path (default: `growth_report.html`).
 * `--limit N` - Limit the number of workspaces processed (useful for a fast smoke-test run).
+* `--active-window WINDOW` - Activity window for the users/people layer, e.g. `30d`/`60d` (default: `60d`). A user is *active* when their overall last-used timestamp falls within this window.
+* `--leaderboard-top-n N` - Top/bottom N size for the leaderboards section (default: `5`).
+* `--no-users` - Skip the chargeback-based users/people layer (People, Leaderboards, Personal-vs-Service sections).
+* `--exclude-personal` - Drop workspaces whose name matches `--personal-pattern` before collection (default: off; no effect without `--personal-pattern`).
+* `--personal-pattern REGEX` - Regex used with `--exclude-personal` to identify personal-workspace names to drop, e.g. `'^user-'` (default: none).
 * `--no-open` - Don't automatically open the generated HTML file after generation.
 
 **Two time concepts:**
@@ -607,6 +612,14 @@ cometx admin growth-report [WORKSPACE ...]
 **Growth rates:** growth/adoption rates are computed from use-case **creation timestamps**
 (`--window` boundary vs. each event's `created` time), not from a separate "installed base"
 snapshot, so `pct_growth` is always `new_in_window / count_before_window`.
+
+**People / usage layer:** unless `--no-users` is passed, the report also derives a chargeback-based
+people layer — a **Users / People** section (Total / Active / Adoption % plus over-time line charts),
+a **Leaderboards** section (top-N and active-aware bottom-N workspaces and users by EM experiments,
+Opik spans + traces, and MPM predictions), and a **Personal vs Service accounts** split (service
+accounts from the admin API, with a labeled regex fallback). This layer degrades independently: if
+the chargeback or service-accounts data is unavailable or malformed, a warning is printed and only
+those sections are dropped.
 
 **Caveats:**
 * **EM "created" is a proxy** — the Comet API has no true EM project-creation timestamp, so EM project creation is approximated as the earliest experiment start time in that project (falling back to the project's `lastUpdated` time if no experiments exist).
@@ -625,6 +638,14 @@ cometx admin growth-report --platforms em,opik --window 30d my-workspace another
 
 # Fast smoke-test run against a single workspace, don't auto-open
 cometx admin growth-report --limit 1 --no-open --output growth.html my-workspace
+
+# People layer with a 30-day activity window and top/bottom-10 leaderboards,
+# excluding personal workspaces named like "user-..."
+cometx admin growth-report --active-window 30d --leaderboard-top-n 10 \
+  --exclude-personal --personal-pattern '^user-' my-workspace
+
+# Growth/adoption only, skipping the chargeback-based people layer
+cometx admin growth-report --no-users my-workspace
 ```
 
 #### gpu-report
