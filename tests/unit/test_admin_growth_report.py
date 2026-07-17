@@ -1792,10 +1792,45 @@ def test_include_users_false_skips_people(monkeypatch):
     r = GrowthReporter(api, window="7d", units="month", platforms="em",
                        include_users=False)
     # build() must not call fetch_chargeback_report when include_users is False
-    import cometx.utils as U
+    import cometx.cli.admin_growth_report as agr
     called = {"n": 0}
-    monkeypatch.setattr(U, "fetch_chargeback_report", lambda *a, **k: called.__setitem__("n", called["n"] + 1) or {})
+    monkeypatch.setattr(
+        agr,
+        "fetch_chargeback_report",
+        lambda *a, **k: called.__setitem__("n", called["n"] + 1) or {},
+    )
     r.api.get_workspaces.return_value = []
     data = r.build([])
     assert "people" not in data["sections"]
     assert called["n"] == 0
+
+
+def test_malformed_chargeback_degrades_people_section_without_crashing(monkeypatch):
+    """A chargeback fetch that succeeds but returns a shape parse_users()
+    cannot handle must degrade to no people section, not crash build()."""
+    from cometx.cli.admin_growth_report import GrowthReporter
+    import cometx.cli.admin_growth_report as agr
+
+    api = MagicMock()
+    api.config = {"comet.url_override": "https://c.example.com"}
+    api.api_key = "K"
+    api.get_workspaces.return_value = []
+
+    # Malformed-but-successfully-fetched payload: a licensed-user entry that
+    # is a plain string, not a dict, so parse_users()'s `raw.get(...)` call
+    # raises AttributeError instead of returning parsed records.
+    malformed = {"workspaces": [], "users": {"licensedUsers": ["not-a-dict"]}}
+    monkeypatch.setattr(agr, "fetch_chargeback_report", lambda *a, **k: malformed)
+
+    r = GrowthReporter(
+        api,
+        window="7d",
+        units="month",
+        platforms="em",
+        active_window="60d",
+        include_users=True,
+        leaderboard_top_n=5,
+    )
+
+    data = r.build([])  # must not raise
+    assert "people" not in data["sections"]

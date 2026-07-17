@@ -900,7 +900,14 @@ class GrowthReporter:
 
         sections = {"unified": unified_section, "products": products}
         if chargeback:
-            people_section = self._build_people_section(chargeback, now_ms)
+            try:
+                people_section = self._build_people_section(chargeback, now_ms)
+            except Exception as exc:
+                print(
+                    f"Warning: failed to build people section from chargeback data; "
+                    f"skipping people layer: {exc}"
+                )
+                people_section = None
             if people_section:
                 sections["people"] = people_section
 
