@@ -1020,6 +1020,7 @@ class GrowthReporter:
                 continue
 
             ws_counts: dict = defaultdict(float)
+            ws_trace_counts: dict = defaultdict(float)
 
             for project in tqdm(projects, desc=f"Opik {ws}", unit="proj", leave=False):
                 try:
@@ -1067,6 +1068,43 @@ class GrowthReporter:
                     )
                     for key, val in counts.items():
                         ws_counts[key] += val
+
+                    try:
+                        trace_resp = client.rest_client.projects.get_project_metrics(
+                            project.id,
+                            metric_type="TRACE_COUNT",
+                            interval=interval,
+                            interval_start=interval_start,
+                            interval_end=now,
+                        )
+                        trace_counts: dict = defaultdict(float)
+                        for result in trace_resp.results or []:
+                            for dp in result.data or []:
+                                trace_counts[
+                                    format_time_key(dp.time, self.units)
+                                ] += _as_float(dp.value)
+
+                        usage.append(
+                            UsageMetric(
+                                platform="opik",
+                                workspace=ws,
+                                metric="TRACE_COUNT",
+                                value=sum(trace_counts.values()),
+                                project=project.name,
+                                series=(
+                                    continuous_series(dict(trace_counts), self.units)
+                                    if trace_counts
+                                    else []
+                                ),
+                            )
+                        )
+                        for key, val in trace_counts.items():
+                            ws_trace_counts[key] += val
+                    except Exception as exc:
+                        print(
+                            f"Warning: failed to collect Opik TRACE_COUNT for "
+                            f"{ws}/{getattr(project, 'name', '?')}: {exc}"
+                        )
                 except Exception as exc:
                     print(
                         f"Warning: failed to collect Opik project "
@@ -1077,6 +1115,15 @@ class GrowthReporter:
             usage.append(
                 self._workspace_usage_metric(
                     "opik", "SPAN_COUNT", ws, sum(ws_counts.values()), ws_counts
+                )
+            )
+            usage.append(
+                self._workspace_usage_metric(
+                    "opik",
+                    "TRACE_COUNT",
+                    ws,
+                    sum(ws_trace_counts.values()),
+                    ws_trace_counts,
                 )
             )
 

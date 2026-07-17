@@ -502,6 +502,72 @@ def test_collect_opik_skips_bad_workspace_and_continues(
     assert any(m.workspace == "ws_good" and m.metric == "SPAN_COUNT" for m in usage)
 
 
+@requires_opik
+def test_collect_opik_emits_trace_count_alongside_spans():
+    import datetime
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    api = MagicMock()
+    api.config = {"comet.api_key": "K", "comet.url_override": "https://c.example.com"}
+
+    proj = MagicMock()
+    proj.name = "proj-1"
+    proj.id = "pid-1"
+    proj.created_at = datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc)
+
+    def _metrics(project_id, metric_type, interval, interval_start, interval_end):
+        dp = MagicMock(time=datetime.datetime(2026, 6, 2, tzinfo=datetime.timezone.utc),
+                       value=(10 if metric_type == "SPAN_COUNT" else 3))
+        result = MagicMock(data=[dp])
+        return MagicMock(results=[result])
+
+    client = MagicMock()
+    page = MagicMock(content=[proj], total=1)
+    client.rest_client.projects.find_projects.return_value = page
+    client.rest_client.projects.get_project_metrics.side_effect = _metrics
+
+    with patch("opik.Opik", return_value=client), \
+         patch("cometx.cli.smoke_test.get_opik_config", return_value="https://c.example.com"):
+        r = GrowthReporter(api, window="7d", units="month", platforms="opik")
+        events, usage = r._collect_opik(["wsA"])
+
+    metrics = {(m.metric, m.project) for m in usage}
+    assert ("SPAN_COUNT", "proj-1") in metrics
+    assert ("TRACE_COUNT", "proj-1") in metrics
+    # workspace roll-ups (project=None) exist for both
+    assert ("SPAN_COUNT", None) in metrics
+    assert ("TRACE_COUNT", None) in metrics
+
+
+@requires_opik
+def test_collect_opik_trace_failure_keeps_spans():
+    import datetime
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    api = MagicMock()
+    api.config = {"comet.api_key": "K", "comet.url_override": "https://c.example.com"}
+    proj = MagicMock(); proj.name = "p"; proj.id = "id"
+    proj.created_at = datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc)
+
+    def _metrics(project_id, metric_type, interval, interval_start, interval_end):
+        if metric_type == "TRACE_COUNT":
+            raise RuntimeError("traces boom")
+        dp = MagicMock(time=datetime.datetime(2026, 6, 2, tzinfo=datetime.timezone.utc), value=5)
+        return MagicMock(results=[MagicMock(data=[dp])])
+
+    client = MagicMock()
+    client.rest_client.projects.find_projects.return_value = MagicMock(content=[proj], total=1)
+    client.rest_client.projects.get_project_metrics.side_effect = _metrics
+
+    with patch("opik.Opik", return_value=client), \
+         patch("cometx.cli.smoke_test.get_opik_config", return_value="https://c.example.com"):
+        r = GrowthReporter(api, window="7d", units="month", platforms="opik")
+        events, usage = r._collect_opik(["wsA"])
+
+    assert any(m.metric == "SPAN_COUNT" and m.project == "p" for m in usage)
+    assert not any(m.metric == "TRACE_COUNT" and m.project == "p" for m in usage)
+
+
 def test_collect_opik_missing_dependency_returns_empty(monkeypatch):
     import builtins
 
