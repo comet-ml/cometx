@@ -226,7 +226,11 @@ def classify_accounts(users, service_account_names=None) -> dict:
         bucket["data"] += user.data_logged_mb or 0
         bucket["spans"] += user.opik_span_count or 0
 
-    return {"personal": totals["personal"], "service": totals["service"], "source": source}
+    return {
+        "personal": totals["personal"],
+        "service": totals["service"],
+        "source": source,
+    }
 
 
 def _ms_to_dt(ms: int) -> "datetime.datetime":
@@ -311,7 +315,9 @@ def active_series(
     for key, bucket_end_ms, existing in _iter_buckets(users, units, now_ms):
         total = len(existing)
         active = sum(
-            1 for u in existing if _within_window(u.last_used_at, bucket_end_ms, window_ms)
+            1
+            for u in existing
+            if _within_window(u.last_used_at, bucket_end_ms, window_ms)
         )
         points.append({"key": key, "values": {"total": total, "active": active}})
     return points

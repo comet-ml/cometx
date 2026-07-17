@@ -505,6 +505,7 @@ def test_collect_opik_skips_bad_workspace_and_continues(
 @requires_opik
 def test_collect_opik_emits_trace_count_alongside_spans():
     import datetime
+
     from cometx.cli.admin_growth_report import GrowthReporter
 
     api = MagicMock()
@@ -516,8 +517,10 @@ def test_collect_opik_emits_trace_count_alongside_spans():
     proj.created_at = datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc)
 
     def _metrics(project_id, metric_type, interval, interval_start, interval_end):
-        dp = MagicMock(time=datetime.datetime(2026, 6, 2, tzinfo=datetime.timezone.utc),
-                       value=(10 if metric_type == "SPAN_COUNT" else 3))
+        dp = MagicMock(
+            time=datetime.datetime(2026, 6, 2, tzinfo=datetime.timezone.utc),
+            value=(10 if metric_type == "SPAN_COUNT" else 3),
+        )
         result = MagicMock(data=[dp])
         return MagicMock(results=[result])
 
@@ -526,8 +529,9 @@ def test_collect_opik_emits_trace_count_alongside_spans():
     client.rest_client.projects.find_projects.return_value = page
     client.rest_client.projects.get_project_metrics.side_effect = _metrics
 
-    with patch("opik.Opik", return_value=client), \
-         patch("cometx.cli.smoke_test.get_opik_config", return_value="https://c.example.com"):
+    with patch("opik.Opik", return_value=client), patch(
+        "cometx.cli.smoke_test.get_opik_config", return_value="https://c.example.com"
+    ):
         r = GrowthReporter(api, window="7d", units="month", platforms="opik")
         events, usage = r._collect_opik(["wsA"])
 
@@ -542,25 +546,33 @@ def test_collect_opik_emits_trace_count_alongside_spans():
 @requires_opik
 def test_collect_opik_trace_failure_keeps_spans():
     import datetime
+
     from cometx.cli.admin_growth_report import GrowthReporter
 
     api = MagicMock()
     api.config = {"comet.api_key": "K", "comet.url_override": "https://c.example.com"}
-    proj = MagicMock(); proj.name = "p"; proj.id = "id"
+    proj = MagicMock()
+    proj.name = "p"
+    proj.id = "id"
     proj.created_at = datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc)
 
     def _metrics(project_id, metric_type, interval, interval_start, interval_end):
         if metric_type == "TRACE_COUNT":
             raise RuntimeError("traces boom")
-        dp = MagicMock(time=datetime.datetime(2026, 6, 2, tzinfo=datetime.timezone.utc), value=5)
+        dp = MagicMock(
+            time=datetime.datetime(2026, 6, 2, tzinfo=datetime.timezone.utc), value=5
+        )
         return MagicMock(results=[MagicMock(data=[dp])])
 
     client = MagicMock()
-    client.rest_client.projects.find_projects.return_value = MagicMock(content=[proj], total=1)
+    client.rest_client.projects.find_projects.return_value = MagicMock(
+        content=[proj], total=1
+    )
     client.rest_client.projects.get_project_metrics.side_effect = _metrics
 
-    with patch("opik.Opik", return_value=client), \
-         patch("cometx.cli.smoke_test.get_opik_config", return_value="https://c.example.com"):
+    with patch("opik.Opik", return_value=client), patch(
+        "cometx.cli.smoke_test.get_opik_config", return_value="https://c.example.com"
+    ):
         r = GrowthReporter(api, window="7d", units="month", platforms="opik")
         events, usage = r._collect_opik(["wsA"])
 
@@ -1767,18 +1779,37 @@ def test_generate_growth_report_full_chain_all_platforms(monkeypatch, tmp_path):
 
 
 def test_people_section_built_from_chargeback():
-    import datetime
     from cometx.cli.admin_growth_report import GrowthReporter
 
     api = MagicMock()
     api.config = {"comet.url_override": "https://c.example.com"}
     api.api_key = "K"
-    cb = {"workspaces": [], "users": {"licensedUsers": [
-        {"username": "alice", "email": "a@x", "lastUsedAt": 4_000, "createdAt": 1,
-         "experimentCount": 5, "dataLoggedMb": 1.0, "opikSpanCount": 9, "suspended": False},
-    ]}}
-    r = GrowthReporter(api, window="7d", units="month", platforms="em",
-                       active_window="60d", include_users=True, leaderboard_top_n=5)
+    cb = {
+        "workspaces": [],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "alice",
+                    "email": "a@x",
+                    "lastUsedAt": 4_000,
+                    "createdAt": 1,
+                    "experimentCount": 5,
+                    "dataLoggedMb": 1.0,
+                    "opikSpanCount": 9,
+                    "suspended": False,
+                },
+            ]
+        },
+    }
+    r = GrowthReporter(
+        api,
+        window="7d",
+        units="month",
+        platforms="em",
+        active_window="60d",
+        include_users=True,
+        leaderboard_top_n=5,
+    )
     section = r._build_people_section(cb, now_ms=4_500)
     assert section["title"].startswith("Users")
     labels = [k["label"] for k in section["kpis"]]
@@ -1788,11 +1819,14 @@ def test_people_section_built_from_chargeback():
 
 def test_include_users_false_skips_people(monkeypatch):
     from cometx.cli.admin_growth_report import GrowthReporter
+
     api = MagicMock()
-    r = GrowthReporter(api, window="7d", units="month", platforms="em",
-                       include_users=False)
+    r = GrowthReporter(
+        api, window="7d", units="month", platforms="em", include_users=False
+    )
     # build() must not call fetch_chargeback_report when include_users is False
     import cometx.cli.admin_growth_report as agr
+
     called = {"n": 0}
     monkeypatch.setattr(
         agr,
@@ -1808,8 +1842,8 @@ def test_include_users_false_skips_people(monkeypatch):
 def test_malformed_chargeback_degrades_people_section_without_crashing(monkeypatch):
     """A chargeback fetch that succeeds but returns a shape parse_users()
     cannot handle must degrade to no people section, not crash build()."""
-    from cometx.cli.admin_growth_report import GrowthReporter
     import cometx.cli.admin_growth_report as agr
+    from cometx.cli.admin_growth_report import GrowthReporter
 
     api = MagicMock()
     api.config = {"comet.url_override": "https://c.example.com"}
@@ -1838,28 +1872,38 @@ def test_malformed_chargeback_degrades_people_section_without_crashing(monkeypat
 
 def test_leaderboards_rank_workspaces_top_n():
     from cometx.cli.admin_growth_report import GrowthReporter, UsageMetric
+
     api = MagicMock()
-    r = GrowthReporter(api, window="7d", units="month", platforms="em", leaderboard_top_n=2)
+    r = GrowthReporter(
+        api, window="7d", units="month", platforms="em", leaderboard_top_n=2
+    )
     usage = [
         UsageMetric("em", "wsA", "EXPERIMENT_COUNT", 100, project=None, series=[]),
         UsageMetric("em", "wsB", "EXPERIMENT_COUNT", 50, project=None, series=[]),
         UsageMetric("em", "wsC", "EXPERIMENT_COUNT", 10, project=None, series=[]),
     ]
     section = r._build_leaderboards_section(
-        usage=usage, users=[], ran={"em": True, "opik": False, "mpm": False})
+        usage=usage, users=[], ran={"em": True, "opik": False, "mpm": False}
+    )
     charts = section["charts"]
     # a workspace-by-experiments groupedBarsH exists, top-2 only
-    exp_chart = next(c for c in charts if "experiment" in c["title"].lower() and "top" in c["title"].lower())
+    exp_chart = next(
+        c
+        for c in charts
+        if "experiment" in c["title"].lower() and "top" in c["title"].lower()
+    )
     rows = exp_chart["data"]["rows"]
     assert [row["label"] for row in rows] == ["wsA", "wsB"]
 
 
 def test_leaderboards_omit_platform_that_did_not_run():
     from cometx.cli.admin_growth_report import GrowthReporter
+
     api = MagicMock()
     r = GrowthReporter(api, window="7d", units="month", platforms="em")
-    section = r._build_leaderboards_section(usage=[], users=[],
-        ran={"em": False, "opik": False, "mpm": False})
+    section = r._build_leaderboards_section(
+        usage=[], users=[], ran={"em": False, "opik": False, "mpm": False}
+    )
     assert section is None or not section.get("charts")
 
 
@@ -1931,12 +1975,31 @@ def test_build_personal_vs_service_section_admin_api_source():
 
     api = MagicMock()
     r = GrowthReporter(api, window="7d", units="month", platforms="em")
-    cb = {"workspaces": [], "users": {"licensedUsers": [
-        {"username": "alice", "email": "a@x", "experimentCount": 40, "dataLoggedMb": 1.0,
-         "opikSpanCount": 5, "lastUsedAt": 1, "suspended": False},
-        {"username": "bob", "email": "b@x", "experimentCount": 1, "dataLoggedMb": 0.0,
-         "opikSpanCount": 0, "lastUsedAt": 1, "suspended": False},
-    ]}}
+    cb = {
+        "workspaces": [],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "alice",
+                    "email": "a@x",
+                    "experimentCount": 40,
+                    "dataLoggedMb": 1.0,
+                    "opikSpanCount": 5,
+                    "lastUsedAt": 1,
+                    "suspended": False,
+                },
+                {
+                    "username": "bob",
+                    "email": "b@x",
+                    "experimentCount": 1,
+                    "dataLoggedMb": 0.0,
+                    "opikSpanCount": 0,
+                    "lastUsedAt": 1,
+                    "suspended": False,
+                },
+            ]
+        },
+    }
     users = parse_users(cb)
 
     section = r._build_personal_vs_service_section(users, service_account_names={"bob"})
@@ -1954,12 +2017,27 @@ def test_build_personal_vs_service_section_heuristic_fallback_omits_empty_metric
 
     api = MagicMock()
     r = GrowthReporter(api, window="7d", units="month", platforms="em")
-    cb = {"workspaces": [], "users": {"licensedUsers": [
-        {"username": "svc-pipeline", "email": "p@x", "experimentCount": 3, "dataLoggedMb": 0.0,
-         "lastUsedAt": 1},
-        {"username": "dana", "email": "d@x", "experimentCount": 7, "dataLoggedMb": 0.0,
-         "lastUsedAt": 1},
-    ]}}
+    cb = {
+        "workspaces": [],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "svc-pipeline",
+                    "email": "p@x",
+                    "experimentCount": 3,
+                    "dataLoggedMb": 0.0,
+                    "lastUsedAt": 1,
+                },
+                {
+                    "username": "dana",
+                    "email": "d@x",
+                    "experimentCount": 7,
+                    "dataLoggedMb": 0.0,
+                    "lastUsedAt": 1,
+                },
+            ]
+        },
+    }
     users = parse_users(cb)
 
     section = r._build_personal_vs_service_section(users, service_account_names=None)
@@ -1984,44 +2062,83 @@ def test_assemble_report_data_wires_personal_vs_service_section(monkeypatch):
     """build() end-to-end: chargeback present -> personal_vs_service section
     appears in report_data["sections"], sourced from the admin API when
     _fetch_service_accounts succeeds."""
-    from cometx.cli.admin_growth_report import GrowthReporter
     import cometx.cli.admin_growth_report as agr
+    from cometx.cli.admin_growth_report import GrowthReporter
 
     api = MagicMock()
     api.config = {"comet.url_override": "https://c.example.com"}
     api.api_key = "K"
     api.get_workspaces.return_value = []
-    cb = {"workspaces": [], "users": {"licensedUsers": [
-        {"username": "alice", "email": "a@x", "experimentCount": 40, "dataLoggedMb": 1.0,
-         "opikSpanCount": 5, "lastUsedAt": 1, "suspended": False},
-        {"username": "bob", "email": "b@x", "experimentCount": 1, "dataLoggedMb": 0.0,
-         "opikSpanCount": 0, "lastUsedAt": 1, "suspended": False},
-    ]}}
+    cb = {
+        "workspaces": [],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "alice",
+                    "email": "a@x",
+                    "experimentCount": 40,
+                    "dataLoggedMb": 1.0,
+                    "opikSpanCount": 5,
+                    "lastUsedAt": 1,
+                    "suspended": False,
+                },
+                {
+                    "username": "bob",
+                    "email": "b@x",
+                    "experimentCount": 1,
+                    "dataLoggedMb": 0.0,
+                    "opikSpanCount": 0,
+                    "lastUsedAt": 1,
+                    "suspended": False,
+                },
+            ]
+        },
+    }
     monkeypatch.setattr(agr, "fetch_chargeback_report", lambda *a, **k: cb)
     monkeypatch.setattr(agr, "_fetch_service_accounts", lambda api: {"bob"})
 
-    r = GrowthReporter(api, window="7d", units="month", platforms="em",
-                        active_window="60d", include_users=True, leaderboard_top_n=5)
+    r = GrowthReporter(
+        api,
+        window="7d",
+        units="month",
+        platforms="em",
+        active_window="60d",
+        include_users=True,
+        leaderboard_top_n=5,
+    )
     data = r.build([])
 
     section = data["sections"]["personal_vs_service"]
     assert "admin API" in section["hint"]
 
 
-def test_assemble_report_data_degrades_personal_vs_service_without_crashing(monkeypatch):
+def test_assemble_report_data_degrades_personal_vs_service_without_crashing(
+    monkeypatch,
+):
     """If _fetch_service_accounts (or the section builder) blows up, build()
     must not crash -- the section is simply omitted."""
-    from cometx.cli.admin_growth_report import GrowthReporter
     import cometx.cli.admin_growth_report as agr
+    from cometx.cli.admin_growth_report import GrowthReporter
 
     api = MagicMock()
     api.config = {"comet.url_override": "https://c.example.com"}
     api.api_key = "K"
     api.get_workspaces.return_value = []
-    cb = {"workspaces": [], "users": {"licensedUsers": [
-        {"username": "alice", "email": "a@x", "experimentCount": 1, "dataLoggedMb": 0.0,
-         "lastUsedAt": 1, "suspended": False},
-    ]}}
+    cb = {
+        "workspaces": [],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "alice",
+                    "email": "a@x",
+                    "experimentCount": 1,
+                    "dataLoggedMb": 0.0,
+                    "lastUsedAt": 1,
+                    "suspended": False,
+                },
+            ]
+        },
+    }
     monkeypatch.setattr(agr, "fetch_chargeback_report", lambda *a, **k: cb)
 
     def _boom(api):
@@ -2029,8 +2146,15 @@ def test_assemble_report_data_degrades_personal_vs_service_without_crashing(monk
 
     monkeypatch.setattr(agr, "_fetch_service_accounts", _boom)
 
-    r = GrowthReporter(api, window="7d", units="month", platforms="em",
-                        active_window="60d", include_users=True, leaderboard_top_n=5)
+    r = GrowthReporter(
+        api,
+        window="7d",
+        units="month",
+        platforms="em",
+        active_window="60d",
+        include_users=True,
+        leaderboard_top_n=5,
+    )
     data = r.build([])  # must not raise
 
     assert "personal_vs_service" not in data["sections"]
@@ -2038,16 +2162,30 @@ def test_assemble_report_data_degrades_personal_vs_service_without_crashing(monk
 
 def test_exclude_personal_filters_by_pattern():
     from cometx.cli.admin_growth_report import GrowthReporter
+
     api = MagicMock()
-    r = GrowthReporter(api, window="7d", units="month", platforms="em",
-                       exclude_personal=True, personal_pattern=r"^user-")
+    r = GrowthReporter(
+        api,
+        window="7d",
+        units="month",
+        platforms="em",
+        exclude_personal=True,
+        personal_pattern=r"^user-",
+    )
     kept = r._filter_personal(["team-a", "user-alice", "team-b"])
     assert kept == ["team-a", "team-b"]
 
 
 def test_exclude_personal_without_pattern_is_noop():
     from cometx.cli.admin_growth_report import GrowthReporter
+
     api = MagicMock()
-    r = GrowthReporter(api, window="7d", units="month", platforms="em",
-                       exclude_personal=True, personal_pattern=None)
+    r = GrowthReporter(
+        api,
+        window="7d",
+        units="month",
+        platforms="em",
+        exclude_personal=True,
+        personal_pattern=None,
+    )
     assert r._filter_personal(["a", "b"]) == ["a", "b"]

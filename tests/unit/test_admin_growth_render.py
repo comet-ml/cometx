@@ -9,21 +9,30 @@ def test_lines_kind_registered_and_panel_renders():
             "people": {
                 "title": "Users / People",
                 "kpis": [],
-                "charts": [{
-                    "id": "chart-people-adoption",
-                    "kind": "lines",
-                    "title": "Adoption rate",
-                    "data": {
-                        "categories": ["overall", "opik"],
-                        "labels": {"overall": "Overall", "opik": "Opik"},
-                        "colors": ["--accent", "--ok"],
-                        "points": [
-                            {"key": "2026-06", "values": {"overall": 10.0, "opik": 4.0}},
-                            {"key": "2026-07", "values": {"overall": 12.0, "opik": 6.0}},
-                        ],
-                        "window_start": None, "window_end": None,
-                    },
-                }],
+                "charts": [
+                    {
+                        "id": "chart-people-adoption",
+                        "kind": "lines",
+                        "title": "Adoption rate",
+                        "data": {
+                            "categories": ["overall", "opik"],
+                            "labels": {"overall": "Overall", "opik": "Opik"},
+                            "colors": ["--accent", "--ok"],
+                            "points": [
+                                {
+                                    "key": "2026-06",
+                                    "values": {"overall": 10.0, "opik": 4.0},
+                                },
+                                {
+                                    "key": "2026-07",
+                                    "values": {"overall": 12.0, "opik": 6.0},
+                                },
+                            ],
+                            "window_start": None,
+                            "window_end": None,
+                        },
+                    }
+                ],
                 "table": None,
             }
         },

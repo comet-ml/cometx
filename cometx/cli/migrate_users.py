@@ -218,10 +218,9 @@ def _add_member(url, headers, email, workspace_name):
         except ValueError:
             error_msg = response.text
 
-        is_already_member = (
-            isinstance(error_msg, dict)
-            and "already member of" in error_msg.get("msg", "")
-        )
+        is_already_member = isinstance(
+            error_msg, dict
+        ) and "already member of" in error_msg.get("msg", "")
         if is_already_member:
             return "already_member", None
 
@@ -379,8 +378,7 @@ def migrate_users(parsed_args):
             if ws_failed:
                 parts.append(f"{ws_failed} failed")
             print(
-                parts[0]
-                + (" (" + ", ".join(parts[1:]) + ")" if len(parts) > 1 else "")
+                parts[0] + (" (" + ", ".join(parts[1:]) + ")" if len(parts) > 1 else "")
             )
 
     print(f"\n{'=' * 60}")

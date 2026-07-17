@@ -403,7 +403,9 @@ class GrowthReporter:
                 print("Collecting users/people data (chargeback report)...")
                 chargeback = fetch_chargeback_report(self.api)
             except Exception as exc:
-                print(f"Warning: failed to fetch chargeback report; skipping people layer: {exc}")
+                print(
+                    f"Warning: failed to fetch chargeback report; skipping people layer: {exc}"
+                )
                 chargeback = None
 
         print("Building report...")
@@ -1078,15 +1080,13 @@ class GrowthReporter:
 
                 ranked_desc = sorted(ws_metrics, key=lambda m: m.value, reverse=True)
                 top_rows = [
-                    {"label": m.workspace, "value": m.value}
-                    for m in ranked_desc[:n]
+                    {"label": m.workspace, "value": m.value} for m in ranked_desc[:n]
                 ]
                 active_asc = sorted(
                     (m for m in ws_metrics if m.value > 0), key=lambda m: m.value
                 )
                 bottom_rows = [
-                    {"label": m.workspace, "value": m.value}
-                    for m in active_asc[:n]
+                    {"label": m.workspace, "value": m.value} for m in active_asc[:n]
                 ]
 
                 slug = f"{platform}-{metric.lower()}"
@@ -1241,9 +1241,7 @@ class GrowthReporter:
                 usage, leaderboard_users, ran
             )
         except Exception as exc:
-            print(
-                f"Warning: failed to build leaderboards section; skipping: {exc}"
-            )
+            print(f"Warning: failed to build leaderboards section; skipping: {exc}")
             leaderboards_section = None
         if leaderboards_section:
             sections["leaderboards"] = leaderboards_section
