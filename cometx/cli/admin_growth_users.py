@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import re
 
 from cometx.utils import format_time_key, get_next_time_key, parse_time_key
 
@@ -149,6 +150,70 @@ def bottom_users(users, key: str, n: int) -> "list[UserRecord]":
     scored = [(u, v) for u, v in scored if v is not None and v > 0]
     scored.sort(key=lambda pair: pair[1])
     return [u for u, _ in scored[:n]]
+
+
+# Labeled regex fallback used by `classify_accounts` when the admin
+# `/admin/service-accounts` endpoint is unavailable (disabled, 403/404, or
+# any other fetch failure). Matched case-insensitively against username OR
+# email, since either field may carry the naming convention.
+_SERVICE_ACCOUNT_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"svc-",
+        r"sa-",
+        r"-service-account",
+        r"bot-",
+        r"sagemaker-integration\.com",
+    )
+]
+
+
+def _looks_like_service_account(user: UserRecord) -> bool:
+    """Heuristic-only check (used when no authoritative service-account set
+    is available): does the username or email match one of the known
+    service-account naming conventions."""
+    haystack = "{} {}".format(user.username or "", user.email or "")
+    return any(pattern.search(haystack) for pattern in _SERVICE_ACCOUNT_PATTERNS)
+
+
+def classify_accounts(users, service_account_names=None) -> dict:
+    """Split all NON-DELETED users into "personal" vs "service" buckets and
+    sum experiments / data / spans across each bucket (suspended users are
+    still non-deleted, so they are included in whichever bucket they land
+    in; their own metrics are typically 0 either way).
+
+    `service_account_names`, when a set, is the authoritative list fetched
+    from the admin `/admin/service-accounts` endpoint: membership in that
+    set (by `username`) decides the split, and `source` is reported as
+    "admin_api". When it is `None` (the endpoint failed, was disabled, or
+    isn't present in this deployment), falls back to a labeled regex
+    heuristic (`_looks_like_service_account`) and reports `source` as
+    "heuristic" so callers can surface which method produced the split.
+    """
+    if service_account_names is not None:
+        source = "admin_api"
+
+        def is_service(user: UserRecord) -> bool:
+            return user.username in service_account_names
+
+    else:
+        source = "heuristic"
+        is_service = _looks_like_service_account
+
+    totals = {
+        "personal": {"experiments": 0, "data": 0, "spans": 0},
+        "service": {"experiments": 0, "data": 0, "spans": 0},
+    }
+
+    for user in users:
+        if user.deleted_at is not None:
+            continue
+        bucket = totals["service"] if is_service(user) else totals["personal"]
+        bucket["experiments"] += user.experiment_count or 0
+        bucket["data"] += user.data_logged_mb or 0
+        bucket["spans"] += user.opik_span_count or 0
+
+    return {"personal": totals["personal"], "service": totals["service"], "source": source}
 
 
 def _ms_to_dt(ms: int) -> "datetime.datetime":

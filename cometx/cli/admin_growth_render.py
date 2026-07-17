@@ -498,6 +498,7 @@ CLIENT_JS = """
     add(sections.unified);
     add(sections.people);
     add(sections.leaderboards);
+    add(sections.personal_vs_service);
     var products = sections.products || {};
     ["opik", "em", "mpm"].forEach(function(k){
       var prod = products[k]; if(!prod) return;
@@ -694,6 +695,7 @@ def build_html(report_data: dict) -> str:
         render_section(sections.get("unified")),
         render_section(sections.get("people")),
         render_section(sections.get("leaderboards")),
+        render_section(sections.get("personal_vs_service")),
     ]
 
     for key in PLATFORM_ORDER:

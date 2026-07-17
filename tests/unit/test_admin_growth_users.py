@@ -79,3 +79,23 @@ def test_capability_series_none_when_no_capability_fields():
     cb = {"workspaces": [], "users": {"licensedUsers": [
         {"username": "x", "email": "x", "lastUsedAt": NOW, "createdAt": NOW - 1}]}}
     assert capability_series(parse_users(cb), units="month", now_ms=NOW, active_window_days=30) is None
+
+
+def test_classify_accounts_uses_service_account_set():
+    from cometx.cli.admin_growth_users import parse_users, classify_accounts
+    users = parse_users(_cb())
+    out = classify_accounts(users, service_account_names={"bob"})
+    assert out["service"]["experiments"] == 1   # bob
+    assert out["personal"]["experiments"] == 40  # alice (carol suspended still counts data? no: include all non-deleted)
+
+
+def test_classify_accounts_regex_fallback_labeled():
+    from cometx.cli.admin_growth_users import parse_users, classify_accounts
+    cb = {"workspaces": [], "users": {"licensedUsers": [
+        {"username": "svc-pipeline", "email": "p@x", "experimentCount": 3, "lastUsedAt": 1},
+        {"username": "dana", "email": "d@x", "experimentCount": 7, "lastUsedAt": 1}]}}
+    users = parse_users(cb)
+    out = classify_accounts(users, service_account_names=None)
+    assert out["service"]["experiments"] == 3
+    assert out["personal"]["experiments"] == 7
+    assert out["source"] == "heuristic"

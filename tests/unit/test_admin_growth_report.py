@@ -1861,3 +1861,142 @@ def test_leaderboards_omit_platform_that_did_not_run():
     section = r._build_leaderboards_section(usage=[], users=[],
         ran={"em": False, "opik": False, "mpm": False})
     assert section is None or not section.get("charts")
+
+
+def test_fetch_service_accounts_parses_name_list():
+    from cometx.cli.admin_growth_report import _fetch_service_accounts
+
+    api = MagicMock()
+    api.config = {"comet.url_override": "https://c.example.com"}
+    api.api_key = "K"
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = {"serviceAccounts": [{"name": "svc-a"}, {"name": "svc-b"}]}
+    api._client.get.return_value = resp
+
+    names = _fetch_service_accounts(api)
+
+    assert names == {"svc-a", "svc-b"}
+    called_url = api._client.get.call_args[0][0]
+    assert called_url == "https://c.example.com/api/admin/service-accounts"
+
+
+def test_fetch_service_accounts_returns_none_on_failure():
+    from cometx.cli.admin_growth_report import _fetch_service_accounts
+
+    api = MagicMock()
+    api.config = {"comet.url_override": "https://c.example.com"}
+    api.api_key = "K"
+    api._client.get.side_effect = RuntimeError("boom")
+
+    assert _fetch_service_accounts(api) is None
+
+
+def test_build_personal_vs_service_section_admin_api_source():
+    from cometx.cli.admin_growth_report import GrowthReporter
+    from cometx.cli.admin_growth_users import parse_users
+
+    api = MagicMock()
+    r = GrowthReporter(api, window="7d", units="month", platforms="em")
+    cb = {"workspaces": [], "users": {"licensedUsers": [
+        {"username": "alice", "email": "a@x", "experimentCount": 40, "dataLoggedMb": 1.0,
+         "opikSpanCount": 5, "lastUsedAt": 1, "suspended": False},
+        {"username": "bob", "email": "b@x", "experimentCount": 1, "dataLoggedMb": 0.0,
+         "opikSpanCount": 0, "lastUsedAt": 1, "suspended": False},
+    ]}}
+    users = parse_users(cb)
+
+    section = r._build_personal_vs_service_section(users, service_account_names={"bob"})
+
+    assert section["title"] == "Personal vs. service accounts"
+    assert "admin API" in section["hint"]
+    exp_chart = next(c for c in section["charts"] if "experiments" in c["title"])
+    rows = {row["label"]: row["value"] for row in exp_chart["data"]["rows"]}
+    assert rows == {"Personal": 40, "Service": 1}
+
+
+def test_build_personal_vs_service_section_heuristic_fallback_omits_empty_metric():
+    from cometx.cli.admin_growth_report import GrowthReporter
+    from cometx.cli.admin_growth_users import parse_users
+
+    api = MagicMock()
+    r = GrowthReporter(api, window="7d", units="month", platforms="em")
+    cb = {"workspaces": [], "users": {"licensedUsers": [
+        {"username": "svc-pipeline", "email": "p@x", "experimentCount": 3, "dataLoggedMb": 0.0,
+         "lastUsedAt": 1},
+        {"username": "dana", "email": "d@x", "experimentCount": 7, "dataLoggedMb": 0.0,
+         "lastUsedAt": 1},
+    ]}}
+    users = parse_users(cb)
+
+    section = r._build_personal_vs_service_section(users, service_account_names=None)
+
+    assert "heuristic" in section["hint"]
+    # No user has opik_span_count set -> spans metric all-zero -> omitted
+    assert all("spans" not in c["title"] for c in section["charts"])
+    exp_chart = next(c for c in section["charts"] if "experiments" in c["title"])
+    rows = {row["label"]: row["value"] for row in exp_chart["data"]["rows"]}
+    assert rows == {"Personal": 7, "Service": 3}
+
+
+def test_build_personal_vs_service_section_none_when_no_users():
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    api = MagicMock()
+    r = GrowthReporter(api, window="7d", units="month", platforms="em")
+    assert r._build_personal_vs_service_section([], service_account_names=None) is None
+
+
+def test_assemble_report_data_wires_personal_vs_service_section(monkeypatch):
+    """build() end-to-end: chargeback present -> personal_vs_service section
+    appears in report_data["sections"], sourced from the admin API when
+    _fetch_service_accounts succeeds."""
+    from cometx.cli.admin_growth_report import GrowthReporter
+    import cometx.cli.admin_growth_report as agr
+
+    api = MagicMock()
+    api.config = {"comet.url_override": "https://c.example.com"}
+    api.api_key = "K"
+    api.get_workspaces.return_value = []
+    cb = {"workspaces": [], "users": {"licensedUsers": [
+        {"username": "alice", "email": "a@x", "experimentCount": 40, "dataLoggedMb": 1.0,
+         "opikSpanCount": 5, "lastUsedAt": 1, "suspended": False},
+        {"username": "bob", "email": "b@x", "experimentCount": 1, "dataLoggedMb": 0.0,
+         "opikSpanCount": 0, "lastUsedAt": 1, "suspended": False},
+    ]}}
+    monkeypatch.setattr(agr, "fetch_chargeback_report", lambda *a, **k: cb)
+    monkeypatch.setattr(agr, "_fetch_service_accounts", lambda api: {"bob"})
+
+    r = GrowthReporter(api, window="7d", units="month", platforms="em",
+                        active_window="60d", include_users=True, leaderboard_top_n=5)
+    data = r.build([])
+
+    section = data["sections"]["personal_vs_service"]
+    assert "admin API" in section["hint"]
+
+
+def test_assemble_report_data_degrades_personal_vs_service_without_crashing(monkeypatch):
+    """If _fetch_service_accounts (or the section builder) blows up, build()
+    must not crash -- the section is simply omitted."""
+    from cometx.cli.admin_growth_report import GrowthReporter
+    import cometx.cli.admin_growth_report as agr
+
+    api = MagicMock()
+    api.config = {"comet.url_override": "https://c.example.com"}
+    api.api_key = "K"
+    api.get_workspaces.return_value = []
+    cb = {"workspaces": [], "users": {"licensedUsers": [
+        {"username": "alice", "email": "a@x", "experimentCount": 1, "dataLoggedMb": 0.0,
+         "lastUsedAt": 1, "suspended": False},
+    ]}}
+    monkeypatch.setattr(agr, "fetch_chargeback_report", lambda *a, **k: cb)
+
+    def _boom(api):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(agr, "_fetch_service_accounts", _boom)
+
+    r = GrowthReporter(api, window="7d", units="month", platforms="em",
+                        active_window="60d", include_users=True, leaderboard_top_n=5)
+    data = r.build([])  # must not raise
+
+    assert "personal_vs_service" not in data["sections"]

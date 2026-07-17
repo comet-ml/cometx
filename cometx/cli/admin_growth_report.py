@@ -25,6 +25,7 @@ import datetime
 import os
 import re
 from collections import defaultdict
+from urllib.parse import urlparse
 
 from tqdm import tqdm
 
@@ -34,6 +35,7 @@ from cometx.cli.admin_growth_users import (
     adoption_stats,
     bottom_users,
     capability_series,
+    classify_accounts,
     parse_users,
     top_users,
 )
@@ -129,6 +131,56 @@ def _num(value):
     if isinstance(value, float) and value.is_integer():
         return int(value)
     return value
+
+
+def _extract_service_account_names(payload) -> "set[str]":
+    """Defensively unwrap the `/admin/service-accounts` response into a
+    flat set of account names, tolerating several plausible response
+    shapes since the exact schema isn't documented in this codebase: a
+    bare list of entries, or a dict wrapping that list under a common
+    container key (`serviceAccounts`, `accounts`, `users`). Each entry may
+    be a plain string, or a dict carrying the name under `name`,
+    `username`, or `email` (mirrors `_extract_licensed_users`'s defensive
+    style in `admin_growth_users.py`)."""
+    if isinstance(payload, dict):
+        for key in ("serviceAccounts", "accounts", "users"):
+            if key in payload:
+                payload = payload[key]
+                break
+    if not isinstance(payload, list):
+        return set()
+
+    names = set()
+    for entry in payload:
+        if isinstance(entry, str):
+            names.add(entry)
+        elif isinstance(entry, dict):
+            name = entry.get("name") or entry.get("username") or entry.get("email")
+            if name:
+                names.add(name)
+    return names
+
+
+def _fetch_service_accounts(api) -> "set[str] | None":
+    """Fetch the authoritative set of service-account names from the admin
+    `/admin/service-accounts` endpoint (same request shape as
+    `fetch_chargeback_report` in `cometx.utils`), for `classify_accounts`'s
+    admin_api path. Returns `None` on ANY failure -- endpoint disabled,
+    403/404, network error, unexpected response shape -- so callers
+    degrade to the labeled regex heuristic instead of crashing."""
+    try:
+        parsed = urlparse(api.config["comet.url_override"])
+        base = "%s://%s" % (parsed.scheme, parsed.netloc)
+        while base.endswith("/"):
+            base = base[:-1]
+        url = base + "/api/admin/service-accounts"
+        response = api._client.get(
+            url, headers={"Authorization": api.api_key}, params={}
+        )
+        payload = response.json()
+        return _extract_service_account_names(payload)
+    except Exception:
+        return None
 
 
 def _as_float(value):
@@ -1020,6 +1072,65 @@ class GrowthReporter:
 
         return {"title": "Leaderboards", "charts": charts}
 
+    # Personal-vs-service-account metrics, one groupedBarsH chart each:
+    # (classify_accounts totals key, plain label for the chart title).
+    _PERSONAL_VS_SERVICE_METRICS = [
+        ("experiments", "experiments"),
+        ("data", "data logged (MB)"),
+        ("spans", "Opik spans"),
+    ]
+
+    def _build_personal_vs_service_section(self, users, service_account_names):
+        """Personal-vs-service-account split (Task 8): one `groupedBarsH`
+        chart per metric (experiments / data / spans), each showing
+        Personal vs. Service totals via `classify_accounts`. A metric's
+        chart is omitted when both buckets are zero for it (nothing to
+        show). Returns `None` when `users` is empty or every metric is
+        all-zero (degrade, never render an empty section)."""
+        if not users:
+            return None
+
+        split = classify_accounts(users, service_account_names)
+        personal = split["personal"]
+        service = split["service"]
+        source = split["source"]
+
+        hint = (
+            "Source: service accounts from admin API."
+            if source == "admin_api"
+            else "Source: heuristic (regex); admin API service-account data unavailable."
+        )
+
+        charts = []
+        for key, label in self._PERSONAL_VS_SERVICE_METRICS:
+            personal_value = personal.get(key, 0)
+            service_value = service.get(key, 0)
+            if not personal_value and not service_value:
+                continue
+            charts.append(
+                {
+                    "id": f"chart-personal-vs-service-{key}",
+                    "kind": "groupedBarsH",
+                    "title": f"Personal vs. service accounts: {label}",
+                    "hint": hint,
+                    "data": {
+                        "rows": [
+                            {"label": "Personal", "value": _num(personal_value)},
+                            {"label": "Service", "value": _num(service_value)},
+                        ]
+                    },
+                }
+            )
+
+        if not charts:
+            return None
+
+        return {
+            "title": "Personal vs. service accounts",
+            "charts": charts,
+            "hint": hint,
+        }
+
     def _assemble_report_data(
         self, events, usage, ran, workspaces, window, chargeback=None, now_ms=None
     ):
@@ -1072,6 +1183,21 @@ class GrowthReporter:
             leaderboards_section = None
         if leaderboards_section:
             sections["leaderboards"] = leaderboards_section
+
+        try:
+            personal_vs_service_section = None
+            if leaderboard_users:
+                service_account_names = _fetch_service_accounts(self.api)
+                personal_vs_service_section = self._build_personal_vs_service_section(
+                    leaderboard_users, service_account_names
+                )
+        except Exception as exc:
+            print(
+                f"Warning: failed to build personal-vs-service section; skipping: {exc}"
+            )
+            personal_vs_service_section = None
+        if personal_vs_service_section:
+            sections["personal_vs_service"] = personal_vs_service_section
 
         return {
             "meta": {
