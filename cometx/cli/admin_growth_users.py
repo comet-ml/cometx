@@ -21,6 +21,9 @@ CLI wiring. Later tasks (fetch, render, CLI) import from this module.
 from __future__ import annotations
 
 import dataclasses
+import datetime
+
+from cometx.utils import format_time_key, get_next_time_key, parse_time_key
 
 
 @dataclasses.dataclass(frozen=True)
@@ -94,11 +97,20 @@ def parse_users(chargeback: dict) -> "list[UserRecord]":
     return records
 
 
+def _within_window(ts: "int | None", window_end_ms: int, window_ms: int) -> bool:
+    """True if timestamp `ts` falls within a rolling window of `window_ms`
+    size ending at `window_end_ms` (inclusive of both bounds). False if
+    `ts` is None (field absent for this user/capability)."""
+    if ts is None:
+        return False
+    return (window_end_ms - window_ms) <= ts <= window_end_ms
+
+
 def is_active(user: UserRecord, now_ms: int, active_window_days: int) -> bool:
     """True if `user.last_used_at` falls within the active window ending at
     `now_ms` (inclusive of both bounds)."""
     window_ms = active_window_days * 86400 * 1000
-    return (now_ms - window_ms) <= user.last_used_at <= now_ms
+    return _within_window(user.last_used_at, now_ms, window_ms)
 
 
 def adoption_stats(users, now_ms: int, active_window_days: int) -> dict:
@@ -137,3 +149,120 @@ def bottom_users(users, key: str, n: int) -> "list[UserRecord]":
     scored = [(u, v) for u, v in scored if v is not None and v > 0]
     scored.sort(key=lambda pair: pair[1])
     return [u for u, _ in scored[:n]]
+
+
+def _ms_to_dt(ms: int) -> "datetime.datetime":
+    """Epoch-ms -> tz-aware UTC datetime (matches the `_ms_to_utc` helper
+    in admin_growth_report.py; duplicated here to avoid a circular import,
+    since that module imports FROM this one)."""
+    return datetime.datetime.fromtimestamp(ms / 1000, tz=datetime.timezone.utc)
+
+
+def _dt_to_ms(dt: "datetime.datetime") -> int:
+    """Datetime -> epoch-ms. `parse_time_key` (from `cometx.utils`) returns
+    naive datetimes; treat those as UTC (consistent with `_ms_to_dt` above)
+    rather than the platform-local timezone that `.timestamp()` would
+    otherwise assume."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+def _bucket_keys(earliest_ms: int, now_ms: int, units: str) -> "list[str]":
+    """Zero-filled, ordered bucket keys from the bucket containing
+    `earliest_ms` through the bucket containing `now_ms`, inclusive.
+
+    Note: `continuous_series` (mentioned in the task brief) actually lives
+    in `admin_growth_report.py`, not `cometx.utils` -- and that module
+    imports FROM this one, so importing it back here would be circular.
+    This is the same zero-fill approach (via `get_next_time_key`), built
+    locally from the primitives that do live in `cometx.utils`
+    (`format_time_key`, `get_next_time_key`, `parse_time_key`)."""
+    start_key = format_time_key(_ms_to_dt(earliest_ms), units)
+    end_key = format_time_key(_ms_to_dt(now_ms), units)
+    keys = [start_key]
+    key = start_key
+    guard = 0
+    while key != end_key and guard < 100_000:
+        key = get_next_time_key(key, units)
+        keys.append(key)
+        guard += 1
+    return keys
+
+
+def _iter_buckets(users: "list[UserRecord]", units: str, now_ms: int):
+    """Yield `(key, bucket_end_ms, existing)` for each zero-filled bucket
+    from the earliest `created_at` through `now_ms`. `existing` is the
+    list of non-suspended users that had already been created (and not
+    yet deleted) as of `bucket_end_ms`. `bucket_end_ms` is capped at
+    `now_ms` so the current/last bucket reflects "as of now" rather than
+    the theoretical end of an in-progress period."""
+    created_times = [u.created_at for u in users if u.created_at is not None]
+    if not created_times:
+        return
+    earliest_ms = min(created_times)
+    if earliest_ms > now_ms:
+        earliest_ms = now_ms
+
+    for key in _bucket_keys(earliest_ms, now_ms, units):
+        next_key = get_next_time_key(key, units)
+        next_start_ms = _dt_to_ms(parse_time_key(next_key, units))
+        bucket_end_ms = min(next_start_ms - 1, now_ms)
+        existing = [
+            u
+            for u in users
+            if not u.suspended
+            and u.created_at is not None
+            and u.created_at <= bucket_end_ms
+            and (u.deleted_at is None or u.deleted_at >= bucket_end_ms)
+        ]
+        yield key, bucket_end_ms, existing
+
+
+def active_series(
+    users: "list[UserRecord]", units: str, now_ms: int, active_window_days: int
+) -> "list[dict]":
+    """One point per time bucket from the earliest `created_at` to `now_ms`:
+    `total` = non-suspended users existing (created and not-yet-deleted) as
+    of that bucket's end; `active` = the subset of those whose
+    `last_used_at` falls within a rolling `active_window_days` window
+    ending at that bucket's end. Returns `[]` if there are no users with a
+    known `created_at` (degrade, never crash)."""
+    window_ms = active_window_days * 86400 * 1000
+    points = []
+    for key, bucket_end_ms, existing in _iter_buckets(users, units, now_ms):
+        total = len(existing)
+        active = sum(
+            1 for u in existing if _within_window(u.last_used_at, bucket_end_ms, window_ms)
+        )
+        points.append({"key": key, "values": {"total": total, "active": active}})
+    return points
+
+
+def capability_series(
+    users: "list[UserRecord]", units: str, now_ms: int, active_window_days: int
+) -> "list[dict] | None":
+    """Like `active_series`, but per-capability: `em` = users active on EM
+    (`em_last_used_at` within the rolling window as of bucket-end); `opik`
+    = same for `opik_last_used_at`. Returns `None` when NO user in `users`
+    has either capability timestamp set (nothing to chart)."""
+    if not any(
+        u.em_last_used_at is not None or u.opik_last_used_at is not None for u in users
+    ):
+        return None
+
+    window_ms = active_window_days * 86400 * 1000
+    points = []
+    for key, bucket_end_ms, existing in _iter_buckets(users, units, now_ms):
+        em_active = sum(
+            1
+            for u in existing
+            if _within_window(u.em_last_used_at, bucket_end_ms, window_ms)
+        )
+        opik_active = sum(
+            1
+            for u in existing
+            if _within_window(u.opik_last_used_at, bucket_end_ms, window_ms)
+        )
+        points.append({"key": key, "values": {"em": em_active, "opik": opik_active}})
+    return points

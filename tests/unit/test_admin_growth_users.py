@@ -63,3 +63,19 @@ def test_top_users_absent_span_field_excluded():
     users = parse_users(cb)
     assert users[0].opik_span_count is None
     assert top_users(users, key="opik_span_count", n=5) == []  # nothing has the metric
+
+
+def test_active_series_buckets_total_and_active():
+    from cometx.cli.admin_growth_users import parse_users, active_series
+    users = parse_users(_cb())
+    pts = active_series(users, units="month", now_ms=NOW, active_window_days=30)
+    assert pts and all("total" in p["values"] and "active" in p["values"] for p in pts)
+    # last bucket total excludes suspended carol
+    assert pts[-1]["values"]["total"] == 2
+
+
+def test_capability_series_none_when_no_capability_fields():
+    from cometx.cli.admin_growth_users import parse_users, capability_series
+    cb = {"workspaces": [], "users": {"licensedUsers": [
+        {"username": "x", "email": "x", "lastUsedAt": NOW, "createdAt": NOW - 1}]}}
+    assert capability_series(parse_users(cb), units="month", now_ms=NOW, active_window_days=30) is None

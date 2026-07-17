@@ -29,7 +29,13 @@ from collections import defaultdict
 from tqdm import tqdm
 
 from cometx.cli.admin_growth_render import build_html, write_html
-from cometx.cli.admin_growth_users import adoption_stats, parse_users, top_users
+from cometx.cli.admin_growth_users import (
+    active_series,
+    adoption_stats,
+    capability_series,
+    parse_users,
+    top_users,
+)
 from cometx.utils import fetch_chargeback_report, format_time_key, get_next_time_key
 
 # `build_html` is re-exported here so the growth-report module is the single
@@ -802,9 +808,10 @@ class GrowthReporter:
 
     def _build_people_section(self, chargeback, now_ms):
         """Users/adoption section, derived from the chargeback report (Task
-        4 helpers). Minimal-but-real for this task: KPIs (Total / Active /
-        Adoption %) plus a single-bucket `lines` chart of active vs. total;
-        a richer over-time series is Task 6."""
+        4 helpers). KPIs (Total / Active / Adoption %) plus real over-time
+        `lines` charts: active-vs-total (Task 6's `active_series`), and,
+        when at least one user has an EM/Opik capability timestamp, a
+        per-capability active-users chart (`capability_series`)."""
         now = _ms_to_utc(now_ms)
         active_window_days = self._active_window_days(now)
 
@@ -820,34 +827,66 @@ class GrowthReporter:
             {"label": "Adoption %", "value": f"{stats['adoption_pct']}%"},
         ]
 
-        bucket_key = format_time_key(now, self.units)
-        categories = ["active", "total"]
-        chart = {
-            "id": "chart-people-active-total",
-            "kind": "lines",
-            "title": "Active vs. total users",
-            "hint": f"current period · active window {self.active_window}",
-            "legend": [
-                {"label": "Active", "color": "--ok"},
-                {"label": "Total", "color": "--sdk"},
-            ],
-            "data": {
-                "categories": categories,
-                "labels": {"active": "Active", "total": "Total"},
-                "colors": ["--ok", "--sdk"],
-                "points": [
-                    {
-                        "key": bucket_key,
-                        "values": {
-                            "active": stats["active"],
-                            "total": stats["total"],
-                        },
-                    }
+        active_pts = active_series(users, self.units, now_ms, active_window_days)
+        if active_pts:
+            window_start = active_pts[0]["key"]
+            window_end = active_pts[-1]["key"]
+            points = active_pts
+        else:
+            # No user has a known created_at to bucket from -- degrade to a
+            # single current-period point rather than an empty chart.
+            bucket_key = format_time_key(now, self.units)
+            window_start = window_end = bucket_key
+            points = [
+                {
+                    "key": bucket_key,
+                    "values": {"total": stats["total"], "active": stats["active"]},
+                }
+            ]
+
+        charts = [
+            {
+                "id": "chart-people-active-total",
+                "kind": "lines",
+                "title": "Active vs. total users",
+                "hint": f"active window {self.active_window} · {self.units}ly",
+                "legend": [
+                    {"label": "Total", "color": "--sdk"},
+                    {"label": "Active", "color": "--ok"},
                 ],
-                "window_start": bucket_key,
-                "window_end": bucket_key,
-            },
-        }
+                "data": {
+                    "categories": ["total", "active"],
+                    "labels": {"total": "Total", "active": "Active"},
+                    "colors": ["--sdk", "--ok"],
+                    "points": points,
+                    "window_start": window_start,
+                    "window_end": window_end,
+                },
+            }
+        ]
+
+        cap_pts = capability_series(users, self.units, now_ms, active_window_days)
+        if cap_pts:
+            charts.append(
+                {
+                    "id": "chart-people-capability",
+                    "kind": "lines",
+                    "title": "Active users by capability",
+                    "hint": f"active window {self.active_window} · {self.units}ly",
+                    "legend": [
+                        {"label": "EM", "color": "--sdk"},
+                        {"label": "Opik", "color": "--accent"},
+                    ],
+                    "data": {
+                        "categories": ["em", "opik"],
+                        "labels": {"em": "EM", "opik": "Opik"},
+                        "colors": ["--sdk", "--accent"],
+                        "points": cap_pts,
+                        "window_start": cap_pts[0]["key"],
+                        "window_end": cap_pts[-1]["key"],
+                    },
+                }
+            )
 
         top = top_users(users, "em_score", self.leaderboard_top_n)
         table = {
@@ -867,7 +906,7 @@ class GrowthReporter:
         return {
             "title": "Users & adoption",
             "kpis": kpis,
-            "charts": [chart],
+            "charts": charts,
             "table": table,
         }
 
