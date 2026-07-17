@@ -32,6 +32,7 @@ from cometx.cli.admin_growth_render import build_html, write_html
 from cometx.cli.admin_growth_users import (
     active_series,
     adoption_stats,
+    bottom_users,
     capability_series,
     parse_users,
     top_users,
@@ -910,6 +911,115 @@ class GrowthReporter:
             "table": table,
         }
 
+    # Workspace-level leaderboard metrics per platform: (metric name, plain
+    # label used in chart titles, e.g. "Top 5 workspaces by {label}").
+    _LEADERBOARD_METRICS = {
+        "em": [("EXPERIMENT_COUNT", "experiments")],
+        "opik": [("SPAN_COUNT", "spans"), ("TRACE_COUNT", "traces")],
+        "mpm": [("PREDICTION_VOLUME", "predictions")],
+    }
+
+    # User-level leaderboard metrics: (top_users/bottom_users key, plain
+    # label, value-extractor matching admin_growth_users._metric_value).
+    _USER_LEADERBOARD_METRICS = [
+        ("opik_span_count", "Opik spans", lambda u: u.opik_span_count),
+        ("em_score", "activity", lambda u: u.experiment_count + u.data_logged_mb),
+    ]
+
+    @staticmethod
+    def _leaderboard_chart(chart_id, title, rows):
+        return {
+            "id": chart_id,
+            "kind": "groupedBarsH",
+            "title": title,
+            "data": {"rows": rows},
+        }
+
+    def _build_leaderboards_section(self, usage, users, ran):
+        """Top-N / bottom-N leaderboards: one per workspace-level metric of
+        each platform that actually ran (Task 5's `ran` map), plus user
+        leaderboards (by `opik_span_count`, by `em_score`) when `users` is
+        non-empty. Bottom-N is active-aware (strictly-positive values only,
+        ascending -- mirrors `bottom_users`). Platforms/metrics with no data
+        are omitted entirely (no empty panels); returns `None` when there is
+        nothing to show at all."""
+        n = self.leaderboard_top_n
+        charts = []
+
+        for platform, metrics in self._LEADERBOARD_METRICS.items():
+            if not ran.get(platform):
+                continue
+            for metric, label in metrics:
+                ws_metrics = [
+                    m
+                    for m in usage
+                    if m.platform == platform
+                    and m.metric == metric
+                    and m.project is None
+                ]
+                if not ws_metrics:
+                    continue
+
+                ranked_desc = sorted(ws_metrics, key=lambda m: m.value, reverse=True)
+                top_rows = [
+                    {"label": m.workspace, "value": m.value}
+                    for m in ranked_desc[:n]
+                ]
+                active_asc = sorted(
+                    (m for m in ws_metrics if m.value > 0), key=lambda m: m.value
+                )
+                bottom_rows = [
+                    {"label": m.workspace, "value": m.value}
+                    for m in active_asc[:n]
+                ]
+
+                slug = f"{platform}-{metric.lower()}"
+                if top_rows:
+                    charts.append(
+                        self._leaderboard_chart(
+                            f"chart-lb-{slug}-top",
+                            f"Top {n} workspaces by {label}",
+                            top_rows,
+                        )
+                    )
+                if bottom_rows:
+                    charts.append(
+                        self._leaderboard_chart(
+                            f"chart-lb-{slug}-bottom",
+                            f"Bottom {n} workspaces by {label}",
+                            bottom_rows,
+                        )
+                    )
+
+        if users:
+            for key, label, value_fn in self._USER_LEADERBOARD_METRICS:
+                top = top_users(users, key, n)
+                if top:
+                    charts.append(
+                        self._leaderboard_chart(
+                            f"chart-lb-user-{key}-top",
+                            f"Top {n} users by {label}",
+                            [{"label": u.username, "value": value_fn(u)} for u in top],
+                        )
+                    )
+                bottom = bottom_users(users, key, n)
+                if bottom:
+                    charts.append(
+                        self._leaderboard_chart(
+                            f"chart-lb-user-{key}-bottom",
+                            f"Bottom {n} users by {label}",
+                            [
+                                {"label": u.username, "value": value_fn(u)}
+                                for u in bottom
+                            ],
+                        )
+                    )
+
+        if not charts:
+            return None
+
+        return {"title": "Leaderboards", "charts": charts}
+
     def _assemble_report_data(
         self, events, usage, ran, workspaces, window, chargeback=None, now_ms=None
     ):
@@ -949,6 +1059,19 @@ class GrowthReporter:
                 people_section = None
             if people_section:
                 sections["people"] = people_section
+
+        try:
+            leaderboard_users = parse_users(chargeback) if chargeback else []
+            leaderboards_section = self._build_leaderboards_section(
+                usage, leaderboard_users, ran
+            )
+        except Exception as exc:
+            print(
+                f"Warning: failed to build leaderboards section; skipping: {exc}"
+            )
+            leaderboards_section = None
+        if leaderboards_section:
+            sections["leaderboards"] = leaderboards_section
 
         return {
             "meta": {

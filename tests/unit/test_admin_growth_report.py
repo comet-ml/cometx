@@ -1834,3 +1834,30 @@ def test_malformed_chargeback_degrades_people_section_without_crashing(monkeypat
 
     data = r.build([])  # must not raise
     assert "people" not in data["sections"]
+
+
+def test_leaderboards_rank_workspaces_top_n():
+    from cometx.cli.admin_growth_report import GrowthReporter, UsageMetric
+    api = MagicMock()
+    r = GrowthReporter(api, window="7d", units="month", platforms="em", leaderboard_top_n=2)
+    usage = [
+        UsageMetric("em", "wsA", "EXPERIMENT_COUNT", 100, project=None, series=[]),
+        UsageMetric("em", "wsB", "EXPERIMENT_COUNT", 50, project=None, series=[]),
+        UsageMetric("em", "wsC", "EXPERIMENT_COUNT", 10, project=None, series=[]),
+    ]
+    section = r._build_leaderboards_section(
+        usage=usage, users=[], ran={"em": True, "opik": False, "mpm": False})
+    charts = section["charts"]
+    # a workspace-by-experiments groupedBarsH exists, top-2 only
+    exp_chart = next(c for c in charts if "experiment" in c["title"].lower() and "top" in c["title"].lower())
+    rows = exp_chart["data"]["rows"]
+    assert [row["label"] for row in rows] == ["wsA", "wsB"]
+
+
+def test_leaderboards_omit_platform_that_did_not_run():
+    from cometx.cli.admin_growth_report import GrowthReporter
+    api = MagicMock()
+    r = GrowthReporter(api, window="7d", units="month", platforms="em")
+    section = r._build_leaderboards_section(usage=[], users=[],
+        ran={"em": False, "opik": False, "mpm": False})
+    assert section is None or not section.get("charts")
