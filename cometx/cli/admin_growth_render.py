@@ -390,6 +390,53 @@ CLIENT_JS = """
     host.appendChild(svg);
   }
 
+  function drawLines(host, data){
+    data = data || {}; var points = data.points || []; var cats = data.categories || [];
+    if(!points.length || !cats.length){ host.innerHTML = "<p class=\\"nodata\\">No data</p>"; return; }
+    var colors = (data.colors && data.colors.length) ? data.colors : ["--accent", "--sdk", "--ok", "--warn"];
+    var accent = tok("--accent"), band = tok("--accent-soft");
+    var svg = el("svg", {viewBox: "0 0 " + W + " " + H, role: "img"});
+    var iw = W - P.l - P.r, ih = H - P.t - P.b, n = points.length;
+    var max = 1;
+    points.forEach(function(p){
+      cats.forEach(function(c){ max = Math.max(max, (p.values && p.values[c]) || 0); });
+    });
+    var X = function(i){ return n > 1 ? P.l + iw * (i / (n - 1)) : P.l + iw / 2; };
+    var Y = function(v){ return P.t + ih * (1 - v / max); };
+    svg.appendChild(el("line", {class: "axis-base", x1: P.l, x2: P.l + iw, y1: P.t + ih, y2: P.t + ih}));
+    var wi0 = indexOfKey(points, data.window_start), wi1 = indexOfKey(points, data.window_end);
+    if(wi0 > -1 && wi1 > -1){
+      svg.appendChild(el("rect", {x: X(wi0), y: P.t, width: Math.max(X(wi1) - X(wi0), 1), height: ih,
+        fill: band, stroke: accent, "stroke-dasharray": "4 3", "stroke-width": "1", rx: "3"}));
+    }
+    // y max gridline + label so the scale is readable
+    svg.appendChild(el("line", {class: "gridline", x1: P.l, x2: P.l + iw, y1: Y(max), y2: Y(max)}));
+    var maxL = el("text", {x: P.l - 6, y: Y(max) + 3, "text-anchor": "end", fill: tok("--muted"),
+      "font-size": "10", "font-family": "var(--mono)"});
+    maxL.textContent = fmt(max); svg.appendChild(maxL);
+    // one polyline per category
+    cats.forEach(function(c, ci){
+      var col = tok(colors[ci % colors.length]);
+      var dp = "";
+      points.forEach(function(p, i){
+        var v = (p.values && p.values[c]) || 0;
+        dp += (i ? " L" : "M") + X(i) + " " + Y(v);
+      });
+      svg.appendChild(el("path", {d: dp, fill: "none", stroke: col, "stroke-width": "2",
+        "stroke-linejoin": "round", "stroke-linecap": "round"}));
+      var lv = (points[n - 1].values && points[n - 1].values[c]) || 0;
+      svg.appendChild(el("circle", {cx: X(n - 1), cy: Y(lv), r: "3", fill: col}));
+    });
+    // x-axis: earliest and latest keys
+    [0, n - 1].forEach(function(i){
+      if(i < 0) return;
+      var xl = el("text", {x: X(i), y: H - 8, "text-anchor": i === 0 ? "start" : "end",
+        fill: tok("--muted"), "font-size": "10", "font-family": "var(--mono)"});
+      xl.textContent = points[i].key; svg.appendChild(xl);
+    });
+    host.appendChild(svg);
+  }
+
   function drawGroupedH(host, data){
     data = data || {}; var rows = data.rows || []; var cats = data.categories || [];
     if(!rows.length){ host.innerHTML = "<p class=\\"nodata\\">No data</p>"; return; }
@@ -440,6 +487,7 @@ CLIENT_JS = """
     if(c.kind === "bars") drawBars(host, c.data);
     else if(c.kind === "area") drawArea(host, c.data);
     else if(c.kind === "stackedBars") drawStacked(host, c.data);
+    else if(c.kind === "lines") drawLines(host, c.data);
     else if(c.kind === "groupedBarsH") drawGroupedH(host, c.data);
   }
 
@@ -639,7 +687,11 @@ def build_html(report_data: dict) -> str:
     sections = report_data.get("sections") or {}
     products = sections.get("products") or {}
 
-    body_parts = [render_topbar(report_data), render_section(sections.get("unified"))]
+    body_parts = [
+        render_topbar(report_data),
+        render_section(sections.get("unified")),
+        render_section(sections.get("people")),
+    ]
 
     for key in PLATFORM_ORDER:
         product = products.get(key)
