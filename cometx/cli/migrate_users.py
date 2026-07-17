@@ -125,16 +125,39 @@ def _resolve_server_url(api_key, explicit_url=None):
     sys.exit(1)
 
 
+class _RequestsClient:
+    """Minimal `api._client`-shaped wrapper around `requests`.
+
+    Lets `fetch_chargeback_report` (which expects a comet_ml-API-like object)
+    be reused here without pulling in comet_ml's own API key parsing, which
+    doesn't apply to migrate-users' server_url/source_api_key inputs. Keeps
+    the existing timeout and raise_for_status behavior so callers of
+    `_fetch_chargeback_report` still see `requests.exceptions.RequestException`
+    on HTTP errors.
+    """
+
+    def get(self, url, headers=None, params=None):
+        resp = requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        return resp
+
+
+class _ApiShim:
+    """Minimal comet_ml-API-shaped object for `fetch_chargeback_report`."""
+
+    def __init__(self, url, key):
+        self.config = {"comet.url_override": url}
+        self.api_key = key
+        self._client = _RequestsClient()
+
+
 def _fetch_chargeback_report(server_url, source_api_key):
+    from cometx.utils import fetch_chargeback_report
+
     url = f"{server_url}/api/admin/chargeback/report"
     print(f"Fetching chargeback report from {url}...")
-    resp = requests.get(
-        url,
-        headers={"Authorization": source_api_key},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
+    api = _ApiShim(server_url, source_api_key)
+    return fetch_chargeback_report(api, host=server_url)
 
 
 def _load_chargeback_report(path):

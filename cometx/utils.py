@@ -16,6 +16,7 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 import six
 from comet_ml.config import get_config
@@ -384,3 +385,25 @@ def remove_extra_slashes(path):
         return path
     else:
         return ""
+
+
+def fetch_chargeback_report(api, host=None, report_month=None):
+    """Fetch the admin chargeback report JSON.
+
+    Single source for the `/api/admin/chargeback/report` call used by the
+    chargeback-report action, migrate-users, and growth-report. `host`
+    overrides the base URL derived from `api.config["comet.url_override"]`;
+    `report_month` (YYYY-MM) adds `?reportMonth=`.
+    """
+    if host is not None:
+        base = host
+    else:
+        parsed = urlparse(api.config["comet.url_override"])
+        base = "%s://%s" % (parsed.scheme, parsed.netloc)
+    while base.endswith("/"):
+        base = base[:-1]
+    url = base + "/api/admin/chargeback/report"
+    if report_month:
+        url += "?reportMonth=%s" % report_month
+    response = api._client.get(url, headers={"Authorization": api.api_key}, params={})
+    return response.json()

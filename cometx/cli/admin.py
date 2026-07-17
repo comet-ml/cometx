@@ -149,9 +149,10 @@ import argparse
 import json
 import os
 import sys
-from urllib.parse import urlparse
 
 from comet_ml import API
+
+from cometx.utils import fetch_chargeback_report
 
 from .admin_gpu_report import main as gpu_report_main
 from .admin_growth_report import generate_growth_report
@@ -542,39 +543,17 @@ def admin(parsed_args, remaining=None):
         api = API()
 
         if parsed_args.ACTION == "chargeback-report":
-            if parsed_args.host is not None:
-                admin_url = parsed_args.host
-            else:
-                url = api.config["comet.url_override"]
-                result = urlparse(url)
-                admin_url = "%s://%s" % (
-                    result.scheme,
-                    result.netloc,
-                )
-
-            while admin_url.endswith("/"):
-                admin_url = admin_url[:-1]
-
-            admin_url += "/api/admin/chargeback/report"
-
-            print("Attempting to get chargeback report from %s..." % admin_url)
+            print("Attempting to get chargeback report...")
+            report = fetch_chargeback_report(
+                api, host=parsed_args.host, report_month=parsed_args.YEAR_MONTH
+            )
             if parsed_args.YEAR_MONTH:
-                response = api._client.get(
-                    admin_url + ("?reportMonth=%s" % parsed_args.YEAR_MONTH),
-                    headers={"Authorization": api.api_key},
-                    params={},
-                )
                 filename = "comet-chargeback-report-%s.json" % parsed_args.YEAR_MONTH
             else:
-                response = api._client.get(
-                    admin_url,
-                    headers={"Authorization": api.api_key},
-                    params={},
-                )
                 filename = "comet-chargeback-report.json"
             print("Attempting to save chargeback report...")
             with open(filename, "w") as fp:
-                fp.write(json.dumps(response.json()))
+                fp.write(json.dumps(report))
             print("Chargeback report is saved in %r" % filename)
         elif parsed_args.ACTION == "usage-report":
             if parsed_args.app:
