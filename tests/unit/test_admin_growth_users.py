@@ -229,3 +229,205 @@ def test_classify_accounts_regex_matches_sagemaker_domain_anchored():
         _classify_username("dana2", email="dana2@sagemaker-integration.com.evil.com")
         == "personal"
     )
+
+
+def test_classify_accounts_regex_matches_pipeline_and_automated_tokens():
+    # Added to match the client notebook's classifier: "pipeline-" prefix and
+    # the "automated" substring both indicate a service account.
+    assert _classify_username("pipeline-nightly") == "service"
+    assert _classify_username("data-automated-job") == "service"
+    # "automation" does NOT contain "automated" -- must stay personal (guards
+    # against over-matching the new keyword token).
+    assert _classify_username("automation") == "personal"
+
+
+def test_adoption_rate_series_percentages():
+    from cometx.cli.admin_growth_users import adoption_rate_series, parse_users
+
+    pts = adoption_rate_series(
+        parse_users(_cb()), units="month", now_ms=NOW, active_window_days=30
+    )
+    assert pts
+    # Last bucket: non-suspended existing = alice + bob (carol suspended); of
+    # those, only alice is active within 30d overall / on EM / on Opik.
+    last = pts[-1]["values"]
+    assert last["overall"] == 50.0
+    assert last["em"] == 50.0
+    assert last["opik"] == 50.0
+
+
+def test_adoption_rate_series_empty_when_no_created_at():
+    from cometx.cli.admin_growth_users import adoption_rate_series, parse_users
+
+    cb = {
+        "workspaces": [],
+        "users": {
+            "licensedUsers": [{"username": "x", "email": "x", "lastUsedAt": NOW}]
+        },
+    }
+    assert (
+        adoption_rate_series(
+            parse_users(cb), units="month", now_ms=NOW, active_window_days=30
+        )
+        == []
+    )
+
+
+def test_workspace_active_series_total_and_active():
+    from cometx.cli.admin_growth_users import parse_users, workspace_active_series
+
+    pts = workspace_active_series(
+        parse_users(_cb()), units="month", now_ms=NOW, active_window_days=30
+    )
+    assert pts
+    last = pts[-1]["values"]
+    assert last["total"] == 2  # team-a, team-b (from non-suspended alice/bob)
+    assert last["active"] == 2  # active alice belongs to both -> both active
+    # no membership anywhere -> None
+    cb = {
+        "workspaces": [],
+        "users": {
+            "licensedUsers": [
+                {"username": "x", "email": "x", "createdAt": NOW - 1, "lastUsedAt": NOW}
+            ]
+        },
+    }
+    assert (
+        workspace_active_series(
+            parse_users(cb), units="month", now_ms=NOW, active_window_days=30
+        )
+        is None
+    )
+
+
+def test_churn_series_added_and_deleted():
+    from cometx.cli.admin_growth_users import churn_series, parse_users
+
+    month = 30 * 86400 * 1000
+    cb = {
+        "workspaces": [],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "a",
+                    "email": "a",
+                    "createdAt": NOW - 3 * month,
+                    "lastUsedAt": NOW,
+                },
+                {
+                    "username": "b",
+                    "email": "b",
+                    "createdAt": NOW - 2 * month,
+                    "lastUsedAt": NOW,
+                    "deletedAt": NOW - month,
+                },
+            ]
+        },
+    }
+    pts = churn_series(parse_users(cb), units="month", now_ms=NOW)
+    assert pts
+    assert sum(p["values"]["added"] for p in pts) == 2
+    assert sum(p["values"]["deleted"] for p in pts) == 1
+
+
+def test_em_user_breakdown_series():
+    from cometx.cli.admin_growth_users import em_user_breakdown_series, parse_users
+
+    last = em_user_breakdown_series(
+        parse_users(_cb()), units="month", now_ms=NOW, active_window_days=30
+    )[-1]["values"]
+    assert last["experimenters"] == 2  # alice(40) + bob(1)
+    assert last["data_pushers"] == 2  # alice(100) + bob(2)
+    assert last["active"] == 1  # only alice has emLastUsedAt in window
+
+
+def test_opik_user_breakdown_series():
+    from cometx.cli.admin_growth_users import opik_user_breakdown_series, parse_users
+
+    last = opik_user_breakdown_series(
+        parse_users(_cb()), units="month", now_ms=NOW, active_window_days=30
+    )[-1]["values"]
+    assert last["span_producers"] == 1  # only alice has opikSpanCount > 0
+    assert last["active"] == 1  # only alice has opikLastUsedAt in window
+
+
+def test_workspace_churn_series_added():
+    from cometx.cli.admin_growth_users import parse_users, workspace_churn_series
+
+    pts = workspace_churn_series(parse_users(_cb()), units="month", now_ms=NOW)
+    assert pts
+    assert sum(p["values"]["added"] for p in pts) == 2  # team-a, team-b
+    assert sum(p["values"]["deleted"] for p in pts) == 0  # no fully-deleted workspace
+
+
+def test_workspace_active_stats():
+    from cometx.cli.admin_growth_users import parse_users, workspace_active_stats
+
+    stats = workspace_active_stats(
+        parse_users(_cb()), now_ms=NOW, active_window_days=30
+    )
+    # team-a (alice/bob) + team-b (alice); carol suspended contributes nothing
+    assert stats["total"] == 2
+    # alice active covers both workspaces; bob inactive but alice keeps both active
+    assert stats["active"] == 2
+    assert stats["active_pct"] == 100.0
+
+
+def test_parse_workspaces_org_totals_and_platform_mix():
+    from cometx.cli.admin_growth_users import (
+        parse_users,
+        parse_workspaces,
+        platform_mix,
+        workspace_org_totals,
+    )
+
+    cb = {
+        "workspaces": [
+            {
+                "name": "em-ws",
+                "numberOfExperiments": 10,
+                "totalSizeInMb": 5.0,
+                "projects": [{}, {}],
+                "members": [{"userName": "a"}],
+            },
+            {
+                "name": "opik-ws",
+                "numberOfExperiments": 0,
+                "projects": [],
+                "members": [{"userName": "b"}],
+            },
+            {
+                "name": "both-ws",
+                "numberOfExperiments": 3,
+                "projects": [{}],
+                "members": [{"userName": "c"}],
+            },
+            {
+                "name": "empty-ws",
+                "numberOfExperiments": 0,
+                "projects": [],
+                "members": [],
+            },
+        ],
+        "users": {
+            "licensedUsers": [
+                {"username": "a", "email": "a", "opikSpanCount": 0, "lastUsedAt": 1},
+                {"username": "b", "email": "b", "opikSpanCount": 500, "lastUsedAt": 1},
+                {"username": "c", "email": "c", "opikSpanCount": 50, "lastUsedAt": 1},
+            ]
+        },
+    }
+    ws = parse_workspaces(cb)
+    assert workspace_org_totals(ws) == {
+        "workspaces": 4,
+        "projects": 3,
+        "experiments": 13,
+        "data_mb": 5.0,
+    }
+    # em-ws=EM only; opik-ws=Opik only (b has spans); both-ws=both; empty-ws=neither
+    assert platform_mix(ws, parse_users(cb)) == {
+        "em_only": 1,
+        "opik_only": 1,
+        "both": 1,
+        "neither": 1,
+    }

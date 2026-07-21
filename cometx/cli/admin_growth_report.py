@@ -32,12 +32,22 @@ from tqdm import tqdm
 from cometx.cli.admin_growth_render import build_html, write_html
 from cometx.cli.admin_growth_users import (
     active_series,
+    adoption_rate_series,
     adoption_stats,
     bottom_users,
     capability_series,
+    churn_series,
     classify_accounts,
+    em_user_breakdown_series,
+    opik_user_breakdown_series,
     parse_users,
+    parse_workspaces,
+    platform_mix,
     top_users,
+    workspace_active_series,
+    workspace_active_stats,
+    workspace_churn_series,
+    workspace_org_totals,
 )
 from cometx.utils import fetch_chargeback_report, format_time_key, get_next_time_key
 
@@ -202,6 +212,68 @@ def _fetch_service_accounts(api) -> "set[str] | None":
         return _extract_service_account_names(payload)
     except Exception:
         return None
+
+
+def _short_api_error(exc):
+    """Condense a verbose SDK/HTTP exception (which may dump full response
+    headers, cookies, and CSP) into a single short line: "status: message"
+    when parseable, else a truncated one-liner. Keeps per-workspace warnings
+    readable instead of pasting a wall of response headers per failure."""
+    text = " ".join(str(exc).split())
+    status = re.search(r"status_code:\s*(\d+)", text)
+    message = re.search(r"'message':\s*'([^']*)'", text)
+    if status or message:
+        parts = []
+        if status:
+            parts.append(status.group(1))
+        if message:
+            parts.append(message.group(1))
+        return ": ".join(parts)
+    return text if len(text) <= 160 else text[:157] + "..."
+
+
+def _chargeback_licensed_users(chargeback):
+    """Return the raw licensed-user records from a chargeback dict, tolerating
+    the same container shapes as `admin_growth_users.parse_users` (dict with
+    `licensedUsers`, dict with `report`, or a bare list)."""
+    users_field = (chargeback or {}).get("users")
+    if isinstance(users_field, dict):
+        if "licensedUsers" in users_field:
+            return users_field.get("licensedUsers") or []
+        report = users_field.get("report")
+        if report is not None:
+            return _chargeback_licensed_users({"users": report})
+        return []
+    if isinstance(users_field, list):
+        return users_field
+    return []
+
+
+def _scope_chargeback(chargeback, workspace_names):
+    """Narrow an org-wide chargeback dict to `workspace_names`: keep only those
+    workspaces and only the users who are members of them. Lets the People /
+    leaderboards / personal-vs-service layers match an explicit workspace
+    selection instead of always reporting org-wide."""
+    wanted = set(workspace_names)
+    workspaces = [
+        w for w in (chargeback.get("workspaces") or []) if w.get("name") in wanted
+    ]
+    members = {
+        m.get("userName")
+        for w in workspaces
+        for m in (w.get("members") or [])
+        if m.get("userName")
+    }
+    scoped_users = [
+        u
+        for u in _chargeback_licensed_users(chargeback)
+        if u.get("username") in members
+    ]
+    return {
+        **chargeback,
+        "workspaces": workspaces,
+        "users": {"licensedUsers": scoped_users},
+    }
 
 
 def _as_float(value):
@@ -411,8 +483,18 @@ class GrowthReporter:
         print("Building report...")
 
         now_ms = int(now.timestamp() * 1000)
+        # Explicit WORKSPACE args scope the whole report (incl. the org-wide
+        # chargeback layers); with no args the chargeback layers stay org-wide.
+        scope = set(resolved_workspaces) if workspaces else None
         return self._assemble_report_data(
-            events, usage, ran, resolved_workspaces, window, chargeback, now_ms
+            events,
+            usage,
+            ran,
+            resolved_workspaces,
+            window,
+            chargeback,
+            now_ms,
+            scope=scope,
         )
 
     def _now(self):
@@ -571,7 +653,7 @@ class GrowthReporter:
         rows = sorted(events, key=lambda ev: ev.created, reverse=True)
         return {
             "title": kind_label,
-            "headers": ["Use case", "Created"],
+            "headers": ["Project", "Created"],
             "rows": [[ev.use_case, ev.created.date().isoformat()] for ev in rows],
         }
 
@@ -595,8 +677,8 @@ class GrowthReporter:
             }
         rows = sorted(unified_events(events), key=lambda ev: ev.created, reverse=True)
         return {
-            "title": "Use cases",
-            "headers": ["Use case", "Kind", "Created"],
+            "title": "Projects",
+            "headers": ["Project", "Kind", "Created"],
             "rows": [
                 [
                     ev.use_case,
@@ -604,6 +686,25 @@ class GrowthReporter:
                     ev.created.date().isoformat(),
                 ]
                 for ev in rows
+            ],
+        }
+
+    def _workspace_chargeback_table(self, ws_records):
+        """Org-wide by-workspace table from chargeback (top 20 by experiments):
+        projects, experiments and data logged per workspace."""
+        rows = sorted(ws_records, key=lambda w: -w.num_experiments)[:20]
+        return {
+            "title": "By workspace (org-wide, chargeback)",
+            "headers": ["Workspace", "Members", "Projects", "Experiments", "Data (MB)"],
+            "rows": [
+                [
+                    w.name,
+                    len(w.members),
+                    w.num_projects,
+                    _num(w.num_experiments),
+                    _num(round(w.data_mb)),
+                ]
+                for w in rows
             ],
         }
 
@@ -617,7 +718,7 @@ class GrowthReporter:
         return {
             "id": "chart-unified-created",
             "kind": "stackedBars",
-            "title": "Use cases created",
+            "title": "Projects created",
             "hint": f"by kind · {self.units}ly",
             "legend": [
                 {"label": "Opik", "color": "--accent"},
@@ -634,49 +735,358 @@ class GrowthReporter:
             },
         }
 
-    def _unified_department_chart(self, unified):
-        by_ws = use_cases_by_workspace(unified)
-        rows = sorted(
-            (
-                {"label": ws, "value": entry["use_cases_total"]}
-                for ws, entry in by_ws.items()
-            ),
-            key=lambda r: -r["value"],
-        )
+    def _platform_stacked_chart(self, events, chart_id, title):
+        """Per-period stacked bars of `events` split by platform (Opik / EM /
+        MPM). Returns `None` when there are no events to bucket."""
+        platforms = ("opik", "em", "mpm")
+        by_platform = {p: [ev for ev in events if ev.platform == p] for p in platforms}
+        points = _stacked_points(by_platform, self.units, platforms)
+        if not points:
+            return None
         return {
-            "id": "chart-unified-by-workspace",
-            "kind": "groupedBarsH",
-            "title": "Use cases by workspace",
-            "hint": "workspaces proxy teams / departments · current totals",
-            "data": {"rows": rows},
+            "id": chart_id,
+            "kind": "stackedBars",
+            "title": title,
+            "hint": f"by platform · {self.units}ly",
+            "legend": [
+                {"label": "Opik", "color": "--accent"},
+                {"label": "EM", "color": "--sdk"},
+                {"label": "MPM", "color": "--ok"},
+            ],
+            "data": {
+                "categories": list(platforms),
+                "labels": {p: PLATFORM_LABELS[p] for p in platforms},
+                "colors": ["--accent", "--sdk", "--ok"],
+                "points": points,
+                "window_start": None,
+                "window_end": None,
+            },
         }
 
-    def _build_unified_section(self, events, window, workspaces_count):
-        unified = unified_events(events)
-        count_before = sum(1 for ev in unified if ev.created < window.start)
-        stats = growth_stats(unified, window, self.units)
-        spec = self.window or "7d"
+    def _cumulative_area_chart(self, events, chart_id, title):
+        """Cumulative running-total area chart of `events`, bucketed by
+        `self.units` and zero-filled across all periods. Returns `None` with
+        fewer than two periods to plot (no trajectory to show)."""
+        counts = defaultdict(int)
+        for ev in events:
+            counts[format_time_key(ev.created, self.units)] += 1
+        cum = cumulative(continuous_series(counts, self.units))  # [(key, total)]
+        if len(cum) < 2:
+            return None
+        points = [{"key": key, "value": total} for key, total in cum]
         return {
-            "title": "Use cases across all platforms",
+            "id": chart_id,
+            "kind": "area",
+            "title": title,
+            "hint": f"cumulative · {self.units}ly",
+            "data": {
+                "points": points,
+                "window_start": None,
+                "window_end": None,
+            },
+        }
+
+    def _growth_rate_chart(self, events, chart_id, title):
+        """Period-over-period growth-RATE line: each period's new count divided
+        by the cumulative total at the start of the period (the recurring form
+        of the `pct_growth` KPI). WoW when `--units week`, MoM otherwise.
+        Returns `None` with fewer than two periods (a rate needs a prior
+        period). Note: on a small, lumpy population the rate is spiky (a single
+        addition can read as 100%); it smooths out with volume."""
+        counts = {}
+        for ev in events:
+            key = format_time_key(ev.created, self.units)
+            counts[key] = counts.get(key, 0) + 1
+        series = continuous_series(counts, self.units)  # [(key, new)]
+        if len(series) < 2:
+            return None
+        points = []
+        prev_total = 0
+        for key, new in series:
+            rate = round(new / prev_total * 100, 1) if prev_total else 0.0
+            points.append({"key": key, "values": {"rate": rate}})
+            prev_total += new
+        period = (
+            "week-over-week"
+            if self.units == "week"
+            else f"{self.units}-over-{self.units}"
+        )
+        return {
+            "id": chart_id,
+            "kind": "lines",
+            "title": f"{title} ({period})",
+            "hint": "new / cumulative total at start of period",
+            "legend": [{"label": "Growth rate", "color": "--accent"}],
+            "data": {
+                "categories": ["rate"],
+                "labels": {"rate": "Growth rate"},
+                "colors": ["--accent"],
+                "points": points,
+                "window_start": None,
+                "window_end": None,
+            },
+        }
+
+    @staticmethod
+    def _workspace_first_events(unified):
+        """One synthetic creation event per workspace, at the earliest
+        project-creation seen in it (its "created" proxy). Feeds the
+        workspace-level created / cumulative / growth views in the summary
+        section; each retains the platform of that earliest project."""
+        first = {}
+        for ev in unified:
+            cur = first.get(ev.workspace)
+            if cur is None or ev.created < cur.created:
+                first[ev.workspace] = ev
+        return list(first.values())
+
+    @staticmethod
+    def _workspace_growth_kpi(users, window):
+        """Org-wide workspace growth over the analysis window: workspaces first
+        seen in-window vs. those existing before it, using each workspace's
+        earliest member `created_at` as its creation proxy (mirrors the Users
+        section's user-growth KPI). Returns {new_in, before, pct}."""
+        ws_created: dict = {}
+        for u in users:
+            if u.created_at is None:
+                continue
+            for ws in u.workspaces:
+                cur = ws_created.get(ws)
+                if cur is None or u.created_at < cur:
+                    ws_created[ws] = u.created_at
+        new_in = sum(
+            1
+            for c in ws_created.values()
+            if window.start <= _ms_to_utc(c) <= window.end
+        )
+        before = sum(1 for c in ws_created.values() if _ms_to_utc(c) < window.start)
+        pct = round(new_in / before * 100, 1) if before else 0.0
+        return {"new_in": new_in, "before": before, "pct": pct}
+
+    def _build_unified_section(
+        self,
+        events,
+        window,
+        workspaces_count,
+        people_users=None,
+        ws_records=None,
+        now_ms=None,
+        active_window_days=None,
+    ):
+        """Top workspace-and-project section. When chargeback data is present
+        (`ws_records` / `people_users`), the KPIs and platform-mix are ORG-WIDE
+        from chargeback (workspaces, projects, experiments, active %); the
+        project/workspace *creation timelines* remain SDK-derived (accessible
+        workspaces only) since chargeback carries no creation dates. Every
+        workspace-level number lives here; the Users section stays about
+        users."""
+        unified = unified_events(events)
+        ws_events = self._workspace_first_events(unified)
+        proj_stats = growth_stats(unified, window, self.units)
+        ws_stats = growth_stats(ws_events, window, self.units)
+        spec = self.window or "7d"
+
+        # SDK-derived creation timelines (accessible workspaces only). These are
+        # the "project-based" charts; when chargeback is present they move to
+        # their per-product sections and this org section stays chargeback-only.
+        sdk_charts = [
+            self._platform_stacked_chart(
+                ws_events, "chart-unified-workspaces-created", "Workspaces created"
+            ),
+            self._cumulative_area_chart(
+                ws_events,
+                "chart-unified-workspaces-cumulative",
+                "Total workspaces over time",
+            ),
+            self._growth_rate_chart(
+                ws_events, "chart-unified-workspaces-rate", "Workspace growth rate"
+            ),
+            self._unified_stacked_chart(events, window),
+            self._cumulative_area_chart(
+                unified,
+                "chart-unified-projects-cumulative",
+                "Total projects over time",
+            ),
+            self._growth_rate_chart(
+                unified, "chart-unified-projects-rate", "Project growth rate"
+            ),
+        ]
+
+        # Chargeback-derived org-wide charts (total-vs-active, added/deleted,
+        # platform mix) — only when chargeback users/records are present.
+        cb_charts = []
+        ws_kpi_extra = []
+        if people_users:
+            ws_active_pts = workspace_active_series(
+                people_users, self.units, now_ms, active_window_days
+            )
+            if ws_active_pts:
+                cb_charts.append(
+                    {
+                        "id": "chart-unified-workspaces-active",
+                        "kind": "lines",
+                        "title": "Workspaces: total vs. active",
+                        "hint": (
+                            f"org-wide (chargeback); active window "
+                            f"{self.active_window}"
+                        ),
+                        "legend": [
+                            {"label": "Total", "color": "--sdk"},
+                            {"label": "Active", "color": "--ok"},
+                        ],
+                        "data": {
+                            "categories": ["total", "active"],
+                            "labels": {"total": "Total", "active": "Active"},
+                            "colors": ["--sdk", "--ok"],
+                            "points": ws_active_pts,
+                            "window_start": None,
+                            "window_end": None,
+                        },
+                    }
+                )
+            ws_churn = workspace_churn_series(people_users, self.units, now_ms)
+            if ws_churn:
+                # added/deleted as bars, with an overlaid growth-rate line
+                # (added workspaces / cumulative at start of period).
+                churn_pts = []
+                prev_total = 0
+                for pt in ws_churn:
+                    added = pt["values"]["added"]
+                    deleted = pt["values"]["deleted"]
+                    rate = round(added / prev_total * 100, 1) if prev_total else 0.0
+                    churn_pts.append(
+                        {
+                            "key": pt["key"],
+                            "values": {
+                                "added": added,
+                                "deleted": deleted,
+                                "rate": rate,
+                            },
+                        }
+                    )
+                    prev_total += added
+                cb_charts.append(
+                    {
+                        "id": "chart-unified-workspace-churn",
+                        "kind": "barsLine",
+                        "title": "Workspaces added vs. deleted",
+                        "hint": (
+                            f"org-wide (chargeback) · {self.units}ly · "
+                            "deletion is a proxy"
+                        ),
+                        "legend": [
+                            {"label": "Added", "color": "--ok"},
+                            {"label": "Deleted", "color": "--warn"},
+                            {"label": "Growth rate", "color": "--accent"},
+                        ],
+                        "data": {
+                            "points": churn_pts,
+                            "bars": ["added", "deleted"],
+                            "line": "rate",
+                            "bar_labels": {"added": "Added", "deleted": "Deleted"},
+                            "bar_colors": ["--ok", "--warn"],
+                            "line_label": "Growth rate",
+                            "line_color": "--accent",
+                            "window_start": None,
+                            "window_end": None,
+                        },
+                    }
+                )
+            wa = workspace_active_stats(people_users, now_ms, active_window_days)
+            ws_kpi_extra.append(
+                {
+                    "label": "Active workspaces %",
+                    "value": f"{wa['active_pct']}%",
+                    "sub": f"{wa['active']}/{wa['total']} active",
+                }
+            )
+
+        # Org-wide platform mix (chargeback): EM-only / Opik-only / both /
+        # neither. MPM is not in chargeback, so it's excluded; Opik is a
+        # per-user proxy (a member's Opik usage is attributed to all their
+        # workspaces).
+        if ws_records:
+            mix = platform_mix(ws_records, people_users or [])
+            mix_rows = [
+                {"label": "EM only", "value": mix["em_only"]},
+                {"label": "Opik only", "value": mix["opik_only"]},
+                {"label": "EM + Opik", "value": mix["both"]},
+                {"label": "Neither", "value": mix["neither"]},
+            ]
+            cb_charts.append(
+                {
+                    "id": "chart-unified-platform-mix",
+                    "kind": "groupedBarsH",
+                    "title": "Workspace platform mix",
+                    "hint": (
+                        "org-wide (chargeback); Opik is a per-user proxy; "
+                        "MPM not represented in chargeback"
+                    ),
+                    "data": {"rows": mix_rows},
+                }
+            )
+
+        if ws_records:
+            # ORGANIZATION OVERVIEW (chargeback): org-wide headline numbers and
+            # chargeback-derived charts only. The SDK creation timelines move to
+            # their per-product growth sections.
+            org = workspace_org_totals(ws_records)
+            wa = workspace_active_stats(
+                people_users or [],
+                now_ms,
+                active_window_days,
+                all_workspaces={w.name for w in ws_records},
+            )
+            wg = self._workspace_growth_kpi(people_users or [], window)
+            kpis = [
+                {"label": "Total workspaces", "value": org["workspaces"]},
+                {
+                    "label": "Total projects",
+                    "value": org["projects"],
+                    "sub": "EM projects",
+                    "tone": "ok",
+                },
+                {
+                    "label": f"New in {spec} (% of base)",
+                    "value": f"{wg['pct']}%",
+                    "sub": f"+{wg['new_in']} new",
+                },
+                {
+                    "label": "Active workspaces %",
+                    "value": f"{wa['active_pct']}%",
+                    "sub": f"{wa['active']}/{wa['total']} active",
+                },
+            ]
+            return {
+                "title": "Organization overview (chargeback)",
+                "window_chip": self._window_label(window),
+                "kpis": kpis,
+                "charts": [c for c in cb_charts if c],
+                "table": self._workspace_chargeback_table(ws_records),
+            }
+
+        # No chargeback -> SDK-only fallback (accessible workspaces): keep the
+        # creation timelines and SDK headline here.
+        kpis = [{"label": "Total workspaces", "value": workspaces_count}]
+        kpis += ws_kpi_extra
+        kpis += [
+            {"label": "Total projects", "value": proj_stats["total"], "tone": "ok"},
+            {
+                "label": f"New workspaces in {spec} (% of base)",
+                "value": f"{ws_stats['pct_growth']}%",
+                "sub": f"+{ws_stats['new_in_window']} new",
+            },
+            {
+                "label": f"New projects in {spec} (% of base)",
+                "value": f"{proj_stats['pct_growth']}%",
+                "sub": f"+{proj_stats['new_in_window']} new",
+            },
+        ]
+        return {
+            "title": "Workspaces & projects (accessible)",
             "window_chip": self._window_label(window),
-            "kpis": [
-                {
-                    "label": "Workspaces",
-                    "value": workspaces_count,
-                    "sub": "proxy for teams / departments",
-                },
-                {"label": "Use cases", "value": stats["total"], "tone": "ok"},
-                {"label": f"New ({spec})", "value": f"+{stats['new_in_window']}"},
-                {
-                    "label": f"Growth ({spec})",
-                    "value": f"{stats['pct_growth']}%",
-                    "sub": f"vs {count_before} before window",
-                },
-            ],
-            "charts": [
-                self._unified_stacked_chart(events, window),
-                self._unified_department_chart(unified),
-            ],
+            "kpis": kpis,
+            "charts": [c for c in (sdk_charts + cb_charts) if c],
             "table": self._unified_table(events, workspaces_count),
         }
 
@@ -883,29 +1293,38 @@ class GrowthReporter:
             "window_chip": self._window_label(window),
             "kpis": self._growth_kpis(stats, count_before, len(workspaces_with_kind)),
             "charts": [
-                {
-                    "id": f"chart-{platform}-bars",
-                    "kind": "bars",
-                    "title": f"New {KIND_LABELS[kind]}",
-                    "hint": f"by {self.units}",
-                    "data": {
-                        "points": points,
-                        "window_start": window_start,
-                        "window_end": window_end,
+                chart
+                for chart in (
+                    {
+                        "id": f"chart-{platform}-bars",
+                        "kind": "bars",
+                        "title": f"New {KIND_LABELS[kind]}",
+                        "hint": f"by {self.units}",
+                        "data": {
+                            "points": points,
+                            "window_start": window_start,
+                            "window_end": window_end,
+                        },
                     },
-                },
-                {
-                    "id": f"chart-{platform}-area",
-                    "kind": "area",
-                    "title": f"{KIND_LABELS[kind]} — cumulative",
-                    "hint": "all-time",
-                    "data": {
-                        "points": cum_points,
-                        "window_start": window_start,
-                        "window_end": window_end,
-                        "delta": stats["new_in_window"],
+                    {
+                        "id": f"chart-{platform}-area",
+                        "kind": "area",
+                        "title": f"{KIND_LABELS[kind]} — cumulative",
+                        "hint": "all-time",
+                        "data": {
+                            "points": cum_points,
+                            "window_start": window_start,
+                            "window_end": window_end,
+                            "delta": stats["new_in_window"],
+                        },
                     },
-                },
+                    self._growth_rate_chart(
+                        kind_events,
+                        f"chart-{platform}-rate",
+                        f"{KIND_LABELS[kind]} growth rate",
+                    ),
+                )
+                if chart
             ],
             "table": self._breakdown_table(
                 kind_events, KIND_LABELS[kind], workspaces_count
@@ -925,40 +1344,60 @@ class GrowthReporter:
         active_window = parse_window(self.active_window, now, self.units)
         return max(1, (active_window.end - active_window.start).days)
 
-    def _build_people_section(self, chargeback, now_ms):
-        """Users/adoption section, derived from the chargeback report (Task
-        4 helpers). KPIs (Total / Active / Adoption %) plus real over-time
-        `lines` charts: active-vs-total (Task 6's `active_series`), and,
-        when at least one user has an EM/Opik capability timestamp, a
-        per-capability active-users chart (`capability_series`)."""
+    def _build_people_section(self, users, now_ms, window=None):
+        """User-level section (workspace metrics live in the Organization
+        overview). KPIs (Total / Active / Active % / new-in-window % of base)
+        plus over-time
+        `lines` charts: active-vs-total, adoption rates, per-capability active
+        users, EM/Opik user breakdowns, and users added-vs-deleted. `users` is
+        the pre-parsed (and, when scoped, already-filtered) chargeback user
+        list. Returns `None` when there are no users."""
+        if not users:
+            return None
         now = _ms_to_utc(now_ms)
         active_window_days = self._active_window_days(now)
 
-        users = parse_users(chargeback)
         stats = adoption_stats(users, now_ms, active_window_days)
 
         kpis = [
-            {"label": "Total", "value": stats["total"]},
+            {"label": "Total users", "value": stats["total"]},
             {
-                "label": f"Active ({self.active_window})",
+                "label": f"Active users ({self.active_window})",
                 "value": stats["active"],
             },
-            {"label": "Adoption %", "value": f"{stats['adoption_pct']}%"},
+            {"label": "Active users %", "value": f"{stats['adoption_pct']}%"},
         ]
 
+        # User growth over the analysis window: new accounts in window /
+        # accounts before window (mirrors the workspace/project growth KPI).
+        if window is not None:
+            new_in = sum(
+                1
+                for u in users
+                if u.created_at is not None
+                and window.start <= _ms_to_utc(u.created_at) <= window.end
+            )
+            before = sum(
+                1
+                for u in users
+                if u.created_at is not None and _ms_to_utc(u.created_at) < window.start
+            )
+            pct = round(new_in / before * 100, 1) if before else 0.0
+            kpis.append(
+                {
+                    "label": f"New in {self.window or '7d'} (% of base)",
+                    "value": f"{pct}%",
+                    "sub": f"+{new_in} new",
+                }
+            )
+
         active_pts = active_series(users, self.units, now_ms, active_window_days)
-        if active_pts:
-            window_start = active_pts[0]["key"]
-            window_end = active_pts[-1]["key"]
-            points = active_pts
-        else:
+        if not active_pts:
             # No user has a known created_at to bucket from -- degrade to a
             # single current-period point rather than an empty chart.
-            bucket_key = format_time_key(now, self.units)
-            window_start = window_end = bucket_key
-            points = [
+            active_pts = [
                 {
-                    "key": bucket_key,
+                    "key": format_time_key(now, self.units),
                     "values": {"total": stats["total"], "active": stats["active"]},
                 }
             ]
@@ -977,12 +1416,40 @@ class GrowthReporter:
                     "categories": ["total", "active"],
                     "labels": {"total": "Total", "active": "Active"},
                     "colors": ["--sdk", "--ok"],
-                    "points": points,
-                    "window_start": window_start,
-                    "window_end": window_end,
+                    "points": active_pts,
+                    "window_start": None,
+                    "window_end": None,
                 },
             }
         ]
+
+        rate_pts = adoption_rate_series(users, self.units, now_ms, active_window_days)
+        if rate_pts:
+            charts.append(
+                {
+                    "id": "chart-people-adoption-rate",
+                    "kind": "lines",
+                    "title": "Adoption rates",
+                    "hint": f"active users / total; active window {self.active_window} · {self.units}ly",
+                    "legend": [
+                        {"label": "Overall", "color": "--ok"},
+                        {"label": "Experimentation", "color": "--sdk"},
+                        {"label": "Opik", "color": "--accent"},
+                    ],
+                    "data": {
+                        "categories": ["overall", "em", "opik"],
+                        "labels": {
+                            "overall": "Overall",
+                            "em": "Experimentation",
+                            "opik": "Opik",
+                        },
+                        "colors": ["--ok", "--sdk", "--accent"],
+                        "points": rate_pts,
+                        "window_start": None,
+                        "window_end": None,
+                    },
+                }
+            )
 
         cap_pts = capability_series(users, self.units, now_ms, active_window_days)
         if cap_pts:
@@ -1001,8 +1468,92 @@ class GrowthReporter:
                         "labels": {"em": "EM", "opik": "Opik"},
                         "colors": ["--sdk", "--accent"],
                         "points": cap_pts,
-                        "window_start": cap_pts[0]["key"],
-                        "window_end": cap_pts[-1]["key"],
+                        "window_start": None,
+                        "window_end": None,
+                    },
+                }
+            )
+
+        window_hint = f"active window {self.active_window} · {self.units}ly"
+
+        em_pts = em_user_breakdown_series(users, self.units, now_ms, active_window_days)
+        if em_pts:
+            charts.append(
+                {
+                    "id": "chart-people-em-breakdown",
+                    "kind": "lines",
+                    "title": "EM users: active, experimenters, data pushers",
+                    "hint": window_hint + "; experimenters/data-pushers from totals",
+                    "legend": [
+                        {"label": "Active", "color": "--sdk"},
+                        {"label": "Experimenters", "color": "--accent"},
+                        {"label": "Data pushers", "color": "--warn"},
+                    ],
+                    "data": {
+                        "categories": ["active", "experimenters", "data_pushers"],
+                        "labels": {
+                            "active": "Active",
+                            "experimenters": "Experimenters",
+                            "data_pushers": "Data pushers",
+                        },
+                        "colors": ["--sdk", "--accent", "--warn"],
+                        "points": em_pts,
+                        "window_start": None,
+                        "window_end": None,
+                    },
+                }
+            )
+
+        opik_pts = opik_user_breakdown_series(
+            users, self.units, now_ms, active_window_days
+        )
+        if opik_pts:
+            charts.append(
+                {
+                    "id": "chart-people-opik-breakdown",
+                    "kind": "lines",
+                    "title": "Opik users: active, span producers",
+                    "hint": window_hint + "; span-producers from totals",
+                    "legend": [
+                        {"label": "Active", "color": "--accent"},
+                        {"label": "Span producers", "color": "--ok"},
+                    ],
+                    "data": {
+                        "categories": ["active", "span_producers"],
+                        "labels": {
+                            "active": "Active",
+                            "span_producers": "Span producers",
+                        },
+                        "colors": ["--accent", "--ok"],
+                        "points": opik_pts,
+                        "window_start": None,
+                        "window_end": None,
+                    },
+                }
+            )
+
+        user_churn = churn_series(users, self.units, now_ms)
+        if user_churn:
+            charts.append(
+                {
+                    "id": "chart-people-user-churn",
+                    "kind": "lines",
+                    "title": "Users added vs. deleted",
+                    "hint": (
+                        f"per period · {self.units}ly; deletions reflect soft-deletes "
+                        "still present in the snapshot"
+                    ),
+                    "legend": [
+                        {"label": "Added", "color": "--ok"},
+                        {"label": "Deleted", "color": "--warn"},
+                    ],
+                    "data": {
+                        "categories": ["added", "deleted"],
+                        "labels": {"added": "Added", "deleted": "Deleted"},
+                        "colors": ["--ok", "--warn"],
+                        "points": user_churn,
+                        "window_start": None,
+                        "window_end": None,
                     },
                 }
             )
@@ -1023,92 +1574,164 @@ class GrowthReporter:
         }
 
         return {
-            "title": "Users & adoption",
+            "title": "Users",
             "kpis": kpis,
             "charts": charts,
             "table": table,
         }
 
-    # Workspace-level leaderboard metrics per platform: (metric name, plain
-    # label used in chart titles, e.g. "Top 5 workspaces by {label}").
-    _LEADERBOARD_METRICS = {
-        "em": [("EXPERIMENT_COUNT", "experiments")],
-        "opik": [("SPAN_COUNT", "spans"), ("TRACE_COUNT", "traces")],
-        "mpm": [("PREDICTION_VOLUME", "predictions")],
-    }
-
     # User-level leaderboard metrics: (top_users/bottom_users key, plain
     # label, value-extractor matching admin_growth_users._metric_value).
     _USER_LEADERBOARD_METRICS = [
-        ("opik_span_count", "Opik spans", lambda u: u.opik_span_count),
-        ("em_score", "activity", lambda u: u.experiment_count + u.data_logged_mb),
+        (
+            "opik_span_count",
+            "Opik spans",
+            lambda u: u.opik_span_count,
+            "org-wide (chargeback)",
+        ),
+        (
+            "em_score",
+            "EM activity",
+            lambda u: u.experiment_count + u.data_logged_mb,
+            "EM activity = experiments + data logged (MB); org-wide (chargeback)",
+        ),
     ]
 
     @staticmethod
-    def _leaderboard_chart(chart_id, title, rows):
-        return {
+    def _leaderboard_chart(chart_id, title, rows, hint=None):
+        chart = {
             "id": chart_id,
             "kind": "groupedBarsH",
             "title": title,
             "data": {"rows": rows},
         }
+        if hint:
+            chart["hint"] = hint
+        return chart
 
-    def _build_leaderboards_section(self, usage, users, ran):
-        """Top-N / bottom-N leaderboards: one per workspace-level metric of
-        each platform that actually ran (Task 5's `ran` map), plus user
-        leaderboards (by `opik_span_count`, by `em_score`) when `users` is
-        non-empty. Bottom-N is active-aware (strictly-positive values only,
-        ascending -- mirrors `bottom_users`). Platforms/metrics with no data
-        are omitted entirely (no empty panels); returns `None` when there is
-        nothing to show at all."""
+    @staticmethod
+    def _workspace_rollup(users, value_fn):
+        """Sum a per-user chargeback metric across each user's workspaces.
+        Approximate: chargeback carries per-user totals (not per-workspace), so
+        a user in multiple workspaces contributes their full total to each."""
+        totals = {}
+        for u in users:
+            value = value_fn(u) or 0
+            if value <= 0:
+                continue
+            for ws in u.workspaces:
+                totals[ws] = totals.get(ws, 0) + value
+        return totals
+
+    def _build_leaderboards_section(self, usage, users, ran, ws_records=None):
+        """Top-N / bottom-N workspace and user leaderboards.
+
+        Experiments and projects are ranked ORG-WIDE and EXACTLY from the
+        chargeback per-workspace numbers (`ws_records`) when available, else
+        from the SDK (accessible workspaces). Opik spans are org-wide from the
+        chargeback per-user rollup (a proxy: a member's spans are attributed to
+        each of their workspaces), else SDK. Traces and predictions have no
+        per-user/per-workspace chargeback field, so they stay SDK-sourced
+        (accessible workspaces only). Bottom-N is active-aware
+        (strictly-positive, ascending). Empty metrics are omitted; returns
+        `None` when there is nothing to show."""
         n = self.leaderboard_top_n
         charts = []
 
-        for platform, metrics in self._LEADERBOARD_METRICS.items():
-            if not ran.get(platform):
-                continue
-            for metric, label in metrics:
-                ws_metrics = [
-                    m
-                    for m in usage
-                    if m.platform == platform
-                    and m.metric == metric
-                    and m.project is None
-                ]
-                if not ws_metrics:
-                    continue
-
-                ranked_desc = sorted(ws_metrics, key=lambda m: m.value, reverse=True)
-                top_rows = [
-                    {"label": m.workspace, "value": m.value} for m in ranked_desc[:n]
-                ]
-                active_asc = sorted(
-                    (m for m in ws_metrics if m.value > 0), key=lambda m: m.value
+        def emit_ws(slug, label, totals, hint):
+            if not totals:
+                return
+            ranked = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
+            top_rows = [{"label": ws, "value": _num(v)} for ws, v in ranked[:n]]
+            active_asc = sorted(
+                ((ws, v) for ws, v in totals.items() if v > 0), key=lambda kv: kv[1]
+            )
+            bottom_rows = [{"label": ws, "value": _num(v)} for ws, v in active_asc[:n]]
+            if top_rows:
+                charts.append(
+                    self._leaderboard_chart(
+                        f"chart-lb-{slug}-top",
+                        f"Top {n} workspaces by {label}",
+                        top_rows,
+                        hint,
+                    )
                 )
-                bottom_rows = [
-                    {"label": m.workspace, "value": m.value} for m in active_asc[:n]
-                ]
+            if bottom_rows:
+                charts.append(
+                    self._leaderboard_chart(
+                        f"chart-lb-{slug}-bottom",
+                        f"Bottom {n} workspaces by {label}",
+                        bottom_rows,
+                        hint,
+                    )
+                )
 
-                slug = f"{platform}-{metric.lower()}"
-                if top_rows:
-                    charts.append(
-                        self._leaderboard_chart(
-                            f"chart-lb-{slug}-top",
-                            f"Top {n} workspaces by {label}",
-                            top_rows,
-                        )
-                    )
-                if bottom_rows:
-                    charts.append(
-                        self._leaderboard_chart(
-                            f"chart-lb-{slug}-bottom",
-                            f"Bottom {n} workspaces by {label}",
-                            bottom_rows,
-                        )
-                    )
+        def sdk_totals(platform, metric):
+            return {
+                m.workspace: m.value
+                for m in usage
+                if m.platform == platform and m.metric == metric and m.project is None
+            }
+
+        org_exact_hint = "org-wide, exact (chargeback per-workspace)"
+        org_proxy_hint = (
+            "org-wide from chargeback; per-user spans attributed to each of "
+            "the user's workspaces (proxy)"
+        )
+        sdk_hint = "accessible workspaces only (SDK)"
+
+        # Experiments + projects: exact, org-wide from chargeback per-workspace
+        # numbers when available, else SDK (accessible workspaces).
+        if ws_records:
+            emit_ws(
+                "ws-experiments",
+                "experiments",
+                {w.name: w.num_experiments for w in ws_records if w.num_experiments},
+                org_exact_hint,
+            )
+            emit_ws(
+                "ws-projects",
+                "projects",
+                {w.name: w.num_projects for w in ws_records if w.num_projects},
+                org_exact_hint,
+            )
+        elif ran.get("em"):
+            emit_ws(
+                "em-experiment_count",
+                "experiments",
+                sdk_totals("em", "EXPERIMENT_COUNT"),
+                sdk_hint,
+            )
+
+        # Opik spans: org-wide per-user rollup proxy when users present, else SDK.
+        if users:
+            emit_ws(
+                "ws-spans",
+                "Opik spans",
+                self._workspace_rollup(users, lambda u: u.opik_span_count or 0),
+                org_proxy_hint,
+            )
+        elif ran.get("opik"):
+            emit_ws(
+                "opik-span_count",
+                "Opik spans",
+                sdk_totals("opik", "SPAN_COUNT"),
+                sdk_hint,
+            )
+
+        # Predictions have no per-user chargeback field -> SDK only. (The
+        # workspace-by-traces board was removed: traces aren't a useful
+        # per-workspace ranking here and are SDK/accessible-only anyway.)
+        if ran.get("mpm"):
+            emit_ws(
+                "mpm-prediction_volume",
+                "predictions",
+                sdk_totals("mpm", "PREDICTION_VOLUME"),
+                sdk_hint,
+            )
 
         if users:
-            for key, label, value_fn in self._USER_LEADERBOARD_METRICS:
+            for key, label, value_fn, hint in self._USER_LEADERBOARD_METRICS:
                 top = top_users(users, key, n)
                 if top:
                     charts.append(
@@ -1116,6 +1739,7 @@ class GrowthReporter:
                             f"chart-lb-user-{key}-top",
                             f"Top {n} users by {label}",
                             [{"label": u.username, "value": value_fn(u)} for u in top],
+                            hint,
                         )
                     )
                 bottom = bottom_users(users, key, n)
@@ -1128,6 +1752,7 @@ class GrowthReporter:
                                 {"label": u.username, "value": value_fn(u)}
                                 for u in bottom
                             ],
+                            hint,
                         )
                     )
 
@@ -1162,7 +1787,7 @@ class GrowthReporter:
         hint = (
             "Source: service accounts from admin API."
             if source == "admin_api"
-            else "Source: heuristic (regex); admin API service-account data unavailable."
+            else "Source: heuristic (regex); admin API returned no service accounts."
         )
 
         charts = []
@@ -1194,11 +1819,80 @@ class GrowthReporter:
             "charts": charts,
         }
 
+    @staticmethod
+    def _scope_label(scope, sdk_count, org_workspaces, org_users, has_chargeback):
+        """One-line scope descriptor for the report header."""
+        if scope is not None:
+            return f"Scoped to {sdk_count} selected workspace(s)"
+        if has_chargeback and org_workspaces is not None:
+            return (
+                f"Org-wide: {org_workspaces} workspaces, {org_users} users "
+                f"(project & growth metrics cover {sdk_count} workspace(s) "
+                "accessible to this key)"
+            )
+        return f"Workspaces accessible to this key: {sdk_count}"
+
     def _assemble_report_data(
-        self, events, usage, ran, workspaces, window, chargeback=None, now_ms=None
+        self,
+        events,
+        usage,
+        ran,
+        workspaces,
+        window,
+        chargeback=None,
+        now_ms=None,
+        scope=None,
     ):
         workspaces_count = len(workspaces)
-        unified_section = self._build_unified_section(events, window, workspaces_count)
+
+        # Org totals from the FULL (unscoped) chargeback, for the header label.
+        # Use the SAME definitions as the section KPIs so header and KPIs never
+        # disagree: total workspaces = the chargeback workspace-list count (the
+        # authoritative "Total workspaces"); users = non-suspended count.
+        org_users = org_workspaces = None
+        if chargeback:
+            try:
+                org_users = sum(1 for u in parse_users(chargeback) if not u.suspended)
+                org_workspaces = len(parse_workspaces(chargeback))
+            except Exception:
+                # Malformed chargeback: fall back to a scope label without org
+                # totals; the section builders below degrade independently.
+                org_users = org_workspaces = None
+
+        # The chargeback layers are org-wide by default; when the caller passed
+        # an explicit workspace set, scope them down to match the SDK summary.
+        scoped_chargeback = chargeback
+        if chargeback and scope is not None:
+            scoped_chargeback = _scope_chargeback(chargeback, scope)
+
+        # Parse the (scoped) chargeback users once; feed the workspace-level
+        # chargeback metrics into the Workspaces & projects section and the
+        # user-level metrics into the Users section + leaderboards.
+        people_users = []
+        ws_records = []
+        active_window_days = None
+        if scoped_chargeback:
+            active_window_days = self._active_window_days(_ms_to_utc(now_ms))
+            try:
+                people_users = parse_users(scoped_chargeback)
+                ws_records = parse_workspaces(scoped_chargeback)
+            except Exception as exc:
+                print(
+                    f"Warning: failed to parse chargeback report; "
+                    f"skipping org layers: {_short_api_error(exc)}"
+                )
+                people_users = []
+                ws_records = []
+
+        unified_section = self._build_unified_section(
+            events,
+            window,
+            workspaces_count,
+            people_users=people_users,
+            ws_records=ws_records,
+            now_ms=now_ms,
+            active_window_days=active_window_days,
+        )
         count_before_unified = sum(
             1 for ev in unified_events(events) if ev.created < window.start
         )
@@ -1222,23 +1916,23 @@ class GrowthReporter:
             )
 
         sections = {"unified": unified_section, "products": products}
-        if chargeback:
+        if people_users:
             try:
-                people_section = self._build_people_section(chargeback, now_ms)
+                people_section = self._build_people_section(
+                    people_users, now_ms, window=window
+                )
             except Exception as exc:
                 print(
-                    f"Warning: failed to build people section from chargeback data; "
-                    f"skipping people layer: {exc}"
+                    f"Warning: failed to build users section from chargeback data; "
+                    f"skipping: {_short_api_error(exc)}"
                 )
                 people_section = None
             if people_section:
                 sections["people"] = people_section
 
-        leaderboard_users = []
         try:
-            leaderboard_users = parse_users(chargeback) if chargeback else []
             leaderboards_section = self._build_leaderboards_section(
-                usage, leaderboard_users, ran
+                usage, people_users, ran, ws_records=ws_records
             )
         except Exception as exc:
             print(f"Warning: failed to build leaderboards section; skipping: {exc}")
@@ -1248,10 +1942,16 @@ class GrowthReporter:
 
         try:
             personal_vs_service_section = None
-            if leaderboard_users:
+            if people_users:
                 service_account_names = _fetch_service_accounts(self.api)
+                # Admin endpoint first; fall back to the regex heuristic when it
+                # is unavailable (None) OR returns an empty set (no service
+                # accounts listed) -- an empty admin list is uninformative and
+                # would otherwise mislabel every account as personal.
+                if not service_account_names:
+                    service_account_names = None
                 personal_vs_service_section = self._build_personal_vs_service_section(
-                    leaderboard_users, service_account_names
+                    people_users, service_account_names
                 )
         except Exception as exc:
             print(
@@ -1266,6 +1966,13 @@ class GrowthReporter:
                 "title": "Comet growth report",
                 "generated": window.end.isoformat(),
                 "source": "Comet Admin API",
+                "scope": self._scope_label(
+                    scope,
+                    workspaces_count,
+                    org_workspaces,
+                    org_users,
+                    bool(chargeback),
+                ),
             },
             "window": self._build_window_block(window, count_before_unified),
             "collectors": ran,
@@ -1308,7 +2015,7 @@ class GrowthReporter:
                 )
                 projects = (response or {}).get("projects", []) or []
             except Exception as exc:
-                print(f"Warning: failed to list EM projects for workspace {ws}: {exc}")
+                print(f"Note: skipping EM for workspace {ws}: {_short_api_error(exc)}")
                 continue
 
             # The EM `projects` endpoint returns a FALLBACK set (projects from
@@ -1410,7 +2117,10 @@ class GrowthReporter:
                     )
                 )
             except Exception as exc:
-                print(f"Warning: failed to collect EM registry stats for {ws}: {exc}")
+                print(
+                    f"Warning: failed to collect EM registry stats for {ws}: "
+                    f"{_short_api_error(exc)}"
+                )
 
         return events, usage
 
@@ -1477,7 +2187,10 @@ class GrowthReporter:
             try:
                 client = opik.Opik(workspace=ws, api_key=api_key, host=host)
             except Exception as exc:
-                print(f"Warning: failed to init Opik client for workspace {ws}: {exc}")
+                print(
+                    f"Note: skipping Opik for workspace {ws}: "
+                    f"{_short_api_error(exc)}"
+                )
                 continue
 
             try:
@@ -1494,7 +2207,8 @@ class GrowthReporter:
                     page_num += 1
             except Exception as exc:
                 print(
-                    f"Warning: failed to list Opik projects for workspace {ws}: {exc}"
+                    f"Note: skipping Opik for workspace {ws}: "
+                    f"{_short_api_error(exc)}"
                 )
                 continue
 
@@ -1582,12 +2296,14 @@ class GrowthReporter:
                     except Exception as exc:
                         print(
                             f"Warning: failed to collect Opik TRACE_COUNT for "
-                            f"{ws}/{getattr(project, 'name', '?')}: {exc}"
+                            f"{ws}/{getattr(project, 'name', '?')}: "
+                            f"{_short_api_error(exc)}"
                         )
                 except Exception as exc:
                     print(
                         f"Warning: failed to collect Opik project "
-                        f"{ws}/{getattr(project, 'name', '?')}: {exc}"
+                        f"{ws}/{getattr(project, 'name', '?')}: "
+                        f"{_short_api_error(exc)}"
                     )
                     continue
 
@@ -1641,7 +2357,7 @@ class GrowthReporter:
             resp = mpm._client.get("api/mpm/v3/workspaces")
             all_workspaces = (resp or {}).get("workspaces", []) or []
         except Exception as exc:
-            print(f"Warning: failed to list MPM workspaces: {exc}")
+            print(f"Warning: failed to list MPM workspaces: {_short_api_error(exc)}")
             return [], []
 
         interval_type = "HOURLY" if self.units == "hour" else "DAILY"

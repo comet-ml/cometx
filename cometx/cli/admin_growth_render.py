@@ -20,10 +20,12 @@ inline JS that draws the charts as inline SVG from an embedded JSON payload,
 and server-rendered KPI/table/panel markup. No external assets, no network
 calls, no secrets -- `report_data` never carries an API key.
 
-Charts implement Option-A window rendering: a dashed accent-tinted band over
-`[window_start, window_end]`, accent-vs-muted bar fill inside/outside the
-window, hollow/filled start/end dots + a `Delta +N` label on cumulative
-charts, and a window chip rendered next to each section title.
+Charts render as plain month-on-month / week-on-week series with horizontal
+gridlines for scale. The earlier single-analysis-window overlay (a shaded
+`[window_start, window_end]` band with accent-vs-muted fill and start/end
+dots) has been removed now that the report is period-over-period; the
+`window_start`/`window_end` fields in chart data are retained but no longer
+drawn. A window chip is still rendered next to each section title.
 """
 
 from __future__ import annotations
@@ -254,6 +256,16 @@ CLIENT_JS = """
     });
   }
 
+  function hGrid(svg, yOf, maxVal, iw){
+    for(var g = 1; g <= 4; g++){
+      var v = maxVal * g / 4, y = yOf(v);
+      svg.appendChild(el("line", {class: "gridline", x1: P.l, x2: P.l + iw, y1: y, y2: y}));
+      var t = el("text", {x: P.l - 6, y: y + 3, "text-anchor": "end", fill: tok("--muted"),
+        "font-size": "10", "font-family": "var(--mono)"});
+      t.textContent = fmt(v); svg.appendChild(t);
+    }
+  }
+
   function drawBars(host, data){
     data = data || {}; var points = data.points || [];
     if(!points.length){ host.innerHTML = "<p class=\\"nodata\\">No data</p>"; return; }
@@ -262,19 +274,12 @@ CLIENT_JS = """
     var iw = W - P.l - P.r, ih = H - P.t - P.b, n = points.length;
     var max = 1; points.forEach(function(p){ max = Math.max(max, p.value || 0); });
     var slot = iw / n, bw = Math.min(38, slot * 0.55);
+    hGrid(svg, function(v){ return P.t + ih * (1 - v / max); }, max, iw);
     svg.appendChild(el("line", {class: "axis-base", x1: P.l, x2: P.l + iw, y1: P.t + ih, y2: P.t + ih}));
-    var wi0 = indexOfKey(points, data.window_start), wi1 = indexOfKey(points, data.window_end);
-    if(wi0 > -1 && wi1 > -1){
-      var bx0 = P.l + slot * wi0, bx1 = P.l + slot * (wi1 + 1);
-      svg.appendChild(el("rect", {x: bx0, y: P.t, width: (bx1 - bx0), height: ih, fill: band,
-        stroke: accent, "stroke-dasharray": "4 3", "stroke-width": "1", rx: "3"}));
-    }
     var cols = [];
     points.forEach(function(p, i){
       var v = p.value || 0, h = ih * (v / max), x = P.l + slot * i + (slot - bw) / 2, y = P.t + ih - h;
-      var inWin = p.in_window;
-      if(inWin === undefined || inWin === null) inWin = keyInRange(p.key, data.window_start, data.window_end);
-      svg.appendChild(el("rect", {x: x, y: y, width: bw, height: Math.max(h, 0), rx: "3", fill: inWin ? accent : mute}));
+      svg.appendChild(el("rect", {x: x, y: y, width: bw, height: Math.max(h, 0), rx: "3", fill: accent}));
       cols.push({x: P.l + slot * i + slot / 2, x0: P.l + slot * i, w: slot, key: p.key, value: v});
       if(i % Math.max(1, Math.ceil(n / 8)) === 0){
         var t = el("text", {x: x + bw / 2, y: H - 8, "text-anchor": "middle", fill: tok("--muted"),
@@ -295,44 +300,21 @@ CLIENT_JS = """
     var max = 1; points.forEach(function(p){ max = Math.max(max, p.value || 0); });
     var X = function(i){ return n > 1 ? P.l + iw * (i / (n - 1)) : P.l + iw / 2; };
     var Y = function(v){ return P.t + ih * (1 - v / max); };
+    hGrid(svg, Y, max, iw);
     svg.appendChild(el("line", {class: "axis-base", x1: P.l, x2: P.l + iw, y1: P.t + ih, y2: P.t + ih}));
-    var wi0 = indexOfKey(points, data.window_start), wi1 = indexOfKey(points, data.window_end);
-    if(wi0 > -1 && wi1 > -1){
-      svg.appendChild(el("rect", {x: X(wi0), y: P.t, width: Math.max(X(wi1) - X(wi0), 1), height: ih,
-        fill: band, stroke: accent, "stroke-dasharray": "4 3", "stroke-width": "1", rx: "3"}));
-    }
     var dp = "M" + X(0) + " " + Y(points[0].value || 0);
     points.forEach(function(p, i){ if(i) dp += " L" + X(i) + " " + Y(p.value || 0); });
     var area = dp + " L" + X(n - 1) + " " + (P.t + ih) + " L" + X(0) + " " + (P.t + ih) + " Z";
     svg.appendChild(el("path", {d: area, fill: accent, opacity: "0.12"}));
     svg.appendChild(el("path", {d: dp, fill: "none", stroke: accent, "stroke-width": "2",
       "stroke-linejoin": "round", "stroke-linecap": "round"}));
-    if(wi0 > -1){
-      svg.appendChild(el("circle", {cx: X(wi0), cy: Y(points[wi0].value || 0), r: "4", fill: tok("--card"),
-        stroke: accent, "stroke-width": "2"}));
-    }
-    if(wi1 > -1){
-      svg.appendChild(el("circle", {cx: X(wi1), cy: Y(points[wi1].value || 0), r: "4", fill: accent,
-        stroke: tok("--card"), "stroke-width": "2"}));
-      if(data.delta !== undefined && data.delta !== null){
-        var t = el("text", {x: X(wi1) + 8, y: Y(points[wi1].value || 0) - 8, "text-anchor": "start",
-          fill: accent, "font-size": "11", "font-family": "var(--mono)", "font-weight": "600"});
-        t.textContent = "\\u0394 +" + fmt(data.delta);
-        svg.appendChild(t);
-      }
-    }
-    // y max gridline + label so the scale is readable
-    svg.appendChild(el("line", {class: "gridline", x1: P.l, x2: P.l + iw, y1: Y(max), y2: Y(max)}));
-    var maxL = el("text", {x: P.l - 6, y: Y(max) + 3, "text-anchor": "end", fill: tok("--muted"),
-      "font-size": "10", "font-family": "var(--mono)"});
-    maxL.textContent = fmt(max); svg.appendChild(maxL);
-    // final cumulative value label (skip if it would collide with the window-end marker)
+    // final cumulative value label + end marker
     var endV = points[n - 1].value || 0;
-    if(wi1 < 0){
-      var eL = el("text", {x: X(n - 1), y: Y(endV) - 8, "text-anchor": "end", fill: accent,
-        "font-size": "11", "font-family": "var(--mono)", "font-weight": "600"});
-      eL.textContent = fmt(endV); svg.appendChild(eL);
-    }
+    var eL = el("text", {x: X(n - 1), y: Y(endV) - 8, "text-anchor": "end", fill: accent,
+      "font-size": "11", "font-family": "var(--mono)", "font-weight": "600"});
+    eL.textContent = fmt(endV); svg.appendChild(eL);
+    svg.appendChild(el("circle", {cx: X(n - 1), cy: Y(endV), r: "4", fill: accent,
+      stroke: tok("--card"), "stroke-width": "2"}));
     // x-axis: cumulative charts show only the earliest and latest dates
     var slotA = n > 1 ? iw / (n - 1) : iw;
     [0, n - 1].forEach(function(i){
@@ -361,22 +343,15 @@ CLIENT_JS = """
     });
     var max = Math.max.apply(null, totals.concat([1]));
     var slot = iw / n, bw = Math.min(38, slot * 0.55);
+    hGrid(svg, function(v){ return P.t + ih * (1 - v / max); }, max, iw);
     svg.appendChild(el("line", {class: "axis-base", x1: P.l, x2: P.l + iw, y1: P.t + ih, y2: P.t + ih}));
-    var wi0 = indexOfKey(points, data.window_start), wi1 = indexOfKey(points, data.window_end);
-    if(wi0 > -1 && wi1 > -1){
-      var bx0 = P.l + slot * wi0, bx1 = P.l + slot * (wi1 + 1);
-      svg.appendChild(el("rect", {x: bx0, y: P.t, width: (bx1 - bx0), height: ih, fill: band,
-        stroke: accent, "stroke-dasharray": "4 3", "stroke-width": "1", rx: "3"}));
-    }
     var cols = [];
     points.forEach(function(p, i){
       var x = P.l + slot * i + (slot - bw) / 2, yCursor = P.t + ih;
-      var inWin = keyInRange(p.key, data.window_start, data.window_end);
       cats.forEach(function(c, ci){
         var v = (p.values && p.values[c]) || 0; if(!v) return;
         var h = ih * (v / max), y = yCursor - h;
-        svg.appendChild(el("rect", {x: x, y: y, width: bw, height: h, fill: tok(colors[ci % colors.length]),
-          opacity: inWin ? "1" : "0.45"}));
+        svg.appendChild(el("rect", {x: x, y: y, width: bw, height: h, fill: tok(colors[ci % colors.length])}));
         yCursor = y;
       });
       cols.push({x: P.l + slot * i + slot / 2, x0: P.l + slot * i, w: slot, key: p.key, value: totals[i]});
@@ -403,17 +378,8 @@ CLIENT_JS = """
     });
     var X = function(i){ return n > 1 ? P.l + iw * (i / (n - 1)) : P.l + iw / 2; };
     var Y = function(v){ return P.t + ih * (1 - v / max); };
+    hGrid(svg, Y, max, iw);
     svg.appendChild(el("line", {class: "axis-base", x1: P.l, x2: P.l + iw, y1: P.t + ih, y2: P.t + ih}));
-    var wi0 = indexOfKey(points, data.window_start), wi1 = indexOfKey(points, data.window_end);
-    if(wi0 > -1 && wi1 > -1){
-      svg.appendChild(el("rect", {x: X(wi0), y: P.t, width: Math.max(X(wi1) - X(wi0), 1), height: ih,
-        fill: band, stroke: accent, "stroke-dasharray": "4 3", "stroke-width": "1", rx: "3"}));
-    }
-    // y max gridline + label so the scale is readable
-    svg.appendChild(el("line", {class: "gridline", x1: P.l, x2: P.l + iw, y1: Y(max), y2: Y(max)}));
-    var maxL = el("text", {x: P.l - 6, y: Y(max) + 3, "text-anchor": "end", fill: tok("--muted"),
-      "font-size": "10", "font-family": "var(--mono)"});
-    maxL.textContent = fmt(max); svg.appendChild(maxL);
     // one polyline per category
     cats.forEach(function(c, ci){
       var col = tok(colors[ci % colors.length]);
@@ -480,6 +446,51 @@ CLIENT_JS = """
     host.appendChild(svg);
   }
 
+  function drawBarsLine(host, data){
+    data = data || {}; var points = data.points || []; var bars = data.bars || [];
+    var lineCat = data.line;
+    if(!points.length || !bars.length){ host.innerHTML = "<p class=\\"nodata\\">No data</p>"; return; }
+    var barColors = (data.bar_colors && data.bar_colors.length) ? data.bar_colors : ["--ok", "--warn"];
+    var lineColor = data.line_color || "--accent";
+    var svg = el("svg", {viewBox: "0 0 " + W + " " + H, role: "img"});
+    var iw = W - P.l - P.r, ih = H - P.t - P.b, n = points.length;
+    var lmax = 1, rmax = 1;
+    points.forEach(function(p){
+      bars.forEach(function(b){ lmax = Math.max(lmax, (p.values && p.values[b]) || 0); });
+      rmax = Math.max(rmax, (p.values && p.values[lineCat]) || 0);
+    });
+    var slot = iw / n, group = Math.min(slot * 0.7, 40), bw = group / bars.length;
+    var YL = function(v){ return P.t + ih * (1 - v / lmax); };
+    var YR = function(v){ return P.t + ih * (1 - v / rmax); };
+    var cx = function(i){ return P.l + slot * i + slot / 2; };
+    hGrid(svg, YL, lmax, iw);
+    svg.appendChild(el("line", {class: "axis-base", x1: P.l, x2: P.l + iw, y1: P.t + ih, y2: P.t + ih}));
+    points.forEach(function(p, i){
+      var gx = P.l + slot * i + (slot - group) / 2;
+      bars.forEach(function(b, bi){
+        var v = (p.values && p.values[b]) || 0; if(v <= 0) return;
+        var h = ih * (v / lmax);
+        svg.appendChild(el("rect", {x: gx + bw * bi, y: P.t + ih - h, width: Math.max(bw - 2, 1),
+          height: h, rx: "2", fill: tok(barColors[bi % barColors.length])}));
+      });
+      if(i % Math.max(1, Math.ceil(n / 8)) === 0){
+        var t = el("text", {x: cx(i), y: H - 8, "text-anchor": "middle", fill: tok("--muted"),
+          "font-size": "10", "font-family": "var(--mono)"});
+        t.textContent = p.key; svg.appendChild(t);
+      }
+    });
+    if(lineCat){
+      var dp = "";
+      points.forEach(function(p, i){ dp += (i ? " L" : "M") + cx(i) + " " + YR((p.values && p.values[lineCat]) || 0); });
+      svg.appendChild(el("path", {d: dp, fill: "none", stroke: tok(lineColor), "stroke-width": "2",
+        "stroke-linejoin": "round", "stroke-linecap": "round"}));
+      points.forEach(function(p, i){
+        svg.appendChild(el("circle", {cx: cx(i), cy: YR((p.values && p.values[lineCat]) || 0), r: "2.5", fill: tok(lineColor)}));
+      });
+    }
+    host.appendChild(svg);
+  }
+
   function drawChart(c){
     if(!c || !c.id) return;
     var host = document.getElementById(c.id); if(!host) return;
@@ -488,6 +499,7 @@ CLIENT_JS = """
     else if(c.kind === "area") drawArea(host, c.data);
     else if(c.kind === "stackedBars") drawStacked(host, c.data);
     else if(c.kind === "lines") drawLines(host, c.data);
+    else if(c.kind === "barsLine") drawBarsLine(host, c.data);
     else if(c.kind === "groupedBarsH") drawGroupedH(host, c.data);
   }
 
@@ -648,6 +660,8 @@ def render_topbar(report_data: dict) -> str:
     meta_bits = []
     if meta.get("org"):
         meta_bits.append(f'<span>Organization <b>{_esc(meta["org"])}</b></span>')
+    if meta.get("scope"):
+        meta_bits.append(f'<span>Scope <b>{_esc(meta["scope"])}</b></span>')
     if window.get("label"):
         meta_bits.append(
             f'<span>Window <b class="mono">{_esc(window["label"])}</b></span>'

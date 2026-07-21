@@ -1009,11 +1009,11 @@ def _sample_report_data():
         "collectors": {"opik": True, "em": True, "mpm": False},
         "sections": {
             "unified": {
-                "title": "Use cases across all platforms",
+                "title": "Workspaces & projects",
                 "window_chip": "Analysis window: Jul 2 – Jul 9, 2026 (7d)",
                 "kpis": [
                     {"label": "Workspaces", "value": 4},
-                    {"label": "Use cases", "value": 77, "tone": "ok"},
+                    {"label": "Projects", "value": 77, "tone": "ok"},
                     {"label": "New (7d)", "value": "+12"},
                     {
                         "label": "Growth (7d)",
@@ -1025,7 +1025,7 @@ def _sample_report_data():
                     {
                         "id": "chart-unified-created",
                         "kind": "stackedBars",
-                        "title": "Use cases created",
+                        "title": "Projects created",
                         "hint": "by kind · monthly",
                         "legend": [
                             {"label": "Opik", "color": "--accent"},
@@ -1069,7 +1069,7 @@ def _sample_report_data():
                     {
                         "id": "chart-unified-by-workspace",
                         "kind": "groupedBarsH",
-                        "title": "Use cases by workspace",
+                        "title": "Projects by workspace",
                         "hint": "current totals",
                         "data": {
                             "rows": [
@@ -1211,7 +1211,7 @@ def test_build_html_is_self_contained_and_secure():
     assert 'id="report-data"' in doc
     assert "http://" not in doc
     assert "https://" not in doc
-    assert "Use cases across all platforms" in doc
+    assert "Workspaces & projects" in doc
     assert "<svg" not in doc  # charts are drawn client-side, not server-side
     assert "createElementNS" in doc  # the inline SVG-drawing JS
     assert '"window"' in doc  # the embedded json payload
@@ -1354,7 +1354,7 @@ def test_write_html_writes_file_and_returns_path(tmp_path):
     content = out.read_text(encoding="utf-8")
     assert "<style>" in content
     assert 'id="report-data"' in content
-    assert "Use cases across all platforms" in content
+    assert "Workspaces & projects" in content
 
 
 def test_write_growth_html_delegates_to_renderer(tmp_path):
@@ -1571,25 +1571,32 @@ def test_build_assembles_report_data_matching_c8_contract(monkeypatch):
     assert "7d" in window["label"]
 
     unified = report_data["sections"]["unified"]
-    assert unified["title"] == "Use cases across all platforms"
+    # Chargeback fetch is mocked to fail here, so the section falls back to the
+    # SDK (accessible-workspaces) view.
+    assert unified["title"] == "Workspaces & projects (accessible)"
     kpi_labels = [k["label"] for k in unified["kpis"]]
-    assert "Workspaces" in kpi_labels
+    assert "Total workspaces" in kpi_labels
     assert "Departments" not in kpi_labels
-    assert "Use cases" in kpi_labels
-    use_cases_kpi = next(k for k in unified["kpis"] if k["label"] == "Use cases")
-    assert use_cases_kpi["value"] == 6  # 3 opik + 2 em + 1 mpm
+    assert "Total projects" in kpi_labels
+    projects_kpi = next(k for k in unified["kpis"] if k["label"] == "Total projects")
+    assert projects_kpi["value"] == 6  # 3 opik + 2 em + 1 mpm
 
-    chart_ids = [c["id"] for c in unified["charts"]]
-    assert "chart-unified-created" not in chart_ids or True  # ids are ours
-    kinds_chart = next(c for c in unified["charts"] if c["kind"] == "stackedBars")
+    # projects-created chart is stacked by kind (Opik/EM/MPM projects)
+    kinds_chart = next(
+        c for c in unified["charts"] if c["id"] == "chart-unified-created"
+    )
     assert kinds_chart["data"]["categories"] == [
         "opik_project",
         "em_project",
         "mpm_model",
     ]
-    dept_chart = next(c for c in unified["charts"] if c["kind"] == "groupedBarsH")
-    dept_labels = {r["label"] for r in dept_chart["data"]["rows"]}
-    assert dept_labels == {"ws-alpha", "ws-beta"}
+    # the per-workspace breakdown now lives only in the unified table (the
+    # "Projects by workspace" chart was removed); the summary charts are the
+    # four created/cumulative workspace + project series
+    chart_ids = [c["id"] for c in unified["charts"]]
+    assert "chart-unified-by-workspace" not in chart_ids
+    assert "chart-unified-workspaces-cumulative" in chart_ids
+    assert "chart-unified-projects-cumulative" in chart_ids
 
     # multi-workspace -> unified table breaks down by workspace
     assert unified["table"]["title"] == "By workspace"
@@ -1682,7 +1689,7 @@ def test_build_single_workspace_breaks_down_unified_table_by_use_case(monkeypatc
     report_data = reporter.build(["ws1"])
 
     unified_table = report_data["sections"]["unified"]["table"]
-    assert unified_table["headers"][0] == "Use case"
+    assert unified_table["headers"][0] == "Project"
     assert unified_table["rows"] == [["op1", "Opik projects", "2026-06-01"]]
 
 
@@ -1709,7 +1716,7 @@ def test_generate_growth_report_writes_html_with_no_secret(monkeypatch, tmp_path
 
     content = out.read_text(encoding="utf-8")
     assert path == str(out)
-    assert "Use cases across all platforms" in content
+    assert "Workspaces & projects" in content
     assert "op1" in content or "op2" in content
     assert "sk-should-never-leak-0000" not in content
 
@@ -1763,7 +1770,7 @@ def test_generate_growth_report_full_chain_all_platforms(monkeypatch, tmp_path):
     assert path == str(out)
 
     # Section titles from all three product sections + the unified section.
-    assert "Use cases across all platforms" in content
+    assert "Workspaces & projects" in content
     assert "Opik — growth" in content
     assert "EM — growth" in content
     assert "MPM — growth" in content
@@ -1810,11 +1817,64 @@ def test_people_section_built_from_chargeback():
         include_users=True,
         leaderboard_top_n=5,
     )
-    section = r._build_people_section(cb, now_ms=4_500)
-    assert section["title"].startswith("Users")
+    from cometx.cli.admin_growth_users import parse_users
+
+    section = r._build_people_section(parse_users(cb), now_ms=4_500)
+    assert section["title"] == "Users"
     labels = [k["label"] for k in section["kpis"]]
-    assert any("Active" in x for x in labels)
-    assert any("Adoption" in x for x in labels)
+    assert "Active users %" in labels
+    # workspace metrics moved to the Workspaces & projects section
+    assert "Active workspaces %" not in labels
+    assert any(x.startswith("Active users (") for x in labels)
+
+
+def test_people_section_user_growth_kpi_with_window():
+    from cometx.cli.admin_growth_report import GrowthReporter
+    from cometx.cli.admin_growth_users import parse_users
+
+    before = int(
+        datetime.datetime(2025, 6, 1, tzinfo=datetime.timezone.utc).timestamp() * 1000
+    )
+    in_win = int(
+        datetime.datetime(2026, 3, 1, tzinfo=datetime.timezone.utc).timestamp() * 1000
+    )
+    now_ms = int(
+        datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc).timestamp() * 1000
+    )
+    cb = {
+        "workspaces": [],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "old1",
+                    "email": "o1",
+                    "createdAt": before,
+                    "lastUsedAt": now_ms,
+                },
+                {
+                    "username": "old2",
+                    "email": "o2",
+                    "createdAt": before,
+                    "lastUsedAt": now_ms,
+                },
+                {
+                    "username": "new1",
+                    "email": "n1",
+                    "createdAt": in_win,
+                    "lastUsedAt": now_ms,
+                },
+            ]
+        },
+    }
+    api = MagicMock()
+    r = GrowthReporter(
+        api, window="7d", units="month", platforms="em", active_window="60d"
+    )
+    section = r._build_people_section(parse_users(cb), now_ms=now_ms, window=_win())
+    growth = next(k for k in section["kpis"] if k["label"].startswith("New in"))
+    # one new account in-window vs two before => 50%, "+1 new"
+    assert growth["value"] == "50.0%"
+    assert growth["sub"] == "+1 new"
 
 
 def test_include_users_false_skips_people(monkeypatch):
@@ -2239,3 +2299,319 @@ def test_exclude_personal_without_pattern_is_noop():
         personal_pattern=None,
     )
     assert r._filter_personal(["a", "b"]) == ["a", "b"]
+
+
+def test_workspace_first_events_and_cumulative_growth():
+    import datetime
+
+    from cometx.cli.admin_growth_report import CreationEvent, GrowthReporter
+
+    api = MagicMock()
+    api.config = {"comet.url_override": "https://c.example.com"}
+
+    def ev(ws, y, m):
+        return CreationEvent(
+            "opik",
+            ws,
+            f"{ws}-{y}-{m}",
+            "opik_project",
+            datetime.datetime(y, m, 1, tzinfo=datetime.timezone.utc),
+        )
+
+    # A first seen Jan (has a later Feb project too -> must dedup to Jan),
+    # B/C Feb, D Mar -> workspace cumulative total 1,3,4
+    events = [
+        ev("A", 2024, 1),
+        ev("A", 2024, 2),
+        ev("B", 2024, 2),
+        ev("C", 2024, 2),
+        ev("D", 2024, 3),
+    ]
+    r = GrowthReporter(api, window="7d", units="month", platforms="opik")
+
+    ws_events = r._workspace_first_events(events)
+    # one event per workspace, at its earliest month
+    assert {e.workspace: e.created.strftime("%Y-%m") for e in ws_events} == {
+        "A": "2024-01",
+        "B": "2024-02",
+        "C": "2024-02",
+        "D": "2024-03",
+    }
+
+    chart = r._cumulative_area_chart(
+        ws_events, "chart-unified-workspaces-cumulative", "Total workspaces over time"
+    )
+    assert chart["kind"] == "area"
+    totals = {p["key"]: p["value"] for p in chart["data"]["points"]}
+    assert totals == {"2024-01": 1, "2024-02": 3, "2024-03": 4}
+    # no obsolete window band on the growth curve
+    assert chart["data"]["window_start"] is None
+    # a single period is not enough of a trajectory to plot -> no chart
+    assert r._cumulative_area_chart([ev("A", 2024, 1)], "id", "t") is None
+
+
+def _cb_lb():
+    return {
+        "workspaces": [
+            {"name": "team-a", "members": [{"userName": "alice"}, {"userName": "bob"}]},
+            {"name": "team-b", "members": [{"userName": "alice"}]},
+        ],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "alice",
+                    "email": "a@x",
+                    "experimentCount": 40,
+                    "dataLoggedMb": 10.0,
+                    "opikSpanCount": 5000,
+                    "lastUsedAt": 1,
+                },
+                {
+                    "username": "bob",
+                    "email": "b@x",
+                    "experimentCount": 1,
+                    "dataLoggedMb": 2.0,
+                    "opikSpanCount": 0,
+                    "lastUsedAt": 1,
+                },
+            ]
+        },
+    }
+
+
+def test_scope_chargeback_filters_workspaces_and_users():
+    from cometx.cli.admin_growth_report import _scope_chargeback
+
+    cb = {
+        "workspaces": [
+            {"name": "team-a", "members": [{"userName": "alice"}, {"userName": "bob"}]},
+            {"name": "team-b", "members": [{"userName": "carol"}]},
+        ],
+        "users": {
+            "licensedUsers": [
+                {"username": "alice"},
+                {"username": "bob"},
+                {"username": "carol"},
+            ]
+        },
+    }
+    scoped = _scope_chargeback(cb, {"team-a"})
+    assert [w["name"] for w in scoped["workspaces"]] == ["team-a"]
+    assert {u["username"] for u in scoped["users"]["licensedUsers"]} == {"alice", "bob"}
+
+
+def test_scope_label_org_vs_scoped():
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    org = GrowthReporter._scope_label(None, 4, 165, 137, True)
+    assert org.startswith("Org-wide: 165 workspaces, 137 users")
+    assert "4 workspace(s)" in org
+    assert GrowthReporter._scope_label({"a", "b"}, 2, 165, 137, True) == (
+        "Scoped to 2 selected workspace(s)"
+    )
+    assert "accessible to this key: 4" in GrowthReporter._scope_label(
+        None, 4, None, None, False
+    )
+
+
+def test_leaderboards_workspaces_org_wide_from_chargeback():
+    from cometx.cli.admin_growth_report import GrowthReporter
+    from cometx.cli.admin_growth_users import parse_users, parse_workspaces
+
+    # chargeback with EXACT per-workspace experiment/project counts
+    cb = {
+        "workspaces": [
+            {
+                "name": "team-a",
+                "numberOfExperiments": 40,
+                "projects": [{}, {}],
+                "members": [{"userName": "alice"}],
+            },
+            {
+                "name": "team-b",
+                "numberOfExperiments": 90,
+                "projects": [{}],
+                "members": [{"userName": "bob"}],
+            },
+        ],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "alice",
+                    "email": "a",
+                    "opikSpanCount": 5000,
+                    "lastUsedAt": 1,
+                },
+                {"username": "bob", "email": "b", "opikSpanCount": 0, "lastUsedAt": 1},
+            ]
+        },
+    }
+    api = MagicMock()
+    r = GrowthReporter(
+        api, window="7d", units="month", platforms="em,opik", leaderboard_top_n=5
+    )
+    section = r._build_leaderboards_section(
+        usage=[],
+        users=parse_users(cb),
+        ran={"em": True, "opik": True, "mpm": False},
+        ws_records=parse_workspaces(cb),
+    )
+    exp_top = next(
+        c for c in section["charts"] if c["id"] == "chart-lb-ws-experiments-top"
+    )
+    # exact per-workspace numberOfExperiments: team-b(90) > team-a(40)
+    assert [row["label"] for row in exp_top["data"]["rows"]] == ["team-b", "team-a"]
+    assert exp_top["data"]["rows"][0]["value"] == 90
+    assert "exact" in exp_top["hint"]
+    # projects leaderboard (exact) + Opik spans (per-user proxy) also present
+    assert any(c["id"] == "chart-lb-ws-projects-top" for c in section["charts"])
+    assert any(c["id"] == "chart-lb-ws-spans-top" for c in section["charts"])
+
+
+def test_unified_section_org_overview_from_chargeback():
+    from cometx.cli.admin_growth_report import GrowthReporter
+    from cometx.cli.admin_growth_users import parse_users, parse_workspaces
+
+    jan = int(
+        datetime.datetime(2026, 1, 15, tzinfo=datetime.timezone.utc).timestamp() * 1000
+    )
+    feb = int(
+        datetime.datetime(2026, 2, 15, tzinfo=datetime.timezone.utc).timestamp() * 1000
+    )
+    now_ms = int(
+        datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc).timestamp() * 1000
+    )
+    cb = {
+        "workspaces": [
+            {
+                "name": "team-a",
+                "numberOfExperiments": 40,
+                "projects": [{}, {}],
+                "members": [{"userName": "alice"}],
+            },
+            {
+                "name": "team-b",
+                "numberOfExperiments": 90,
+                "projects": [{}],
+                "members": [{"userName": "bob"}],
+            },
+        ],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "alice",
+                    "email": "a",
+                    "createdAt": jan,
+                    "lastUsedAt": now_ms,
+                },
+                {
+                    "username": "bob",
+                    "email": "b",
+                    "createdAt": feb,
+                    "lastUsedAt": now_ms,
+                },
+            ]
+        },
+    }
+    api = MagicMock()
+    r = GrowthReporter(api, window="7d", units="month", platforms="em,opik")
+    section = r._build_unified_section(
+        [],
+        _win(),
+        0,
+        people_users=parse_users(cb),
+        ws_records=parse_workspaces(cb),
+        now_ms=now_ms,
+        active_window_days=30,
+    )
+    assert section["title"] == "Organization overview (chargeback)"
+    kpi_labels = [k["label"] for k in section["kpis"]]
+    # "Total experiments" was replaced by a workspace-growth KPI (analog of the
+    # Users section's user-growth KPI), labelled "New in <window> (% of base)".
+    assert any(x.startswith("New in") for x in kpi_labels)
+    assert "Total experiments" not in kpi_labels
+    growth = next(k for k in section["kpis"] if k["label"].startswith("New in"))
+    # alice's team-a created in Jan (in-window), bob's team-b in Feb (in-window),
+    # none before the window start -> 0 before -> 0.0%, "+2 new"
+    assert growth["sub"] == "+2 new"
+    ids = [c["id"] for c in section["charts"]]
+    # Chargeback charts stay; SDK creation timelines move to per-product sections.
+    assert "chart-unified-platform-mix" in ids
+    assert "chart-unified-workspaces-created" not in ids
+    assert "chart-unified-projects-cumulative" not in ids
+    # Added-vs-deleted is now a bars+line combo, not a plain line chart.
+    churn = next(
+        c for c in section["charts"] if c["id"] == "chart-unified-workspace-churn"
+    )
+    assert churn["kind"] == "barsLine"
+    assert churn["data"]["bars"] == ["added", "deleted"]
+    assert churn["data"]["line"] == "rate"
+    assert all("rate" in p["values"] for p in churn["data"]["points"])
+    assert section["table"]["title"] == "By workspace (org-wide, chargeback)"
+
+
+def test_leaderboards_omit_traces_board():
+    from cometx.cli.admin_growth_report import GrowthReporter
+    from cometx.cli.admin_growth_users import parse_users, parse_workspaces
+
+    cb = {
+        "workspaces": [
+            {
+                "name": "team-a",
+                "numberOfExperiments": 5,
+                "projects": [{}],
+                "members": [{"userName": "a"}],
+            }
+        ],
+        "users": {"licensedUsers": [{"username": "a", "email": "a", "lastUsedAt": 1}]},
+    }
+    api = MagicMock()
+    r = GrowthReporter(api, window="7d", units="month", platforms="em,opik")
+    section = r._build_leaderboards_section(
+        usage=[],
+        users=parse_users(cb),
+        ran={"em": True, "opik": True, "mpm": False},
+        ws_records=parse_workspaces(cb),
+    )
+    assert not any("traces" in c["id"] for c in section["charts"])
+
+
+def test_short_api_error_condenses_verbose_sdk_error():
+    from cometx.cli.admin_growth_report import _short_api_error
+
+    verbose = (
+        "headers: {'content-security-policy': \"base-uri 'self'\"}, "
+        "status_code: 400, body: {'code': 400, 'message': 'No such workspace!'}"
+    )
+    assert _short_api_error(verbose) == "400: No such workspace!"
+    assert _short_api_error("plain boom") == "plain boom"
+    long = "x" * 300
+    assert len(_short_api_error(long)) <= 160
+
+
+def test_growth_rate_chart_period_over_period():
+    import datetime
+
+    from cometx.cli.admin_growth_report import CreationEvent, GrowthReporter
+
+    api = MagicMock()
+    api.config = {"comet.url_override": "https://c.example.com"}
+
+    def ev(y, m):
+        return CreationEvent(
+            "opik",
+            "w",
+            f"p{y}{m}",
+            "opik_project",
+            datetime.datetime(y, m, 1, tzinfo=datetime.timezone.utc),
+        )
+
+    # new per month: Jan 1, Feb 2, Mar 1 -> cumulative 1,3,4 -> rate 0, 200, 33.3
+    events = [ev(2024, 1), ev(2024, 2), ev(2024, 2), ev(2024, 3)]
+    r = GrowthReporter(api, window="7d", units="month", platforms="opik")
+    c = r._growth_rate_chart(events, "chart-x", "Growth rate")
+    assert c["kind"] == "lines"
+    rates = {p["key"]: p["values"]["rate"] for p in c["data"]["points"]}
+    assert rates == {"2024-01": 0.0, "2024-02": 200.0, "2024-03": 33.3}
+    # single period -> no rate
+    assert r._growth_rate_chart([ev(2024, 1)], "x", "t") is None

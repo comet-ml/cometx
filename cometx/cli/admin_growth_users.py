@@ -124,6 +124,32 @@ def adoption_stats(users, now_ms: int, active_window_days: int) -> dict:
     return {"total": total, "active": active, "adoption_pct": adoption_pct}
 
 
+def workspace_active_stats(
+    users, now_ms: int, active_window_days: int, all_workspaces=None
+) -> dict:
+    """Workspace-level analogue of `adoption_stats`. A workspace is `active`
+    when it has a non-suspended member active within the window (same rule as
+    active users). `total` is the size of `all_workspaces` when provided (the
+    authoritative chargeback workspace list, so the denominator matches the
+    "Total workspaces" count even for zero-member/inactive workspaces);
+    otherwise it falls back to the set of workspaces seen via membership.
+    `active_pct` is 0-guarded."""
+    active_ws = set()
+    member_ws = set()
+    for u in users:
+        if u.suspended:
+            continue
+        member_active = is_active(u, now_ms, active_window_days)
+        for ws in u.workspaces:
+            member_ws.add(ws)
+            if member_active:
+                active_ws.add(ws)
+    total = len(all_workspaces) if all_workspaces is not None else len(member_ws)
+    active = len(active_ws)
+    active_pct = round(active / total * 100, 1) if total else 0.0
+    return {"total": total, "active": active, "active_pct": active_pct}
+
+
 def _metric_value(user: UserRecord, key: str):
     """Return the raw metric value for `key`, or None if the metric is
     absent for this user (only possible for opik_span_count)."""
@@ -161,8 +187,11 @@ def bottom_users(users, key: str, n: int) -> "list[UserRecord]":
 # Prefix-style tokens: match only at the start of the username, or right
 # after a `.`/`_`/`-` separator (i.e. as a whole name-segment prefix).
 _SERVICE_ACCOUNT_PREFIX_PATTERN = re.compile(
-    r"(?:^|[._-])(?:svc|sa|bot)-", re.IGNORECASE
+    r"(?:^|[._-])(?:svc|sa|bot|pipeline)-", re.IGNORECASE
 )
+# Keyword token: the client notebook flags any username containing "automated"
+# as a service account (substring match). Kept as a plain substring for parity.
+_SERVICE_ACCOUNT_KEYWORD_PATTERN = re.compile(r"automated", re.IGNORECASE)
 # Segment token: matched as-is against the username (already has a leading
 # hyphen boundary, so no separate anchoring is needed). Bounded at the tail
 # to end-of-string or the next separator so "jane-service-accountant" is not
@@ -187,6 +216,8 @@ def _looks_like_service_account(user: UserRecord) -> bool:
     if _SERVICE_ACCOUNT_PREFIX_PATTERN.search(username):
         return True
     if _SERVICE_ACCOUNT_SEGMENT_PATTERN.search(username):
+        return True
+    if _SERVICE_ACCOUNT_KEYWORD_PATTERN.search(username):
         return True
     email = user.email or ""
     domain = email.rsplit("@", 1)[-1] if "@" in email else ""
@@ -354,3 +385,309 @@ def capability_series(
         )
         points.append({"key": key, "values": {"em": em_active, "opik": opik_active}})
     return points
+
+
+def adoption_rate_series(
+    users: "list[UserRecord]", units: str, now_ms: int, active_window_days: int
+) -> "list[dict]":
+    """Per-bucket adoption RATES (percentages), mirroring the client
+    notebook's "Adoption Rates" panel. For each bucket: `total` =
+    non-suspended users existing as of bucket-end; each rate is the share of
+    that total active within the rolling `active_window_days` window ending at
+    bucket-end -- `overall` from `last_used_at` (active on ANY platform), `em`
+    from `em_last_used_at`, `opik` from `opik_last_used_at`. Rates are
+    0-guarded when a bucket has no users. Returns `[]` when no user has a
+    known `created_at` (degrade, never crash)."""
+    window_ms = active_window_days * 86400 * 1000
+    points = []
+    for key, bucket_end_ms, existing in _iter_buckets(users, units, now_ms):
+        total = len(existing)
+        if total:
+            overall = sum(
+                1
+                for u in existing
+                if _within_window(u.last_used_at, bucket_end_ms, window_ms)
+            )
+            em = sum(
+                1
+                for u in existing
+                if _within_window(u.em_last_used_at, bucket_end_ms, window_ms)
+            )
+            opik = sum(
+                1
+                for u in existing
+                if _within_window(u.opik_last_used_at, bucket_end_ms, window_ms)
+            )
+            values = {
+                "overall": round(overall / total * 100, 1),
+                "em": round(em / total * 100, 1),
+                "opik": round(opik / total * 100, 1),
+            }
+        else:
+            values = {"overall": 0.0, "em": 0.0, "opik": 0.0}
+        points.append({"key": key, "values": values})
+    return points
+
+
+def workspace_active_series(
+    users: "list[UserRecord]", units: str, now_ms: int, active_window_days: int
+) -> "list[dict] | None":
+    """Per-bucket total vs active WORKSPACES. A workspace is counted as
+    existing in a bucket when it has at least one non-suspended member that
+    exists as of bucket-end, and active when at least one such member was
+    active within the rolling `active_window_days` window ending at bucket-end
+    (the same activity rule used for active users). Membership comes from the
+    chargeback reverse-map (`UserRecord.workspaces`). Returns `None` when no
+    user carries any workspace membership."""
+    if not any(u.workspaces for u in users):
+        return None
+    window_ms = active_window_days * 86400 * 1000
+    points = []
+    for key, bucket_end_ms, existing in _iter_buckets(users, units, now_ms):
+        total_ws, active_ws = set(), set()
+        for u in existing:
+            is_active_user = _within_window(u.last_used_at, bucket_end_ms, window_ms)
+            for ws in u.workspaces:
+                total_ws.add(ws)
+                if is_active_user:
+                    active_ws.add(ws)
+        points.append(
+            {"key": key, "values": {"total": len(total_ws), "active": len(active_ws)}}
+        )
+    return points
+
+
+def churn_series(
+    users: "list[UserRecord]", units: str, now_ms: int
+) -> "list[dict] | None":
+    """Per-bucket user churn: `added` = accounts created in the bucket,
+    `deleted` = accounts whose deletion date falls in the bucket. Both are
+    read straight from `created_at`/`deleted_at` (no snapshot set-diffing, so
+    no reconstructed-membership bug). Caveat: only accounts still present in
+    the chargeback snapshot are visible, so hard-deleted accounts are not
+    counted -- `deleted` reflects soft-deletes only. Returns `None` when no
+    user has a known `created_at`."""
+    created = [u.created_at for u in users if u.created_at]
+    if not created:
+        return None
+    earliest_ms = min(created)
+    if earliest_ms > now_ms:
+        earliest_ms = now_ms
+
+    added_counts: dict = {}
+    deleted_counts: dict = {}
+    for u in users:
+        if u.created_at:
+            k = format_time_key(_ms_to_dt(u.created_at), units)
+            added_counts[k] = added_counts.get(k, 0) + 1
+        if u.deleted_at:
+            k = format_time_key(_ms_to_dt(u.deleted_at), units)
+            deleted_counts[k] = deleted_counts.get(k, 0) + 1
+
+    return [
+        {
+            "key": key,
+            "values": {
+                "added": added_counts.get(key, 0),
+                "deleted": deleted_counts.get(key, 0),
+            },
+        }
+        for key in _bucket_keys(earliest_ms, now_ms, units)
+    ]
+
+
+def workspace_churn_series(
+    users: "list[UserRecord]", units: str, now_ms: int
+) -> "list[dict] | None":
+    """Per-bucket workspace churn (proxy, since chargeback has no direct
+    workspace lifecycle). A workspace's `added` bucket is its earliest member
+    `created_at`; its `deleted` bucket is the latest member `deleted_at`, but
+    only when EVERY member has been deleted (best-effort). Returns `None` when
+    no workspace membership is present."""
+    ws_members: dict = {}
+    for u in users:
+        for ws in u.workspaces:
+            ws_members.setdefault(ws, []).append(u)
+    if not ws_members:
+        return None
+
+    added_counts: dict = {}
+    deleted_counts: dict = {}
+    earliest_ms = None
+    for members in ws_members.values():
+        created = [m.created_at for m in members if m.created_at]
+        if not created:
+            continue
+        first_ms = min(created)
+        earliest_ms = first_ms if earliest_ms is None else min(earliest_ms, first_ms)
+        k = format_time_key(_ms_to_dt(first_ms), units)
+        added_counts[k] = added_counts.get(k, 0) + 1
+        deleted = [m.deleted_at for m in members]
+        if deleted and all(d is not None for d in deleted):
+            dk = format_time_key(_ms_to_dt(max(deleted)), units)
+            deleted_counts[dk] = deleted_counts.get(dk, 0) + 1
+
+    if earliest_ms is None:
+        return None
+    if earliest_ms > now_ms:
+        earliest_ms = now_ms
+
+    return [
+        {
+            "key": key,
+            "values": {
+                "added": added_counts.get(key, 0),
+                "deleted": deleted_counts.get(key, 0),
+            },
+        }
+        for key in _bucket_keys(earliest_ms, now_ms, units)
+    ]
+
+
+def em_user_breakdown_series(
+    users: "list[UserRecord]", units: str, now_ms: int, active_window_days: int
+) -> "list[dict] | None":
+    """Per-bucket EM user breakdown: `active` (`em_last_used_at` within the
+    rolling window), `experimenters` (`experiment_count` > 0), `data_pushers`
+    (`data_logged_mb` > 0). Experimenter / data-pusher counts use the snapshot
+    cumulative totals, so a user is counted from the bucket they first exist
+    (an approximation that matches the client notebook). Returns `None` when
+    there is no EM signal at all."""
+    has_em = any(
+        u.em_last_used_at is not None
+        or (u.experiment_count or 0) > 0
+        or (u.data_logged_mb or 0) > 0
+        for u in users
+    )
+    if not has_em:
+        return None
+    window_ms = active_window_days * 86400 * 1000
+    points = []
+    for key, bucket_end_ms, existing in _iter_buckets(users, units, now_ms):
+        active = sum(
+            1
+            for u in existing
+            if _within_window(u.em_last_used_at, bucket_end_ms, window_ms)
+        )
+        experimenters = sum(1 for u in existing if (u.experiment_count or 0) > 0)
+        data_pushers = sum(1 for u in existing if (u.data_logged_mb or 0) > 0)
+        points.append(
+            {
+                "key": key,
+                "values": {
+                    "active": active,
+                    "experimenters": experimenters,
+                    "data_pushers": data_pushers,
+                },
+            }
+        )
+    return points
+
+
+def opik_user_breakdown_series(
+    users: "list[UserRecord]", units: str, now_ms: int, active_window_days: int
+) -> "list[dict] | None":
+    """Per-bucket Opik user breakdown: `active` (`opik_last_used_at` within the
+    rolling window) and `span_producers` (`opik_span_count` > 0, snapshot
+    cumulative). Returns `None` when there is no Opik signal at all."""
+    has_opik = any(
+        u.opik_last_used_at is not None or (u.opik_span_count or 0) > 0 for u in users
+    )
+    if not has_opik:
+        return None
+    window_ms = active_window_days * 86400 * 1000
+    points = []
+    for key, bucket_end_ms, existing in _iter_buckets(users, units, now_ms):
+        active = sum(
+            1
+            for u in existing
+            if _within_window(u.opik_last_used_at, bucket_end_ms, window_ms)
+        )
+        span_producers = sum(1 for u in existing if (u.opik_span_count or 0) > 0)
+        points.append(
+            {
+                "key": key,
+                "values": {"active": active, "span_producers": span_producers},
+            }
+        )
+    return points
+
+
+@dataclasses.dataclass(frozen=True)
+class WorkspaceRecord:
+    """A workspace as reported by the chargeback report's `workspaces[]`."""
+
+    name: str
+    num_experiments: float
+    data_mb: float
+    num_projects: int
+    members: "list"  # member usernames
+
+
+def parse_workspaces(chargeback: dict) -> "list[WorkspaceRecord]":
+    """Parse `chargeback["workspaces"]` into `WorkspaceRecord`s. `projects` may
+    be a list (its length is the project count) or already a number; both are
+    tolerated. These are EM/experiment projects -- chargeback does not carry
+    Opik projects or MPM models."""
+    out = []
+    for w in (chargeback or {}).get("workspaces") or []:
+        projects = w.get("projects")
+        if isinstance(projects, list):
+            num_projects = len(projects)
+        elif isinstance(projects, (int, float)):
+            num_projects = int(projects)
+        else:
+            num_projects = 0
+        members = [
+            m.get("userName") for m in (w.get("members") or []) if m.get("userName")
+        ]
+        out.append(
+            WorkspaceRecord(
+                name=w.get("name"),
+                num_experiments=w.get("numberOfExperiments") or 0,
+                data_mb=w.get("totalSizeInMb") or 0.0,
+                num_projects=num_projects,
+                members=members,
+            )
+        )
+    return out
+
+
+def workspace_org_totals(workspaces: "list[WorkspaceRecord]") -> dict:
+    """Org-wide totals across all workspaces (from chargeback)."""
+    return {
+        "workspaces": len(workspaces),
+        "projects": sum(w.num_projects for w in workspaces),
+        "experiments": sum(w.num_experiments for w in workspaces),
+        "data_mb": sum(w.data_mb for w in workspaces),
+    }
+
+
+def platform_mix(
+    workspaces: "list[WorkspaceRecord]", users: "list[UserRecord]"
+) -> dict:
+    """Classify each workspace by platform usage into EM-only / Opik-only /
+    both / neither.
+
+    EM = the workspace has experiments or projects (chargeback, reliable).
+    Opik = a member has `opik_span_count > 0`. This is a PROXY: chargeback
+    carries Opik usage only per-user, so a user active in several workspaces
+    has their Opik usage attributed to all of them (possible false positives).
+    MPM is absent from chargeback and is NOT classified here."""
+    opik_ws = set()
+    for u in users:
+        if (u.opik_span_count or 0) > 0:
+            opik_ws.update(u.workspaces)
+    counts = {"em_only": 0, "opik_only": 0, "both": 0, "neither": 0}
+    for w in workspaces:
+        em = (w.num_experiments or 0) > 0 or w.num_projects > 0
+        op = w.name in opik_ws
+        if em and op:
+            counts["both"] += 1
+        elif em:
+            counts["em_only"] += 1
+        elif op:
+            counts["opik_only"] += 1
+        else:
+            counts["neither"] += 1
+    return counts
