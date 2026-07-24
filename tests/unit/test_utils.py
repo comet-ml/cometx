@@ -15,6 +15,8 @@ import unittest
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from cometx.utils import (
     ProgressBar,
     _input_user,
@@ -22,8 +24,11 @@ from cometx.utils import (
     display_invalid_api_key,
     download_url,
     get_file_extension,
+    get_first_experiment,
+    get_project_url,
     get_query_experiments,
     remove_extra_slashes,
+    resolve_workspace,
 )
 
 
@@ -252,6 +257,84 @@ class TestRemoveExtraSlashes:
         """Test remove_extra_slashes with no slashes"""
         assert remove_extra_slashes("path") == "path"
         assert remove_extra_slashes("file.txt") == "file.txt"
+
+
+class TestResolveWorkspace:
+    def test_resolve_workspace_explicit(self):
+        """An explicit workspace is returned as-is, without touching the API"""
+        mock_api = MagicMock()
+        assert resolve_workspace("my-workspace", api=mock_api) == "my-workspace"
+        mock_api.get_default_workspace.assert_not_called()
+
+    def test_resolve_workspace_configured_default(self):
+        """With no workspace given, the configured default is used"""
+        mock_api = MagicMock()
+        mock_api.get_default_workspace.return_value = "default-workspace"
+
+        assert resolve_workspace(api=mock_api) == "default-workspace"
+        mock_api.get_workspaces.assert_not_called()
+
+    def test_resolve_workspace_only_workspace(self):
+        """With no default configured, a sole workspace is used"""
+        mock_api = MagicMock()
+        mock_api.get_default_workspace.return_value = None
+        mock_api.get_workspaces.return_value = ["only-workspace"]
+
+        assert resolve_workspace(api=mock_api) == "only-workspace"
+
+    def test_resolve_workspace_ambiguous(self):
+        """Several workspaces and no default is an error, listing the options"""
+        mock_api = MagicMock()
+        mock_api.get_default_workspace.return_value = None
+        mock_api.get_workspaces.return_value = ["beta", "alpha"]
+
+        with pytest.raises(ValueError, match="alpha, beta"):
+            resolve_workspace(api=mock_api)
+
+    @patch("cometx.api.API")
+    def test_resolve_workspace_creates_api(self, mock_api_class):
+        """An API instance is created when one is not passed in"""
+        mock_api_class.return_value.get_default_workspace.return_value = "from-api"
+
+        assert resolve_workspace() == "from-api"
+        mock_api_class.assert_called_once_with()
+
+
+class TestGetProjectUrl:
+    def test_get_project_url(self):
+        """Test get_project_url builds a URL from the API's server_url"""
+        mock_api = MagicMock()
+        mock_api.server_url = "https://www.comet.com"
+
+        result = get_project_url("my-workspace", "my-project", api=mock_api)
+        assert result == "https://www.comet.com/my-workspace/my-project"
+
+    def test_get_project_url_trailing_slash(self):
+        """A trailing slash on server_url does not produce a doubled slash"""
+        mock_api = MagicMock()
+        mock_api.server_url = "https://my-server.example.com/"
+
+        result = get_project_url("my-workspace", "my-project", api=mock_api)
+        assert result == "https://my-server.example.com/my-workspace/my-project"
+
+
+class TestGetFirstExperiment:
+    def test_get_first_experiment(self):
+        """Test get_first_experiment returns the project's first experiment"""
+        mock_api = MagicMock()
+        mock_api.get_experiments.return_value = ["first", "second"]
+
+        result = get_first_experiment(mock_api, "my-workspace", "my-project")
+
+        mock_api.get_experiments.assert_called_once_with("my-workspace", "my-project")
+        assert result == "first"
+
+    def test_get_first_experiment_empty_project(self):
+        """Test get_first_experiment returns None for an empty project"""
+        mock_api = MagicMock()
+        mock_api.get_experiments.return_value = []
+
+        assert get_first_experiment(mock_api, "my-workspace", "my-project") is None
 
 
 if __name__ == "__main__":

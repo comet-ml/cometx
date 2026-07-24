@@ -304,6 +304,77 @@ def get_unit_label_plural(unit):
     return labels.get(unit, unit.capitalize() + "s")
 
 
+def resolve_workspace(workspace=None, api=None):
+    """
+    Return a workspace name, falling back to the account's default.
+
+    Args:
+        workspace: (str, optional) a workspace name; returned unchanged if given
+        api: (API, optional) an API instance to reuse; one is created if omitted
+
+    Returns: the given workspace, the configured default workspace, or -- if
+        neither is set and the account has exactly one workspace -- that one.
+
+    Raises:
+        ValueError: if no workspace was given, no default is configured, and the
+            account has several workspaces to choose between.
+    """
+    if workspace:
+        return workspace
+
+    if api is None:
+        from .api import API
+
+        api = API()
+
+    configured = api.get_default_workspace()
+    if configured:
+        return configured
+
+    workspaces = api.get_workspaces()
+    if len(workspaces) == 1:
+        return workspaces[0]
+
+    raise ValueError(
+        "Unable to pick a workspace: several are available -- %s"
+        % ", ".join(sorted(workspaces))
+    )
+
+
+def get_project_url(workspace, project_name, api=None):
+    """
+    Return the URL of a project in the Comet UI.
+
+    Args:
+        workspace: (str) the workspace name
+        project_name: (str) the project name
+        api: (API, optional) an API instance to reuse; one is created if omitted
+
+    Returns: the project's URL, on whichever server the API is configured for.
+    """
+    if api is None:
+        from .api import API
+
+        api = API()
+
+    return "%s/%s/%s" % (api.server_url.rstrip("/"), workspace, project_name)
+
+
+def get_first_experiment(api, workspace, project_name):
+    """
+    Return one APIExperiment from a project, for code that just needs an example.
+
+    Args:
+        api: (API) an API instance
+        workspace: (str) the workspace name
+        project_name: (str) the project name
+
+    Returns: the project's first APIExperiment, or None if the project is empty.
+    """
+    experiments = api.get_experiments(workspace, project_name)
+    return experiments[0] if experiments else None
+
+
 def remove_extra_slashes(path):
     if path:
         if path.startswith("/"):
