@@ -4,6 +4,9 @@ This document covers the new and updated methods in `cometx.api.API` for managin
 code panels and dashboards programmatically, plus the `cometx.views` module for
 building dashboard layouts.
 
+For runnable end-to-end scripts, see [`./examples/`](./examples/) — summarized in
+[Runnable Examples](#runnable-examples) below.
+
 ## Uploading a Panel
 
 ### `upload_panel_code(workspace, panel_name, code, template_id=None)`
@@ -396,3 +399,21 @@ api.update_dashboard(
     panels=[panel_id, "another-panel-id"],
 )
 ```
+
+---
+
+## Runnable Examples
+
+The [`./examples/`](./examples/) directory holds seven scripts that exercise everything
+above against a live workspace. See [`examples/README.md`](./examples/README.md) for the
+full walkthrough. Scripts 04, 05 and 06 are dry-run by default; pass `--apply` to write.
+
+| Script | Demonstrates |
+| --- | --- |
+| [`00_seed_demo_project.py`](./examples/00_seed_demo_project.py) | Logs six small runs — metrics, params, an image and a CSV table — so every panel type in the later scripts has real data to draw. |
+| [`01_inspect_views.py`](./examples/01_inspect_views.py) | Reading views in both scopes (`API.get_views` and `APIExperiment.get_views`), how `view_source` distinguishes dashboard from chart templates, and what the `include_workspace_views` flags widen to. `--json` dumps every field with the serialized blobs unpacked. |
+| [`02_build_project_dashboard.py`](./examples/02_build_project_dashboard.py) | The widest `cometx.views` demo: scalar tiles, multi-metric line charts, log-scale axes, a legend keyed on a hyperparameter, a locked panel, bar/box plots, 2D and 3D scatter, parallel coordinates, an image grid, a table panel, a saved OR-of-AND filter, a configured experiment table, and dashboard-wide smoothing/sampling. |
+| [`03_build_experiment_view.py`](./examples/03_build_experiment_view.py) | The same sections in the experiment scope via `build_experiment_view()`, plus `--all` to stamp one layout onto every run in a project. |
+| [`04_migrate_views.py`](./examples/04_migrate_views.py) | Copying views between projects, workspaces or accounts (`--dst-api-key`), with `--match` filtering and `"Unsaved Changes"` views skipped by default. |
+| [`05_standardize_workspace.py`](./examples/05_standardize_workspace.py) | Pushing one house dashboard across a whole workspace, building each project's panels from the metrics that project actually logs. `--update` rewrites in place (the lower-level `upsert_view` route) instead of adding a duplicate. |
+| [`06_harvest_panels.py`](./examples/06_harvest_panels.py) | Custom JavaScript and Python panels reference existing panel instances, so their ids can't be invented — this scans existing views for them and rebuilds them into a new view. |
