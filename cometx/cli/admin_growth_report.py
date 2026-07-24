@@ -89,6 +89,25 @@ def _num(value):
     return value
 
 
+def _window_growth(created_ms, window):
+    """Growth over the analysis window from a collection of creation timestamps
+    (epoch ms): `new_in` = items created within `[window.start, window.end]`,
+    `before` = items created before `window.start`, `pct` = new_in/before*100
+    (0-guarded). Shared by the workspace- and user-growth KPIs so the window
+    math lives in one place. `None` timestamps are skipped."""
+    new_in = before = 0
+    for c in created_ms:
+        if c is None:
+            continue
+        dt = _ms_to_utc(c)
+        if window.start <= dt <= window.end:
+            new_in += 1
+        elif dt < window.start:
+            before += 1
+    pct = round(new_in / before * 100, 1) if before else 0.0
+    return {"new_in": new_in, "before": before, "pct": pct}
+
+
 def _extract_service_account_names(payload) -> "set[str] | None":
     """Defensively unwrap the `/admin/service-accounts` response into a
     flat set of account names, tolerating several plausible response
@@ -431,14 +450,7 @@ class GrowthReporter:
                 cur = ws_created.get(ws)
                 if cur is None or u.created_at < cur:
                     ws_created[ws] = u.created_at
-        new_in = sum(
-            1
-            for c in ws_created.values()
-            if window.start <= _ms_to_utc(c) <= window.end
-        )
-        before = sum(1 for c in ws_created.values() if _ms_to_utc(c) < window.start)
-        pct = round(new_in / before * 100, 1) if before else 0.0
-        return {"new_in": new_in, "before": before, "pct": pct}
+        return _window_growth(ws_created.values(), window)
 
     def _build_unified_section(
         self,
@@ -630,25 +642,14 @@ class GrowthReporter:
         ]
 
         # User growth over the analysis window: new accounts in window /
-        # accounts before window (mirrors the workspace/project growth KPI).
+        # accounts before window (shares _window_growth with the workspace KPI).
         if window is not None:
-            new_in = sum(
-                1
-                for u in users
-                if u.created_at is not None
-                and window.start <= _ms_to_utc(u.created_at) <= window.end
-            )
-            before = sum(
-                1
-                for u in users
-                if u.created_at is not None and _ms_to_utc(u.created_at) < window.start
-            )
-            pct = round(new_in / before * 100, 1) if before else 0.0
+            growth = _window_growth((u.created_at for u in users), window)
             kpis.append(
                 {
                     "label": f"New in {self.window or '7d'} (% of base)",
-                    "value": f"{pct}%",
-                    "sub": f"+{new_in} new",
+                    "value": f"{growth['pct']}%",
+                    "sub": f"+{growth['new_in']} new",
                 }
             )
 
