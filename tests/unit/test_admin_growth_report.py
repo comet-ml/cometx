@@ -1,40 +1,6 @@
 import datetime
 import importlib
-import importlib.util
-from unittest.mock import MagicMock, patch
-
-import pytest
-
-# opik and comet_mpm are OPTIONAL extras (cometx[all]); CI installs neither by
-# default (opik happens to be in requirements.txt, comet_mpm is not). Tests that
-# patch those SDKs must be skipped when the extra isn't importable, otherwise
-# `@patch("comet_mpm.API")` errors at setup with ModuleNotFoundError.
-requires_opik = pytest.mark.skipif(
-    importlib.util.find_spec("opik") is None,
-    reason="opik extra not installed (cometx[all])",
-)
-requires_mpm = pytest.mark.skipif(
-    importlib.util.find_spec("comet_mpm") is None,
-    reason="comet_mpm extra not installed (cometx[all])",
-)
-
-
-def test_creation_event_and_window():
-    from cometx.cli.admin_growth_report import CreationEvent, Window
-
-    ev = CreationEvent(
-        "opik",
-        "wsA",
-        "proj-1",
-        "project",
-        datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc),
-    )
-    assert ev.kind == "project" and ev.workspace == "wsA"
-    w = Window(
-        datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc),
-        datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc),
-    )
-    assert w.units == "month"
+from unittest.mock import MagicMock
 
 
 def test_growth_report_delegate_exists():
@@ -54,18 +20,6 @@ def test_growth_report_action_registered_in_admin():
     assert "growth-report" in admin_src
 
 
-def _ev(y, m, d, ws="w", uc="p"):
-    from cometx.cli.admin_growth_report import CreationEvent
-
-    return CreationEvent(
-        "opik",
-        ws,
-        uc,
-        "project",
-        datetime.datetime(y, m, d, tzinfo=datetime.timezone.utc),
-    )
-
-
 def _win():
     from cometx.cli.admin_growth_report import Window
 
@@ -74,917 +28,6 @@ def _win():
         datetime.datetime(2026, 12, 31, tzinfo=datetime.timezone.utc),
         "month",
     )
-
-
-def test_continuous_zero_fill():
-    from cometx.cli.admin_growth_report import continuous_series
-
-    counts = {"2026-01": 2, "2026-03": 1}
-    series = continuous_series(counts, "month")
-    keys = [k for k, _ in series]
-    assert keys == ["2026-01", "2026-02", "2026-03"]  # Feb zero-filled
-    assert dict(series)["2026-02"] == 0
-
-
-def test_cumulative_and_growth():
-    from cometx.cli.admin_growth_report import cumulative, growth_stats
-
-    cum = cumulative([("2026-01", 2), ("2026-02", 0), ("2026-03", 1)])
-    assert [v for _, v in cum] == [2, 2, 3]
-    # 2 before window, 3 inside -> pct = 3/2*100 = 150
-    evs = [
-        _ev(2025, 12, 1),
-        _ev(2025, 12, 2),
-        _ev(2026, 2, 1),
-        _ev(2026, 2, 2),
-        _ev(2026, 3, 1),
-    ]
-    g = growth_stats(evs, _win(), "month")
-    assert g["new_in_window"] == 3 and g["total"] == 5 and round(g["pct_growth"]) == 150
-
-
-def _make_em_api():
-    """MagicMock api mimicking verified EM endpoints (see task-C4-context.md)."""
-    api = MagicMock()
-    api._client.get_from_endpoint.return_value = {
-        "projects": [
-            {
-                "projectId": "p1",
-                "projectName": "proj1",
-                "ownerUserName": "someone",
-                "projectDescription": "",
-                "workspaceName": "ws1",
-                "numberOfExperiments": 2,
-                "lastUpdated": 1700000000000,
-                "public": False,
-            },
-            {
-                "projectId": "p2",
-                "projectName": "proj2",
-                "ownerUserName": "someone",
-                "projectDescription": "",
-                "workspaceName": "ws1",
-                "numberOfExperiments": 0,
-                "lastUpdated": 1650000000000,
-                "public": False,
-            },
-        ]
-    }
-
-    def get_experiments(ws, proj):
-        if proj == "proj1":
-            return [
-                MagicMock(start_server_timestamp=1695000000000),
-                MagicMock(start_server_timestamp=1690000000000),
-            ]
-        return []
-
-    api.get_experiments.side_effect = get_experiments
-    api.get_registry_model_names.return_value = ["modelA", "modelB"]
-
-    def get_registry_model_versions(ws, name):
-        return {"modelA": ["1.0.0", "1.0.1"], "modelB": ["1.0.0"]}[name]
-
-    api.get_registry_model_versions.side_effect = get_registry_model_versions
-    return api
-
-
-def test_collect_em_creation_events_use_experiment_proxy():
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    api = _make_em_api()
-    reporter = GrowthReporter(api, window="7d", units="month", platforms="em")
-    events, _usage = reporter._collect_em(["ws1"])
-
-    assert len(events) == 2
-    assert all(e.kind == "em_project" for e in events)
-    assert all(e.platform == "em" for e in events)
-    assert all(e.workspace == "ws1" for e in events)
-    assert not any(e.kind == "registry_model" for e in events)
-
-    # Experiments must be fetched exactly ONCE per project (not once per
-    # helper) — the list is fetched in _collect_em and shared between the
-    # creation-proxy and the over-time series. 2 projects -> 2 calls.
-    assert api.get_experiments.call_count == 2
-
-    by_proj = {e.use_case: e for e in events}
-    # proj1: earliest experiment start_server_timestamp used as creation proxy
-    assert by_proj["proj1"].created == datetime.datetime.fromtimestamp(
-        1690000000000 / 1000, tz=datetime.timezone.utc
-    )
-    # proj2: no experiments -> falls back to lastUpdated
-    assert by_proj["proj2"].created == datetime.datetime.fromtimestamp(
-        1650000000000 / 1000, tz=datetime.timezone.utc
-    )
-
-
-def test_collect_em_usage_metrics_experiment_count_and_registry_snapshot():
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    api = _make_em_api()
-    reporter = GrowthReporter(api, window="7d", units="month", platforms="em")
-    _events, usage = reporter._collect_em(["ws1"])
-
-    exp_metrics = [m for m in usage if m.metric == "EXPERIMENT_COUNT"]
-
-    proj1_metric = next(m for m in exp_metrics if m.project == "proj1")
-    assert proj1_metric.value == 2
-    assert proj1_metric.platform == "em" and proj1_metric.workspace == "ws1"
-    assert proj1_metric.series  # non-empty over-time series
-
-    proj2_metric = next(m for m in exp_metrics if m.project == "proj2")
-    assert proj2_metric.value == 0
-
-    ws_total_metric = next(m for m in exp_metrics if m.project is None)
-    assert ws_total_metric.value == 2
-    assert ws_total_metric.workspace == "ws1"
-
-    reg_models = next(m for m in usage if m.metric == "REGISTRY_MODELS")
-    assert reg_models.value == 2
-    assert reg_models.series is None
-    assert reg_models.workspace == "ws1" and reg_models.platform == "em"
-
-    reg_versions = next(m for m in usage if m.metric == "REGISTRY_VERSIONS")
-    assert reg_versions.value == 3
-    assert reg_versions.series is None
-
-    # registry metrics are never CreationEvents / never a use case
-    assert not any(m.metric.startswith("REGISTRY") and m.series for m in usage)
-
-
-def test_collect_em_kpi_total_matches_chart_sum_when_metadata_disagrees():
-    # Regression: the EXPERIMENT_COUNT total must come from the SAME bucketed
-    # timestamps that feed the chart series, NOT from `numberOfExperiments`.
-    # Here the metadata (10) disagrees with the experiments that actually carry
-    # a start_server_timestamp (3), so the old fallback would have produced a
-    # KPI total that didn't equal the cumulative chart sum.
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    api = MagicMock()
-    api._client.get_from_endpoint.return_value = {
-        "projects": [
-            {
-                "projectName": "proj1",
-                "projectId": "p1",
-                "workspaceName": "ws1",
-                "numberOfExperiments": 10,  # metadata, intentionally != 3
-                "lastUpdated": 1700000000000,
-            }
-        ]
-    }
-    api.get_experiments.return_value = [
-        MagicMock(start_server_timestamp=1695000000000),
-        MagicMock(start_server_timestamp=1695100000000),
-        MagicMock(start_server_timestamp=1695200000000),
-    ]
-    api.get_registry_model_names.return_value = []
-    reporter = GrowthReporter(api, window="7d", units="month", platforms="em")
-    _events, usage = reporter._collect_em(["ws1"])
-
-    proj_metric = next(
-        m for m in usage if m.metric == "EXPERIMENT_COUNT" and m.project == "proj1"
-    )
-    ws_total = next(
-        m for m in usage if m.metric == "EXPERIMENT_COUNT" and m.project is None
-    )
-    # total is derived from counts (3), NOT numberOfExperiments (10)
-    assert proj_metric.value == 3
-    assert ws_total.value == 3
-    # the KPI total equals the cumulative chart sum for the workspace
-    assert ws_total.value == sum(v for _k, v in ws_total.series)
-
-
-def test_collect_em_respects_limit_on_workspaces():
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    api = _make_em_api()
-    reporter = GrowthReporter(api, window="7d", units="month", platforms="em", limit=1)
-    events, usage = reporter._collect_em(["ws1", "ws2"])
-
-    assert all(e.workspace == "ws1" for e in events)
-    assert all(m.workspace == "ws1" for m in usage)
-    # only one workspace's projects endpoint should have been queried
-    assert api._client.get_from_endpoint.call_count == 1
-
-
-def test_collect_em_skips_bad_project_and_continues(capsys):
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    api = _make_em_api()
-
-    def get_experiments(ws, proj):
-        if proj == "proj1":
-            raise RuntimeError("boom")
-        return []
-
-    api.get_experiments.side_effect = get_experiments
-    reporter = GrowthReporter(api, window="7d", units="month", platforms="em")
-    events, usage = reporter._collect_em(["ws1"])
-
-    # proj1 blew up but proj2 (and registry metrics) still collected
-    assert any(e.use_case == "proj2" for e in events)
-    assert not any(e.use_case == "proj1" for e in events)
-    assert any(m.metric == "REGISTRY_MODELS" for m in usage)
-
-
-def test_collect_em_filters_projects_not_belonging_to_workspace(capsys):
-    # The EM `projects` endpoint returns a fallback set from another workspace
-    # when the key isn't a member of the requested one, ignoring workspaceName.
-    # Those foreign projects must NOT be attributed to the requested workspace;
-    # the workspace is still reported at 0, and a warning is printed.
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    api = MagicMock()
-    api._client.get_from_endpoint.return_value = {
-        "projects": [
-            {
-                "projectName": "foreign-proj",
-                "projectId": "x1",
-                "workspaceName": "team-comet-ml",  # != requested workspace
-                "numberOfExperiments": 5,
-                "lastUpdated": 1700000000000,
-            }
-        ]
-    }
-    api.get_registry_model_names.return_value = []
-    api.get_registry_model_versions.return_value = []
-    reporter = GrowthReporter(api, window="7d", units="month", platforms="em")
-    events, usage = reporter._collect_em(["opik-demos"])
-
-    # foreign project is not attributed to opik-demos
-    assert events == []
-    assert not any(m.project == "foreign-proj" for m in usage)
-    # experiments are never fetched for a filtered-out project
-    api.get_experiments.assert_not_called()
-    # workspace is still listed, at an experiment total of 0
-    ws_totals = [
-        m for m in usage if m.metric == "EXPERIMENT_COUNT" and m.project is None
-    ]
-    assert len(ws_totals) == 1
-    assert ws_totals[0].workspace == "opik-demos" and ws_totals[0].value == 0
-    # and a warning was surfaced
-    assert "not belonging to workspace opik-demos" in capsys.readouterr().out
-
-
-def _make_opik_api():
-    """MagicMock api with a REAL dict `.config` (see task-C5-context.md) so
-    host/api_key resolution works without touching MagicMock magic."""
-    api = MagicMock()
-    api.config = {
-        "comet.api_key": "KEY",
-        "comet.url_override": "https://example.com/",
-    }
-    return api
-
-
-def _make_opik_project(id_, name, created_at):
-    project = MagicMock()
-    project.id = id_
-    project.name = name
-    project.created_at = created_at
-    return project
-
-
-def _make_opik_metrics_response(datapoints):
-    """datapoints: list of (time, value) -> a fake get_project_metrics resp."""
-    result = MagicMock()
-    result.data = [MagicMock(time=t, value=v) for t, v in datapoints]
-    resp = MagicMock()
-    resp.results = [result]
-    return resp
-
-
-@patch(
-    "cometx.cli.smoke_test.get_opik_config",
-    return_value="https://example.com/opik/api/",
-)
-@requires_opik
-@patch("opik.Opik")
-def test_collect_opik_creation_events_and_span_count_usage(mock_opik_ctor, _mock_host):
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    created1 = datetime.datetime(2026, 1, 5, tzinfo=datetime.timezone.utc)
-    created2 = datetime.datetime(2026, 2, 10, tzinfo=datetime.timezone.utc)
-    proj1 = _make_opik_project("id1", "proj1", created1)
-    proj2 = _make_opik_project("id2", "proj2", created2)
-
-    fake_page = MagicMock()
-    fake_page.content = [proj1, proj2]
-    fake_page.total = 2
-
-    mock_client = MagicMock()
-    mock_client.rest_client.projects.find_projects.return_value = fake_page
-
-    def get_project_metrics(project_id, **kwargs):
-        if project_id == "id1":
-            return _make_opik_metrics_response(
-                [
-                    (datetime.datetime(2026, 1, 10, tzinfo=datetime.timezone.utc), 5),
-                    (datetime.datetime(2026, 1, 20, tzinfo=datetime.timezone.utc), 3),
-                ]
-            )
-        return _make_opik_metrics_response(
-            [(datetime.datetime(2026, 2, 15, tzinfo=datetime.timezone.utc), 7)]
-        )
-
-    mock_client.rest_client.projects.get_project_metrics.side_effect = (
-        get_project_metrics
-    )
-    mock_opik_ctor.return_value = mock_client
-
-    api = _make_opik_api()
-    reporter = GrowthReporter(api, window="7d", units="month", platforms="opik")
-    events, usage = reporter._collect_opik(["ws1"])
-
-    # one opik_project CreationEvent per project, created == created_at
-    assert len(events) == 2
-    assert all(e.kind == "opik_project" for e in events)
-    assert all(e.platform == "opik" for e in events)
-    assert all(e.workspace == "ws1" for e in events)
-    by_uc = {e.use_case: e for e in events}
-    assert by_uc["proj1"].created == created1
-    assert by_uc["proj2"].created == created2
-
-    # opik.Opik constructed with resolved host/api_key for the workspace
-    mock_opik_ctor.assert_any_call(
-        workspace="ws1", api_key="KEY", host="https://example.com/opik/api/"
-    )
-
-    span_metrics = [m for m in usage if m.metric == "SPAN_COUNT"]
-
-    proj1_metric = next(m for m in span_metrics if m.project == "proj1")
-    assert proj1_metric.platform == "opik" and proj1_metric.workspace == "ws1"
-    assert proj1_metric.value == 8  # sum of proj1 datapoints
-    assert proj1_metric.series  # non-empty over-time series
-
-    proj2_metric = next(m for m in span_metrics if m.project == "proj2")
-    assert proj2_metric.value == 7
-
-    ws_total_metric = next(m for m in span_metrics if m.project is None)
-    assert ws_total_metric.value == 15  # 8 + 7
-    assert ws_total_metric.workspace == "ws1"
-    assert ws_total_metric.series
-
-
-@patch(
-    "cometx.cli.smoke_test.get_opik_config",
-    return_value="https://example.com/opik/api/",
-)
-@requires_opik
-@patch("opik.Opik")
-def test_collect_opik_respects_limit_on_workspaces(mock_opik_ctor, _mock_host):
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    proj = _make_opik_project(
-        "id1", "proj1", datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
-    )
-    fake_page = MagicMock()
-    fake_page.content = [proj]
-    fake_page.total = 1
-
-    mock_client = MagicMock()
-    mock_client.rest_client.projects.find_projects.return_value = fake_page
-    mock_client.rest_client.projects.get_project_metrics.return_value = (
-        _make_opik_metrics_response([])
-    )
-    mock_opik_ctor.return_value = mock_client
-
-    api = _make_opik_api()
-    reporter = GrowthReporter(
-        api, window="7d", units="month", platforms="opik", limit=1
-    )
-    events, usage = reporter._collect_opik(["ws1", "ws2"])
-
-    assert all(e.workspace == "ws1" for e in events)
-    assert all(m.workspace == "ws1" for m in usage)
-    assert mock_opik_ctor.call_count == 1
-
-
-@patch(
-    "cometx.cli.smoke_test.get_opik_config",
-    return_value="https://example.com/opik/api/",
-)
-@requires_opik
-@patch("opik.Opik")
-def test_collect_opik_skips_bad_workspace_and_continues(
-    mock_opik_ctor, _mock_host, capsys
-):
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    proj = _make_opik_project(
-        "id1", "proj1", datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
-    )
-    fake_page_ok = MagicMock()
-    fake_page_ok.content = [proj]
-    fake_page_ok.total = 1
-
-    good_client = MagicMock()
-    good_client.rest_client.projects.find_projects.return_value = fake_page_ok
-    good_client.rest_client.projects.get_project_metrics.return_value = (
-        _make_opik_metrics_response(
-            [(datetime.datetime(2026, 1, 2, tzinfo=datetime.timezone.utc), 4)]
-        )
-    )
-
-    def opik_ctor(workspace, **kwargs):
-        if workspace == "ws_bad":
-            raise RuntimeError("bad auth")
-        return good_client
-
-    mock_opik_ctor.side_effect = opik_ctor
-
-    api = _make_opik_api()
-    reporter = GrowthReporter(api, window="7d", units="month", platforms="opik")
-    events, usage = reporter._collect_opik(["ws_bad", "ws_good"])
-
-    assert not any(e.workspace == "ws_bad" for e in events)
-    assert any(e.workspace == "ws_good" for e in events)
-    assert any(m.workspace == "ws_good" and m.metric == "SPAN_COUNT" for m in usage)
-
-
-@requires_opik
-def test_collect_opik_emits_trace_count_alongside_spans():
-    import datetime
-
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    api = MagicMock()
-    api.config = {"comet.api_key": "K", "comet.url_override": "https://c.example.com"}
-
-    proj = MagicMock()
-    proj.name = "proj-1"
-    proj.id = "pid-1"
-    proj.created_at = datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc)
-
-    def _metrics(project_id, metric_type, interval, interval_start, interval_end):
-        dp = MagicMock(
-            time=datetime.datetime(2026, 6, 2, tzinfo=datetime.timezone.utc),
-            value=(10 if metric_type == "SPAN_COUNT" else 3),
-        )
-        result = MagicMock(data=[dp])
-        return MagicMock(results=[result])
-
-    client = MagicMock()
-    page = MagicMock(content=[proj], total=1)
-    client.rest_client.projects.find_projects.return_value = page
-    client.rest_client.projects.get_project_metrics.side_effect = _metrics
-
-    with patch("opik.Opik", return_value=client), patch(
-        "cometx.cli.smoke_test.get_opik_config", return_value="https://c.example.com"
-    ):
-        r = GrowthReporter(api, window="7d", units="month", platforms="opik")
-        events, usage = r._collect_opik(["wsA"])
-
-    metrics = {(m.metric, m.project) for m in usage}
-    assert ("SPAN_COUNT", "proj-1") in metrics
-    assert ("TRACE_COUNT", "proj-1") in metrics
-    # workspace roll-ups (project=None) exist for both
-    assert ("SPAN_COUNT", None) in metrics
-    assert ("TRACE_COUNT", None) in metrics
-
-
-@requires_opik
-def test_collect_opik_trace_failure_keeps_spans():
-    import datetime
-
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    api = MagicMock()
-    api.config = {"comet.api_key": "K", "comet.url_override": "https://c.example.com"}
-    proj = MagicMock()
-    proj.name = "p"
-    proj.id = "id"
-    proj.created_at = datetime.datetime(2026, 6, 1, tzinfo=datetime.timezone.utc)
-
-    def _metrics(project_id, metric_type, interval, interval_start, interval_end):
-        if metric_type == "TRACE_COUNT":
-            raise RuntimeError("traces boom")
-        dp = MagicMock(
-            time=datetime.datetime(2026, 6, 2, tzinfo=datetime.timezone.utc), value=5
-        )
-        return MagicMock(results=[MagicMock(data=[dp])])
-
-    client = MagicMock()
-    client.rest_client.projects.find_projects.return_value = MagicMock(
-        content=[proj], total=1
-    )
-    client.rest_client.projects.get_project_metrics.side_effect = _metrics
-
-    with patch("opik.Opik", return_value=client), patch(
-        "cometx.cli.smoke_test.get_opik_config", return_value="https://c.example.com"
-    ):
-        r = GrowthReporter(api, window="7d", units="month", platforms="opik")
-        events, usage = r._collect_opik(["wsA"])
-
-    assert any(m.metric == "SPAN_COUNT" and m.project == "p" for m in usage)
-    assert not any(m.metric == "TRACE_COUNT" and m.project == "p" for m in usage)
-
-
-def test_collect_opik_missing_dependency_returns_empty(monkeypatch):
-    import builtins
-
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    real_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == "opik":
-            raise ImportError("no opik")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-
-    api = _make_opik_api()
-    reporter = GrowthReporter(api, window="7d", units="month", platforms="opik")
-    events, usage = reporter._collect_opik(["ws1"])
-
-    assert events == []
-    assert usage == []
-
-
-def _make_mpm_api():
-    """MagicMock api with a REAL dict `.config` (see task-C6-context.md)."""
-    api = MagicMock()
-    api.config = {
-        "comet.api_key": "KEY",
-        "comet.url_override": "https://example.com/",
-    }
-    return api
-
-
-def _mpm_pred_envelope(points):
-    """points: list of (x, y) -> the verified {"data":[{"data":[...]}]} envelope."""
-    return {"data": [{"data": [{"x": x, "y": y} for x, y in points]}]}
-
-
-def _make_mpm_client(workspaces_resp, details_map, predictions_map):
-    """MagicMock comet_mpm._client with the verified MPM endpoints stubbed.
-
-    `details_map`: model_id -> details dict (or an exception instance to raise).
-    `predictions_map`: model_id -> envelope dict returned by get_nb_predictions.
-    """
-    client = MagicMock()
-
-    def fake_get(path, *args, **kwargs):
-        assert path == "api/mpm/v3/workspaces"
-        return workspaces_resp
-
-    client.get.side_effect = fake_get
-
-    def fake_get_model_details(model_id):
-        val = details_map.get(model_id, {})
-        if isinstance(val, Exception):
-            raise val
-        return val
-
-    client.get_model_details.side_effect = fake_get_model_details
-
-    def fake_get_nb_predictions(model_id, *args, **kwargs):
-        return predictions_map.get(model_id, _mpm_pred_envelope([]))
-
-    client.get_nb_predictions.side_effect = fake_get_nb_predictions
-    return client
-
-
-def _mpm_workspaces_resp(models_by_ws):
-    return {
-        "workspaces": [
-            {"workspaceName": ws, "models": models}
-            for ws, models in models_by_ws.items()
-        ]
-    }
-
-
-@requires_mpm
-@patch("comet_mpm.API")
-def test_collect_mpm_creation_scenarios_a_b_c(mock_api_ctor):
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    models_by_ws = {
-        "ws1": [
-            {"modelName": "modelA", "modelId": "idA"},
-            {"modelName": "modelB", "modelId": "idB"},
-            {"modelName": "modelC", "modelId": "idC"},
-        ]
-    }
-    workspaces_resp = _mpm_workspaces_resp(models_by_ws)
-
-    # (a) model A: details carry a creation timestamp
-    details_map = {
-        "idA": {"createdAt": 1700000000000},
-        "idB": {},  # no creation key -> falls back to first-prediction-day
-        "idC": {},  # no creation key, and no y>0 predictions -> no event
-    }
-
-    predictions_map = {
-        "idA": _mpm_pred_envelope([(1699000000000, 5), (1700500000000, 2)]),
-        "idB": _mpm_pred_envelope([(1690000000000, 0), (1691000000000, 7)]),
-        "idC": _mpm_pred_envelope([(1690000000000, 0), (1691000000000, 0)]),
-    }
-
-    client = _make_mpm_client(workspaces_resp, details_map, predictions_map)
-    mock_mpm = MagicMock()
-    mock_mpm._client = client
-    mock_api_ctor.return_value = mock_mpm
-
-    api = _make_mpm_api()
-    reporter = GrowthReporter(api, window="7d", units="month", platforms="mpm")
-    events, usage = reporter._collect_mpm(["ws1"])
-
-    by_uc = {e.use_case: e for e in events}
-
-    # (a) details timestamp -> mpm_model event at that time
-    assert "modelA" in by_uc
-    assert by_uc["modelA"].kind == "mpm_model"
-    assert by_uc["modelA"].platform == "mpm"
-    assert by_uc["modelA"].workspace == "ws1"
-    assert by_uc["modelA"].created == datetime.datetime.fromtimestamp(
-        1700000000000 / 1000, tz=datetime.timezone.utc
-    )
-
-    # (b) no details ts but predictions -> proxy event at first prediction
-    # day with y>0 (1691000000000, not the 0-value 1690000000000 point)
-    assert "modelB" in by_uc
-    assert by_uc["modelB"].created == datetime.datetime.fromtimestamp(
-        1691000000000 / 1000, tz=datetime.timezone.utc
-    )
-
-    # (c) neither details ts nor any y>0 -> no CreationEvent for modelC
-    assert "modelC" not in by_uc
-
-    # but modelC must still yield a PREDICTION_VOLUME usage metric
-    pred_metrics = [m for m in usage if m.metric == "PREDICTION_VOLUME"]
-    modelC_metric = next(m for m in pred_metrics if m.project == "modelC")
-    assert modelC_metric.value == 0
-    assert modelC_metric.platform == "mpm" and modelC_metric.workspace == "ws1"
-
-
-@requires_mpm
-@patch("comet_mpm.API")
-def test_collect_mpm_prediction_volume_usage_per_model_and_per_workspace(
-    mock_api_ctor,
-):
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    models_by_ws = {
-        "ws1": [
-            {"modelName": "modelA", "modelId": "idA"},
-            {"modelName": "modelB", "modelId": "idB"},
-        ]
-    }
-    workspaces_resp = _mpm_workspaces_resp(models_by_ws)
-    details_map = {"idA": {"createdAt": 1700000000000}, "idB": {}}
-    predictions_map = {
-        "idA": _mpm_pred_envelope([(1699000000000, 5), (1700500000000, 2)]),
-        "idB": _mpm_pred_envelope([(1691000000000, 7)]),
-    }
-
-    client = _make_mpm_client(workspaces_resp, details_map, predictions_map)
-    mock_mpm = MagicMock()
-    mock_mpm._client = client
-    mock_api_ctor.return_value = mock_mpm
-
-    api = _make_mpm_api()
-    reporter = GrowthReporter(api, window="7d", units="month", platforms="mpm")
-    _events, usage = reporter._collect_mpm(["ws1"])
-
-    pred_metrics = [m for m in usage if m.metric == "PREDICTION_VOLUME"]
-
-    modelA_metric = next(m for m in pred_metrics if m.project == "modelA")
-    assert modelA_metric.value == 7  # 5 + 2
-    assert modelA_metric.series  # non-empty over-time series
-
-    modelB_metric = next(m for m in pred_metrics if m.project == "modelB")
-    assert modelB_metric.value == 7
-
-    ws_total_metric = next(m for m in pred_metrics if m.project is None)
-    assert ws_total_metric.value == 14  # 7 + 7
-    assert ws_total_metric.workspace == "ws1"
-    assert ws_total_metric.series
-
-    # fetch-once regression guard: get_nb_predictions called exactly once
-    # per model (reused for BOTH the creation proxy and the usage metric)
-    assert client.get_nb_predictions.call_count == 2
-
-
-@requires_mpm
-@patch("comet_mpm.API")
-def test_collect_mpm_respects_limit_on_workspaces(mock_api_ctor):
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    models_by_ws = {
-        "ws1": [{"modelName": "modelA", "modelId": "idA"}],
-        "ws2": [{"modelName": "modelZ", "modelId": "idZ"}],
-    }
-    workspaces_resp = _mpm_workspaces_resp(models_by_ws)
-    details_map = {"idA": {"createdAt": 1700000000000}}
-    predictions_map = {"idA": _mpm_pred_envelope([(1700000000000, 3)])}
-
-    client = _make_mpm_client(workspaces_resp, details_map, predictions_map)
-    mock_mpm = MagicMock()
-    mock_mpm._client = client
-    mock_api_ctor.return_value = mock_mpm
-
-    api = _make_mpm_api()
-    reporter = GrowthReporter(api, window="7d", units="month", platforms="mpm", limit=1)
-    events, usage = reporter._collect_mpm(["ws1", "ws2"])
-
-    assert all(e.workspace == "ws1" for e in events)
-    assert all(m.workspace == "ws1" for m in usage)
-    assert not any(e.use_case == "modelZ" for e in events)
-
-
-@requires_mpm
-@patch("comet_mpm.API")
-def test_collect_mpm_skips_bad_model_and_continues(mock_api_ctor, capsys):
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    models_by_ws = {
-        "ws1": [
-            {"modelName": "modelBad", "modelId": "idBad"},
-            {"modelName": "modelGood", "modelId": "idGood"},
-        ]
-    }
-    workspaces_resp = _mpm_workspaces_resp(models_by_ws)
-    details_map = {"idBad": {}, "idGood": {"createdAt": 1700000000000}}
-
-    def fake_get_nb_predictions(model_id, *args, **kwargs):
-        if model_id == "idBad":
-            raise RuntimeError("boom")
-        return _mpm_pred_envelope([(1700000000000, 4)])
-
-    client = _make_mpm_client(workspaces_resp, details_map, {})
-    client.get_nb_predictions.side_effect = fake_get_nb_predictions
-    mock_mpm = MagicMock()
-    mock_mpm._client = client
-    mock_api_ctor.return_value = mock_mpm
-
-    api = _make_mpm_api()
-    reporter = GrowthReporter(api, window="7d", units="month", platforms="mpm")
-    events, usage = reporter._collect_mpm(["ws1"])
-
-    assert not any(e.use_case == "modelBad" for e in events)
-    assert any(e.use_case == "modelGood" for e in events)
-    assert any(m.project == "modelGood" for m in usage)
-    assert not any(m.project == "modelBad" for m in usage)
-
-
-@requires_mpm
-@patch("comet_mpm.API")
-def test_collect_mpm_workspaces_endpoint_error_returns_empty(mock_api_ctor):
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    client = MagicMock()
-    client.get.side_effect = RuntimeError("404")
-    mock_mpm = MagicMock()
-    mock_mpm._client = client
-    mock_api_ctor.return_value = mock_mpm
-
-    api = _make_mpm_api()
-    reporter = GrowthReporter(api, window="7d", units="month", platforms="mpm")
-    events, usage = reporter._collect_mpm(["ws1"])
-
-    assert events == []
-    assert usage == []
-
-
-@requires_mpm
-@patch("comet_mpm.API")
-def test_collect_mpm_skips_malformed_enumeration_elements(mock_api_ctor):
-    # The MPM inventory shape is unverifiable live; malformed workspace/model
-    # elements must be skipped, not crash the whole report.
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    workspaces_resp = {
-        "workspaces": [
-            "not-a-dict",  # malformed workspace entry
-            {
-                "workspaceName": "ws1",
-                "models": [
-                    "not-a-dict",  # malformed model entry
-                    {"modelName": "good", "modelId": "idG"},
-                ],
-            },
-        ]
-    }
-    predictions_map = {"idG": _mpm_pred_envelope([(1690000000000, 5)])}
-    client = _make_mpm_client(
-        workspaces_resp, details_map={}, predictions_map=predictions_map
-    )
-    mock_mpm = MagicMock()
-    mock_mpm._client = client
-    mock_api_ctor.return_value = mock_mpm
-
-    api = _make_mpm_api()
-    reporter = GrowthReporter(api, window="7d", units="month", platforms="mpm")
-    events, usage = reporter._collect_mpm(["ws1"])
-
-    # The one good model is still collected; malformed entries are ignored.
-    assert [e.use_case for e in events] == ["good"]
-    assert any(m.metric == "PREDICTION_VOLUME" and m.project == "good" for m in usage)
-
-
-def _uc_ev(platform, ws, uc, kind, y, m, d):
-    from cometx.cli.admin_growth_report import CreationEvent
-
-    return CreationEvent(
-        platform,
-        ws,
-        uc,
-        kind,
-        datetime.datetime(y, m, d, tzinfo=datetime.timezone.utc),
-    )
-
-
-def _make_mixed_workspace_events():
-    """Two workspaces w/ mixed opik_project/em_project/mpm_model events."""
-    return [
-        # ws1: 2 opik, 1 em, 1 mpm; earliest = 2026-01-02 (opik)
-        _uc_ev("opik", "ws1", "op1", "opik_project", 2026, 1, 2),
-        _uc_ev("opik", "ws1", "op2", "opik_project", 2026, 3, 1),
-        _uc_ev("em", "ws1", "em1", "em_project", 2026, 2, 1),
-        _uc_ev("mpm", "ws1", "mp1", "mpm_model", 2026, 4, 1),
-        # ws2: 1 em, 2 mpm; earliest = 2025-12-15 (em)
-        _uc_ev("em", "ws2", "em2", "em_project", 2025, 12, 15),
-        _uc_ev("mpm", "ws2", "mp2", "mpm_model", 2026, 1, 10),
-        _uc_ev("mpm", "ws2", "mp3", "mpm_model", 2026, 2, 20),
-    ]
-
-
-def test_use_cases_by_workspace_by_kind_totals_and_first_created():
-    from cometx.cli.admin_growth_report import use_cases_by_workspace
-
-    events = _make_mixed_workspace_events()
-    result = use_cases_by_workspace(events)
-
-    assert set(result.keys()) == {"ws1", "ws2"}
-
-    ws1 = result["ws1"]
-    assert ws1["use_cases_total"] == 4
-    assert ws1["by_kind"] == {"opik_project": 2, "em_project": 1, "mpm_model": 1}
-    assert ws1["first_created"] == datetime.datetime(
-        2026, 1, 2, tzinfo=datetime.timezone.utc
-    )
-
-    ws2 = result["ws2"]
-    assert ws2["use_cases_total"] == 3
-    assert ws2["by_kind"] == {"opik_project": 0, "em_project": 1, "mpm_model": 2}
-    assert ws2["first_created"] == datetime.datetime(
-        2025, 12, 15, tzinfo=datetime.timezone.utc
-    )
-
-
-def test_use_cases_by_workspace_empty_input():
-    from cometx.cli.admin_growth_report import use_cases_by_workspace
-
-    assert use_cases_by_workspace([]) == {}
-
-
-def test_unified_events_filters_to_three_use_case_kinds():
-    from cometx.cli.admin_growth_report import unified_events
-
-    events = _make_mixed_workspace_events()
-    other = _uc_ev("em", "ws1", "reg1", "registry_model", 2026, 1, 1)
-    result = unified_events(events + [other])
-
-    assert len(result) == len(events)
-    assert all(e.kind in ("opik_project", "em_project", "mpm_model") for e in result)
-    assert other not in result
-    # does not mutate input
-    assert (events + [other]) == events + [other]
-
-
-def test_unified_events_empty_input():
-    from cometx.cli.admin_growth_report import unified_events
-
-    assert unified_events([]) == []
-
-
-def test_collect_mpm_missing_dependency_returns_empty(monkeypatch):
-    import builtins
-
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    real_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == "comet_mpm":
-            raise ImportError("no comet_mpm")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-
-    api = _make_mpm_api()
-    reporter = GrowthReporter(api, window="7d", units="month", platforms="mpm")
-    events, usage = reporter._collect_mpm(["ws1"])
-
-    assert events == []
-    assert usage == []
-
-
-# ---------------------------------------------------------------------------
-# C8: self-contained HTML dashboard renderer
-# ---------------------------------------------------------------------------
 
 
 def _sample_report_data():
@@ -1257,47 +300,6 @@ def test_charts_have_interactive_hover_tooltip_infra():
     assert 'class: "guide"' in doc  # the vertical hover guide line
 
 
-def test_adoption_fastest_growing_always_present():
-    # The fastest-growing-project KPI is shown for every product (incl. EM),
-    # with "—" when nothing grew in the window, so it never looks missing.
-    import datetime as dt
-
-    from cometx.cli.admin_growth_report import GrowthReporter, UsageMetric, Window
-
-    reporter = GrowthReporter(MagicMock(), window="7d", units="month", platforms="em")
-    window = Window(
-        dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc),
-        dt.datetime(2026, 7, 8, tzinfo=dt.timezone.utc),
-        "month",
-    )
-
-    # in-window activity -> the project is named
-    usage_active = [
-        UsageMetric(
-            "em", "ws", "EXPERIMENT_COUNT", 4, project="p1", series=[("2026-07", 4)]
-        ),
-        UsageMetric(
-            "em", "ws", "EXPERIMENT_COUNT", 4, project=None, series=[("2026-07", 4)]
-        ),
-    ]
-    kpis = reporter._build_adoption_section("em", usage_active, window)["kpis"]
-    fg = next(k for k in kpis if k["label"] == "Fastest-growing project")
-    assert fg["value"] == "p1" and "+4" in fg["sub"]
-
-    # no in-window activity (all before the window) -> still present, as "—"
-    usage_stale = [
-        UsageMetric(
-            "em", "ws", "EXPERIMENT_COUNT", 9, project="p1", series=[("2026-01", 9)]
-        ),
-        UsageMetric(
-            "em", "ws", "EXPERIMENT_COUNT", 9, project=None, series=[("2026-01", 9)]
-        ),
-    ]
-    kpis = reporter._build_adoption_section("em", usage_stale, window)["kpis"]
-    fg = next(k for k in kpis if k["label"] == "Fastest-growing project")
-    assert fg["value"] == "—"
-
-
 def test_build_html_escapes_workspace_and_project_names():
     from cometx.cli.admin_growth_report import build_html
 
@@ -1424,367 +426,6 @@ def test_parse_window_rejects_malformed_spec():
             pass
 
 
-def _kind_events(kind, platform, specs):
-    """specs: list of (workspace, use_case, y, m, d)."""
-    from cometx.cli.admin_growth_report import CreationEvent
-
-    return [
-        CreationEvent(
-            platform,
-            ws,
-            uc,
-            kind,
-            datetime.datetime(y, m, d, tzinfo=datetime.timezone.utc),
-        )
-        for ws, uc, y, m, d in specs
-    ]
-
-
-def _usage_metric(platform, ws, metric, value, project=None, series=None):
-    from cometx.cli.admin_growth_report import UsageMetric
-
-    return UsageMetric(
-        platform=platform,
-        workspace=ws,
-        metric=metric,
-        value=value,
-        project=project,
-        series=series,
-    )
-
-
-def _patch_collectors(monkeypatch, em=None, opik=None, mpm=None, force_platforms=None):
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    monkeypatch.setattr(
-        GrowthReporter, "_collect_em", lambda self, ws: (em or ([], []))
-    )
-    monkeypatch.setattr(
-        GrowthReporter, "_collect_opik", lambda self, ws: (opik or ([], []))
-    )
-    monkeypatch.setattr(
-        GrowthReporter, "_collect_mpm", lambda self, ws: (mpm or ([], []))
-    )
-    # Decouple platform resolution from the environment: `_resolve_platforms`
-    # imports opik/comet_mpm to decide availability, but these are optional
-    # extras not always installed in CI. Force the set so cross-platform
-    # assembly tests are deterministic regardless of what's pip-installed.
-    if force_platforms is not None:
-        monkeypatch.setattr(
-            GrowthReporter, "_resolve_platforms", lambda self: list(force_platforms)
-        )
-
-
-def test_build_assembles_report_data_matching_c8_contract(monkeypatch):
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    opik_events = _kind_events(
-        "opik_project",
-        "opik",
-        [
-            ("ws-alpha", "op1", 2026, 6, 1),
-            ("ws-alpha", "op2", 2026, 7, 5),
-            ("ws-beta", "op3", 2026, 7, 6),
-        ],
-    )
-    em_events = _kind_events(
-        "em_project",
-        "em",
-        [("ws-alpha", "em1", 2026, 5, 1), ("ws-beta", "em2", 2026, 7, 8)],
-    )
-    mpm_events = _kind_events("mpm_model", "mpm", [("ws-beta", "mp1", 2026, 7, 7)])
-    opik_usage = [
-        _usage_metric(
-            "opik",
-            "ws-alpha",
-            "SPAN_COUNT",
-            100,
-            project="op1",
-            series=[("2026-07", 100)],
-        ),
-        _usage_metric(
-            "opik",
-            "ws-alpha",
-            "SPAN_COUNT",
-            100,
-            project=None,
-            series=[("2026-07", 100)],
-        ),
-    ]
-    em_usage = [
-        _usage_metric(
-            "em",
-            "ws-alpha",
-            "EXPERIMENT_COUNT",
-            10,
-            project="em1",
-            series=[("2026-07", 10)],
-        ),
-        _usage_metric(
-            "em",
-            "ws-alpha",
-            "EXPERIMENT_COUNT",
-            10,
-            project=None,
-            series=[("2026-07", 10)],
-        ),
-        _usage_metric("em", "ws-alpha", "REGISTRY_MODELS", 2, project=None),
-        _usage_metric("em", "ws-alpha", "REGISTRY_VERSIONS", 3, project=None),
-    ]
-    mpm_usage = [
-        _usage_metric(
-            "mpm",
-            "ws-beta",
-            "PREDICTION_VOLUME",
-            50,
-            project="mp1",
-            series=[("2026-07", 50)],
-        ),
-        _usage_metric(
-            "mpm",
-            "ws-beta",
-            "PREDICTION_VOLUME",
-            50,
-            project=None,
-            series=[("2026-07", 50)],
-        ),
-    ]
-
-    _patch_collectors(
-        monkeypatch,
-        em=(em_events, em_usage),
-        opik=(opik_events, opik_usage),
-        mpm=(mpm_events, mpm_usage),
-        force_platforms=["opik", "em", "mpm"],
-    )
-
-    reporter = GrowthReporter(
-        MagicMock(), window="7d", units="month", platforms="em,opik,mpm"
-    )
-    monkeypatch.setattr(GrowthReporter, "_now", lambda self: _now())
-    report_data = reporter.build(["ws-alpha", "ws-beta"])
-
-    assert report_data["collectors"] == {"opik": True, "em": True, "mpm": True}
-
-    window = report_data["window"]
-    assert window["units"] == "month"
-    assert "7d" in window["label"]
-
-    unified = report_data["sections"]["unified"]
-    # Chargeback fetch is mocked to fail here, so the section falls back to the
-    # SDK (accessible-workspaces) view.
-    assert unified["title"] == "Workspaces & projects (accessible)"
-    kpi_labels = [k["label"] for k in unified["kpis"]]
-    assert "Total workspaces" in kpi_labels
-    assert "Departments" not in kpi_labels
-    assert "Total projects" in kpi_labels
-    projects_kpi = next(k for k in unified["kpis"] if k["label"] == "Total projects")
-    assert projects_kpi["value"] == 6  # 3 opik + 2 em + 1 mpm
-
-    # projects-created chart is stacked by kind (Opik/EM/MPM projects)
-    kinds_chart = next(
-        c for c in unified["charts"] if c["id"] == "chart-unified-created"
-    )
-    assert kinds_chart["data"]["categories"] == [
-        "opik_project",
-        "em_project",
-        "mpm_model",
-    ]
-    # the per-workspace breakdown now lives only in the unified table (the
-    # "Projects by workspace" chart was removed); the summary charts are the
-    # four created/cumulative workspace + project series
-    chart_ids = [c["id"] for c in unified["charts"]]
-    assert "chart-unified-by-workspace" not in chart_ids
-    assert "chart-unified-workspaces-cumulative" in chart_ids
-    assert "chart-unified-projects-cumulative" in chart_ids
-
-    # multi-workspace -> unified table breaks down by workspace
-    assert unified["table"]["title"] == "By workspace"
-    assert unified["table"]["headers"][0] == "Workspace"
-    ws_rows = {row[0] for row in unified["table"]["rows"]}
-    assert ws_rows == {"ws-alpha", "ws-beta"}
-
-    products = report_data["sections"]["products"]
-    assert set(products.keys()) == {"opik", "em", "mpm"}
-
-    opik_growth = products["opik"]["growth"]
-    assert opik_growth["kpis"][1]["label"] == "Total"
-    assert opik_growth["kpis"][1]["value"] == 3  # 3 opik_project events total
-    bars_chart = next(c for c in opik_growth["charts"] if c["kind"] == "bars")
-    assert sum(p["value"] for p in bars_chart["data"]["points"]) == 3
-    area_chart = next(c for c in opik_growth["charts"] if c["kind"] == "area")
-    assert area_chart["data"]["points"][-1]["value"] == 3
-
-    em_adoption = products["em"]["adoption"]
-    registry_panel = next(
-        p
-        for p in em_adoption.get("panels", [])
-        if p["title"] == "Model-registry engagement"
-    )
-    assert registry_panel["rows"] == [["ws-alpha", 2, 3]]
-
-    # adoption sections carry usage growth (not just totals) + a cumulative chart
-    em_adoption_kpis = {k["label"]: k for k in em_adoption["kpis"]}
-    assert em_adoption_kpis["Experiment count"]["value"] == 10
-    assert any(lbl.startswith("New (") for lbl in em_adoption_kpis)
-    assert any(lbl.startswith("Growth (") for lbl in em_adoption_kpis)
-    # em1 is the only project with in-window experiments -> fastest-growing
-    assert em_adoption_kpis["Fastest-growing project"]["value"] == "em1"
-    adoption_chart_kinds = {c["kind"] for c in em_adoption["charts"]}
-    assert "bars" in adoption_chart_kinds and "area" in adoption_chart_kinds
-
-    mpm_growth = products["mpm"]["growth"]
-    assert mpm_growth["kpis"][1]["value"] == 1
-
-    # never a secret anywhere in the assembled data
-    dumped = str(report_data)
-    assert "COMET_API_KEY" not in dumped
-    assert "sk-" not in dumped
-
-
-def test_build_resolves_workspaces_via_api_when_none_given(monkeypatch):
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    _patch_collectors(monkeypatch)
-    api = MagicMock()
-    api.get_workspaces.return_value = ["ws-only"]
-    reporter = GrowthReporter(api, window="7d", units="month", platforms="em")
-    report_data = reporter.build([])
-
-    api.get_workspaces.assert_called_once()
-    assert report_data["sections"]["unified"]["kpis"][0]["value"] == 1
-
-
-def test_build_drops_unimportable_optional_platforms(monkeypatch):
-    import builtins
-
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    real_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == "opik":
-            raise ImportError("no opik")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-    _patch_collectors(monkeypatch)
-
-    reporter = GrowthReporter(
-        MagicMock(), window="7d", units="month", platforms="em,opik,mpm"
-    )
-    report_data = reporter.build(["ws1"])
-
-    assert report_data["collectors"]["opik"] is False
-    assert "opik" not in report_data["sections"]["products"]
-
-
-def test_build_single_workspace_breaks_down_unified_table_by_use_case(monkeypatch):
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    opik_events = _kind_events("opik_project", "opik", [("ws1", "op1", 2026, 6, 1)])
-    _patch_collectors(monkeypatch, opik=(opik_events, []))
-
-    reporter = GrowthReporter(MagicMock(), window="7d", units="month", platforms="opik")
-    report_data = reporter.build(["ws1"])
-
-    unified_table = report_data["sections"]["unified"]["table"]
-    assert unified_table["headers"][0] == "Project"
-    assert unified_table["rows"] == [["op1", "Opik projects", "2026-06-01"]]
-
-
-def test_generate_growth_report_writes_html_with_no_secret(monkeypatch, tmp_path):
-    from cometx.cli.admin_growth_report import generate_growth_report
-
-    opik_events = _kind_events(
-        "opik_project", "opik", [("ws1", "op1", 2026, 6, 1), ("ws1", "op2", 2026, 7, 8)]
-    )
-    _patch_collectors(monkeypatch, opik=(opik_events, []))
-
-    out = tmp_path / "growth.html"
-    api = MagicMock()
-    api.config = {"comet.api_key": "sk-should-never-leak-0000"}
-    path = generate_growth_report(
-        api,
-        ["ws1"],
-        window="7d",
-        units="month",
-        platforms="opik",
-        output=str(out),
-        no_open=True,
-    )
-
-    content = out.read_text(encoding="utf-8")
-    assert path == str(out)
-    assert "Workspaces & projects" in content
-    assert "op1" in content or "op2" in content
-    assert "sk-should-never-leak-0000" not in content
-
-
-def test_generate_growth_report_full_chain_all_platforms(monkeypatch, tmp_path):
-    """End-to-end seam coverage: fixed collector output -> build() ->
-    build_html() -> the written HTML file, across all three platforms.
-    Chains what test_build_assembles_report_data_matching_c8_contract and
-    the render-layer tests otherwise only cover separately."""
-    from cometx.cli.admin_growth_report import generate_growth_report
-
-    monkeypatch.setenv("COMET_API_KEY", "sk-planted-env-secret-should-not-leak")
-
-    opik_events = _kind_events(
-        "opik_project",
-        "opik",
-        [
-            ("ws-alpha", "op1", 2026, 6, 1),
-            ("ws-alpha", "op2", 2026, 7, 5),
-            ("ws-beta", "op3", 2026, 7, 6),
-        ],
-    )
-    em_events = _kind_events(
-        "em_project",
-        "em",
-        [("ws-alpha", "em1", 2026, 5, 1), ("ws-beta", "em2", 2026, 7, 8)],
-    )
-    mpm_events = _kind_events("mpm_model", "mpm", [("ws-beta", "mp1", 2026, 7, 7)])
-    _patch_collectors(
-        monkeypatch,
-        em=(em_events, []),
-        opik=(opik_events, []),
-        mpm=(mpm_events, []),
-        force_platforms=["opik", "em", "mpm"],
-    )
-
-    out = tmp_path / "growth-full-chain.html"
-    api = MagicMock()
-    api.config = {"comet.api_key": "sk-api-secret-should-not-leak"}
-    path = generate_growth_report(
-        api,
-        ["ws-alpha", "ws-beta"],
-        window="7d",
-        units="month",
-        platforms="em,opik,mpm",
-        output=str(out),
-        no_open=True,
-    )
-
-    content = out.read_text(encoding="utf-8")
-    assert path == str(out)
-
-    # Section titles from all three product sections + the unified section.
-    assert "Workspaces & projects" in content
-    assert "Opik — growth" in content
-    assert "EM — growth" in content
-    assert "MPM — growth" in content
-
-    # KPI value derived from the fixed events: 3 opik + 2 em + 1 mpm = 6
-    # total use cases in the unified section.
-    assert ">6<" in content
-
-    # No secret (env-planted or api-config) ever reaches the rendered HTML.
-    assert "sk-planted-env-secret-should-not-leak" not in content
-    assert "sk-api-secret-should-not-leak" not in content
-    assert "COMET_API_KEY" not in content
-
-
 def test_people_section_built_from_chargeback():
     from cometx.cli.admin_growth_report import GrowthReporter
 
@@ -1812,9 +453,7 @@ def test_people_section_built_from_chargeback():
         api,
         window="7d",
         units="month",
-        platforms="em",
         active_window="60d",
-        include_users=True,
         leaderboard_top_n=5,
     )
     from cometx.cli.admin_growth_users import parse_users
@@ -1867,36 +506,12 @@ def test_people_section_user_growth_kpi_with_window():
         },
     }
     api = MagicMock()
-    r = GrowthReporter(
-        api, window="7d", units="month", platforms="em", active_window="60d"
-    )
+    r = GrowthReporter(api, window="7d", units="month", active_window="60d")
     section = r._build_people_section(parse_users(cb), now_ms=now_ms, window=_win())
     growth = next(k for k in section["kpis"] if k["label"].startswith("New in"))
     # one new account in-window vs two before => 50%, "+1 new"
     assert growth["value"] == "50.0%"
     assert growth["sub"] == "+1 new"
-
-
-def test_include_users_false_skips_people(monkeypatch):
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    api = MagicMock()
-    r = GrowthReporter(
-        api, window="7d", units="month", platforms="em", include_users=False
-    )
-    # build() must not call fetch_chargeback_report when include_users is False
-    import cometx.cli.admin_growth_report as agr
-
-    called = {"n": 0}
-    monkeypatch.setattr(
-        agr,
-        "fetch_chargeback_report",
-        lambda *a, **k: called.__setitem__("n", called["n"] + 1) or {},
-    )
-    r.api.get_workspaces.return_value = []
-    data = r.build([])
-    assert "people" not in data["sections"]
-    assert called["n"] == 0
 
 
 def test_malformed_chargeback_degrades_people_section_without_crashing(monkeypatch):
@@ -1920,9 +535,7 @@ def test_malformed_chargeback_degrades_people_section_without_crashing(monkeypat
         api,
         window="7d",
         units="month",
-        platforms="em",
         active_window="60d",
-        include_users=True,
         leaderboard_top_n=5,
     )
 
@@ -1959,9 +572,7 @@ def test_malformed_chargeback_degrades_leaderboards_and_personal_vs_service(
         api,
         window="7d",
         units="month",
-        platforms="em",
         active_window="60d",
-        include_users=True,
         leaderboard_top_n=5,
     )
 
@@ -1975,43 +586,6 @@ def test_malformed_chargeback_degrades_leaderboards_and_personal_vs_service(
     assert "referenced before assignment" not in captured.out
     assert "not associated with a value" not in captured.out
     assert "leaderboard_users" not in captured.out
-
-
-def test_leaderboards_rank_workspaces_top_n():
-    from cometx.cli.admin_growth_report import GrowthReporter, UsageMetric
-
-    api = MagicMock()
-    r = GrowthReporter(
-        api, window="7d", units="month", platforms="em", leaderboard_top_n=2
-    )
-    usage = [
-        UsageMetric("em", "wsA", "EXPERIMENT_COUNT", 100, project=None, series=[]),
-        UsageMetric("em", "wsB", "EXPERIMENT_COUNT", 50, project=None, series=[]),
-        UsageMetric("em", "wsC", "EXPERIMENT_COUNT", 10, project=None, series=[]),
-    ]
-    section = r._build_leaderboards_section(
-        usage=usage, users=[], ran={"em": True, "opik": False, "mpm": False}
-    )
-    charts = section["charts"]
-    # a workspace-by-experiments groupedBarsH exists, top-2 only
-    exp_chart = next(
-        c
-        for c in charts
-        if "experiment" in c["title"].lower() and "top" in c["title"].lower()
-    )
-    rows = exp_chart["data"]["rows"]
-    assert [row["label"] for row in rows] == ["wsA", "wsB"]
-
-
-def test_leaderboards_omit_platform_that_did_not_run():
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    api = MagicMock()
-    r = GrowthReporter(api, window="7d", units="month", platforms="em")
-    section = r._build_leaderboards_section(
-        usage=[], users=[], ran={"em": False, "opik": False, "mpm": False}
-    )
-    assert section is None or not section.get("charts")
 
 
 def test_fetch_service_accounts_parses_name_list():
@@ -2081,7 +655,7 @@ def test_build_personal_vs_service_section_admin_api_source():
     from cometx.cli.admin_growth_users import parse_users
 
     api = MagicMock()
-    r = GrowthReporter(api, window="7d", units="month", platforms="em")
+    r = GrowthReporter(api, window="7d", units="month")
     cb = {
         "workspaces": [],
         "users": {
@@ -2124,7 +698,7 @@ def test_build_personal_vs_service_section_heuristic_fallback_omits_empty_metric
     from cometx.cli.admin_growth_users import parse_users
 
     api = MagicMock()
-    r = GrowthReporter(api, window="7d", units="month", platforms="em")
+    r = GrowthReporter(api, window="7d", units="month")
     cb = {
         "workspaces": [],
         "users": {
@@ -2163,7 +737,7 @@ def test_build_personal_vs_service_section_none_when_no_users():
     from cometx.cli.admin_growth_report import GrowthReporter
 
     api = MagicMock()
-    r = GrowthReporter(api, window="7d", units="month", platforms="em")
+    r = GrowthReporter(api, window="7d", units="month")
     assert r._build_personal_vs_service_section([], service_account_names=None) is None
 
 
@@ -2210,9 +784,7 @@ def test_assemble_report_data_wires_personal_vs_service_section(monkeypatch):
         api,
         window="7d",
         units="month",
-        platforms="em",
         active_window="60d",
-        include_users=True,
         leaderboard_top_n=5,
     )
     data = r.build([])
@@ -2260,94 +832,12 @@ def test_assemble_report_data_degrades_personal_vs_service_without_crashing(
         api,
         window="7d",
         units="month",
-        platforms="em",
         active_window="60d",
-        include_users=True,
         leaderboard_top_n=5,
     )
     data = r.build([])  # must not raise
 
     assert "personal_vs_service" not in data["sections"]
-
-
-def test_exclude_personal_filters_by_pattern():
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    api = MagicMock()
-    r = GrowthReporter(
-        api,
-        window="7d",
-        units="month",
-        platforms="em",
-        exclude_personal=True,
-        personal_pattern=r"^user-",
-    )
-    kept = r._filter_personal(["team-a", "user-alice", "team-b"])
-    assert kept == ["team-a", "team-b"]
-
-
-def test_exclude_personal_without_pattern_is_noop():
-    from cometx.cli.admin_growth_report import GrowthReporter
-
-    api = MagicMock()
-    r = GrowthReporter(
-        api,
-        window="7d",
-        units="month",
-        platforms="em",
-        exclude_personal=True,
-        personal_pattern=None,
-    )
-    assert r._filter_personal(["a", "b"]) == ["a", "b"]
-
-
-def test_workspace_first_events_and_cumulative_growth():
-    import datetime
-
-    from cometx.cli.admin_growth_report import CreationEvent, GrowthReporter
-
-    api = MagicMock()
-    api.config = {"comet.url_override": "https://c.example.com"}
-
-    def ev(ws, y, m):
-        return CreationEvent(
-            "opik",
-            ws,
-            f"{ws}-{y}-{m}",
-            "opik_project",
-            datetime.datetime(y, m, 1, tzinfo=datetime.timezone.utc),
-        )
-
-    # A first seen Jan (has a later Feb project too -> must dedup to Jan),
-    # B/C Feb, D Mar -> workspace cumulative total 1,3,4
-    events = [
-        ev("A", 2024, 1),
-        ev("A", 2024, 2),
-        ev("B", 2024, 2),
-        ev("C", 2024, 2),
-        ev("D", 2024, 3),
-    ]
-    r = GrowthReporter(api, window="7d", units="month", platforms="opik")
-
-    ws_events = r._workspace_first_events(events)
-    # one event per workspace, at its earliest month
-    assert {e.workspace: e.created.strftime("%Y-%m") for e in ws_events} == {
-        "A": "2024-01",
-        "B": "2024-02",
-        "C": "2024-02",
-        "D": "2024-03",
-    }
-
-    chart = r._cumulative_area_chart(
-        ws_events, "chart-unified-workspaces-cumulative", "Total workspaces over time"
-    )
-    assert chart["kind"] == "area"
-    totals = {p["key"]: p["value"] for p in chart["data"]["points"]}
-    assert totals == {"2024-01": 1, "2024-02": 3, "2024-03": 4}
-    # no obsolete window band on the growth curve
-    assert chart["data"]["window_start"] is None
-    # a single period is not enough of a trajectory to plot -> no chart
-    assert r._cumulative_area_chart([ev("A", 2024, 1)], "id", "t") is None
 
 
 def _cb_lb():
@@ -2403,15 +893,13 @@ def test_scope_chargeback_filters_workspaces_and_users():
 def test_scope_label_org_vs_scoped():
     from cometx.cli.admin_growth_report import GrowthReporter
 
-    org = GrowthReporter._scope_label(None, 4, 165, 137, True)
+    org = GrowthReporter._scope_label(None, 165, 137)
     assert org.startswith("Org-wide: 165 workspaces, 137 users")
-    assert "4 workspace(s)" in org
-    assert GrowthReporter._scope_label({"a", "b"}, 2, 165, 137, True) == (
+    assert org.endswith("(chargeback)")
+    assert GrowthReporter._scope_label({"a", "b"}, 165, 137) == (
         "Scoped to 2 selected workspace(s)"
     )
-    assert "accessible to this key: 4" in GrowthReporter._scope_label(
-        None, 4, None, None, False
-    )
+    assert GrowthReporter._scope_label(None, None, None) == "Org-wide (chargeback)"
 
 
 def test_leaderboards_workspaces_org_wide_from_chargeback():
@@ -2447,13 +935,9 @@ def test_leaderboards_workspaces_org_wide_from_chargeback():
         },
     }
     api = MagicMock()
-    r = GrowthReporter(
-        api, window="7d", units="month", platforms="em,opik", leaderboard_top_n=5
-    )
+    r = GrowthReporter(api, window="7d", units="month", leaderboard_top_n=5)
     section = r._build_leaderboards_section(
-        usage=[],
         users=parse_users(cb),
-        ran={"em": True, "opik": True, "mpm": False},
         ws_records=parse_workspaces(cb),
     )
     exp_top = next(
@@ -2514,11 +998,9 @@ def test_unified_section_org_overview_from_chargeback():
         },
     }
     api = MagicMock()
-    r = GrowthReporter(api, window="7d", units="month", platforms="em,opik")
+    r = GrowthReporter(api, window="7d", units="month")
     section = r._build_unified_section(
-        [],
         _win(),
-        0,
         people_users=parse_users(cb),
         ws_records=parse_workspaces(cb),
         now_ms=now_ms,
@@ -2550,9 +1032,46 @@ def test_unified_section_org_overview_from_chargeback():
     assert section["table"]["title"] == "By workspace (org-wide, chargeback)"
 
 
-def test_leaderboards_omit_traces_board():
+def test_build_raises_when_chargeback_unavailable(monkeypatch):
+    import cometx.cli.admin_growth_report as agr
+    from cometx.cli.admin_growth_report import GrowthReporter, GrowthReportError
+
+    def boom(*a, **k):
+        raise RuntimeError("status_code: 403, body: {'message': 'Forbidden'}")
+
+    monkeypatch.setattr(agr, "fetch_chargeback_report", boom)
+    api = MagicMock()
+    r = GrowthReporter(api, window="7d", units="month")
+    try:
+        r.build([])
+        assert False, "expected GrowthReportError"
+    except GrowthReportError as exc:
+        assert "admin API key" in str(exc)
+
+
+def test_generate_growth_report_signature_has_no_sdk_kwargs():
+    import inspect
+
+    from cometx.cli.admin_growth_report import generate_growth_report
+
+    params = inspect.signature(generate_growth_report).parameters
+    for gone in ("platforms", "limit", "include_users"):
+        assert gone not in params
+    for kept in (
+        "window",
+        "units",
+        "active_window",
+        "leaderboard_top_n",
+        "exclude_personal",
+        "personal_pattern",
+        "output",
+        "no_open",
+    ):
+        assert kept in params
+
+
+def test_exclude_personal_drops_matching_workspaces_from_chargeback():
     from cometx.cli.admin_growth_report import GrowthReporter
-    from cometx.cli.admin_growth_users import parse_users, parse_workspaces
 
     cb = {
         "workspaces": [
@@ -2561,19 +1080,34 @@ def test_leaderboards_omit_traces_board():
                 "numberOfExperiments": 5,
                 "projects": [{}],
                 "members": [{"userName": "a"}],
-            }
+            },
+            {
+                "name": "personal-bob",
+                "numberOfExperiments": 1,
+                "projects": [{}],
+                "members": [{"userName": "bob"}],
+            },
         ],
-        "users": {"licensedUsers": [{"username": "a", "email": "a", "lastUsedAt": 1}]},
+        "users": {
+            "report": [
+                {"username": "a", "email": "a", "lastUsedAt": 1},
+                {"username": "bob", "email": "b", "lastUsedAt": 1},
+            ]
+        },
     }
     api = MagicMock()
-    r = GrowthReporter(api, window="7d", units="month", platforms="em,opik")
-    section = r._build_leaderboards_section(
-        usage=[],
-        users=parse_users(cb),
-        ran={"em": True, "opik": True, "mpm": False},
-        ws_records=parse_workspaces(cb),
+    r = GrowthReporter(
+        api,
+        window="7d",
+        units="month",
+        exclude_personal=True,
+        personal_pattern=r"^personal-",
     )
-    assert not any("traces" in c["id"] for c in section["charts"])
+    filtered = r._filter_personal_chargeback(cb)
+    names = [w["name"] for w in filtered["workspaces"]]
+    assert names == ["team-a"]
+    # original is not mutated
+    assert len(cb["workspaces"]) == 2
 
 
 def test_short_api_error_condenses_verbose_sdk_error():
@@ -2587,31 +1121,3 @@ def test_short_api_error_condenses_verbose_sdk_error():
     assert _short_api_error("plain boom") == "plain boom"
     long = "x" * 300
     assert len(_short_api_error(long)) <= 160
-
-
-def test_growth_rate_chart_period_over_period():
-    import datetime
-
-    from cometx.cli.admin_growth_report import CreationEvent, GrowthReporter
-
-    api = MagicMock()
-    api.config = {"comet.url_override": "https://c.example.com"}
-
-    def ev(y, m):
-        return CreationEvent(
-            "opik",
-            "w",
-            f"p{y}{m}",
-            "opik_project",
-            datetime.datetime(y, m, 1, tzinfo=datetime.timezone.utc),
-        )
-
-    # new per month: Jan 1, Feb 2, Mar 1 -> cumulative 1,3,4 -> rate 0, 200, 33.3
-    events = [ev(2024, 1), ev(2024, 2), ev(2024, 2), ev(2024, 3)]
-    r = GrowthReporter(api, window="7d", units="month", platforms="opik")
-    c = r._growth_rate_chart(events, "chart-x", "Growth rate")
-    assert c["kind"] == "lines"
-    rates = {p["key"]: p["values"]["rate"] for p in c["data"]["points"]}
-    assert rates == {"2024-01": 0.0, "2024-02": 200.0, "2024-03": 33.3}
-    # single period -> no rate
-    assert r._growth_rate_chart([ev(2024, 1)], "x", "t") is None
