@@ -587,9 +587,7 @@ workspaces, users, and platform adoption, per workspace/department.
 
 **Requires an admin API key** — the report is derived entirely from the admin
 chargeback endpoint, and with a non-admin key the command errors out (non-zero
-exit). The earlier SDK/platform-direct methodology (per-workspace Opik/EM/MPM
-collection) has been retired from this command and is preserved on the local
-`growth-report-sdk-full` git branch.
+exit).
 
 ```
 cometx admin growth-report [WORKSPACE ...]

@@ -132,9 +132,7 @@ of workspaces, users, and platform adoption, broken down by workspace/department
 
 **Requires an admin API key.** The report is derived entirely from the admin
 chargeback endpoint; with a non-admin key the command prints an error and exits
-non-zero — there is no fallback. (An earlier SDK/platform-direct methodology that
-collected per-workspace Opik/EM/MPM data has been retired from this command and
-is preserved on the local `growth-report-sdk-full` git branch.)
+non-zero — there is no fallback.
 
 ### Basic Usage
 
