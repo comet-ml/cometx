@@ -33,8 +33,6 @@ from __future__ import annotations
 import html
 import json
 
-PLATFORM_ORDER = ("opik", "em", "mpm")
-
 DEFAULT_PALETTE = ("--accent", "--sdk", "--ok", "--warn")
 
 
@@ -119,7 +117,6 @@ h1{font-size:26px;line-height:1.15;margin:0;letter-spacing:-.015em;font-weight:6
   border:1px solid var(--hair);border-radius:7px;padding:7px 11px;cursor:pointer;display:inline-flex;
   gap:7px;align-items:center}
 .toggle:hover{border-color:var(--accent);color:var(--ink)}
-.collectors{display:flex;flex-wrap:wrap;gap:7px}
 .chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-family:var(--mono);
   padding:4px 9px;border-radius:999px;border:1px solid var(--hair);color:var(--ink-2);background:var(--card)}
 .chip .dot{width:7px;height:7px;border-radius:50%}
@@ -127,8 +124,6 @@ h1{font-size:26px;line-height:1.15;margin:0;letter-spacing:-.015em;font-weight:6
 .chip.winchip{color:var(--ink);border-color:color-mix(in srgb,var(--accent) 40%,var(--hair))}
 .sec-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;margin:30px 0 14px}
 .sec-title{font-size:18px;margin:0;font-weight:650;letter-spacing:-.01em}
-.product-heading{font-size:20px;margin:38px 0 4px;font-weight:700;letter-spacing:-.01em;
-  border-top:1px solid var(--hair);padding-top:22px}
 .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px}
 .kpi{background:var(--card);border:1px solid var(--hair);border-radius:12px;padding:16px 16px 14px;
   box-shadow:var(--shadow);position:relative;overflow:hidden}
@@ -291,80 +286,6 @@ CLIENT_JS = """
     host.appendChild(svg);
   }
 
-  function drawArea(host, data){
-    data = data || {}; var points = data.points || [];
-    if(!points.length){ host.innerHTML = "<p class=\\"nodata\\">No data</p>"; return; }
-    var accent = tok("--accent"), band = tok("--accent-soft");
-    var svg = el("svg", {viewBox: "0 0 " + W + " " + H, role: "img"});
-    var iw = W - P.l - P.r, ih = H - P.t - P.b, n = points.length;
-    var max = 1; points.forEach(function(p){ max = Math.max(max, p.value || 0); });
-    var X = function(i){ return n > 1 ? P.l + iw * (i / (n - 1)) : P.l + iw / 2; };
-    var Y = function(v){ return P.t + ih * (1 - v / max); };
-    hGrid(svg, Y, max, iw);
-    svg.appendChild(el("line", {class: "axis-base", x1: P.l, x2: P.l + iw, y1: P.t + ih, y2: P.t + ih}));
-    var dp = "M" + X(0) + " " + Y(points[0].value || 0);
-    points.forEach(function(p, i){ if(i) dp += " L" + X(i) + " " + Y(p.value || 0); });
-    var area = dp + " L" + X(n - 1) + " " + (P.t + ih) + " L" + X(0) + " " + (P.t + ih) + " Z";
-    svg.appendChild(el("path", {d: area, fill: accent, opacity: "0.12"}));
-    svg.appendChild(el("path", {d: dp, fill: "none", stroke: accent, "stroke-width": "2",
-      "stroke-linejoin": "round", "stroke-linecap": "round"}));
-    // final cumulative value label + end marker
-    var endV = points[n - 1].value || 0;
-    var eL = el("text", {x: X(n - 1), y: Y(endV) - 8, "text-anchor": "end", fill: accent,
-      "font-size": "11", "font-family": "var(--mono)", "font-weight": "600"});
-    eL.textContent = fmt(endV); svg.appendChild(eL);
-    svg.appendChild(el("circle", {cx: X(n - 1), cy: Y(endV), r: "4", fill: accent,
-      stroke: tok("--card"), "stroke-width": "2"}));
-    // x-axis: cumulative charts show only the earliest and latest dates
-    var slotA = n > 1 ? iw / (n - 1) : iw;
-    [0, n - 1].forEach(function(i){
-      if(i < 0) return;
-      var xl = el("text", {x: X(i), y: H - 8, "text-anchor": i === 0 ? "start" : "end",
-        fill: tok("--muted"), "font-size": "10", "font-family": "var(--mono)"});
-      xl.textContent = points[i].key; svg.appendChild(xl);
-    });
-    // interactive hover tooltip over each point
-    var cols = points.map(function(p, i){
-      return {x: X(i), x0: X(i) - slotA / 2, w: slotA, key: p.key, value: p.value || 0};
-    });
-    attachTip(host, svg, cols);
-    host.appendChild(svg);
-  }
-
-  function drawStacked(host, data){
-    data = data || {}; var points = data.points || []; var cats = data.categories || [];
-    if(!points.length || !cats.length){ host.innerHTML = "<p class=\\"nodata\\">No data</p>"; return; }
-    var colors = (data.colors && data.colors.length) ? data.colors : ["--accent", "--sdk", "--ok", "--warn"];
-    var accent = tok("--accent"), band = tok("--accent-soft");
-    var svg = el("svg", {viewBox: "0 0 " + W + " " + H, role: "img"});
-    var iw = W - P.l - P.r, ih = H - P.t - P.b, n = points.length;
-    var totals = points.map(function(p){
-      var s = 0; cats.forEach(function(c){ s += (p.values && p.values[c]) || 0; }); return s;
-    });
-    var max = Math.max.apply(null, totals.concat([1]));
-    var slot = iw / n, bw = Math.min(38, slot * 0.55);
-    hGrid(svg, function(v){ return P.t + ih * (1 - v / max); }, max, iw);
-    svg.appendChild(el("line", {class: "axis-base", x1: P.l, x2: P.l + iw, y1: P.t + ih, y2: P.t + ih}));
-    var cols = [];
-    points.forEach(function(p, i){
-      var x = P.l + slot * i + (slot - bw) / 2, yCursor = P.t + ih;
-      cats.forEach(function(c, ci){
-        var v = (p.values && p.values[c]) || 0; if(!v) return;
-        var h = ih * (v / max), y = yCursor - h;
-        svg.appendChild(el("rect", {x: x, y: y, width: bw, height: h, fill: tok(colors[ci % colors.length])}));
-        yCursor = y;
-      });
-      cols.push({x: P.l + slot * i + slot / 2, x0: P.l + slot * i, w: slot, key: p.key, value: totals[i]});
-      if(i % Math.max(1, Math.ceil(n / 8)) === 0){
-        var t = el("text", {x: x + bw / 2, y: H - 8, "text-anchor": "middle", fill: tok("--muted"),
-          "font-size": "10", "font-family": "var(--mono)"});
-        t.textContent = p.key; svg.appendChild(t);
-      }
-    });
-    attachTip(host, svg, cols);
-    host.appendChild(svg);
-  }
-
   function drawLines(host, data){
     data = data || {}; var points = data.points || []; var cats = data.categories || [];
     if(!points.length || !cats.length){ host.innerHTML = "<p class=\\"nodata\\">No data</p>"; return; }
@@ -496,8 +417,6 @@ CLIENT_JS = """
     var host = document.getElementById(c.id); if(!host) return;
     host.innerHTML = "";
     if(c.kind === "bars") drawBars(host, c.data);
-    else if(c.kind === "area") drawArea(host, c.data);
-    else if(c.kind === "stackedBars") drawStacked(host, c.data);
     else if(c.kind === "lines") drawLines(host, c.data);
     else if(c.kind === "barsLine") drawBarsLine(host, c.data);
     else if(c.kind === "groupedBarsH") drawGroupedH(host, c.data);
@@ -511,11 +430,6 @@ CLIENT_JS = """
     add(sections.people);
     add(sections.leaderboards);
     add(sections.personal_vs_service);
-    var products = sections.products || {};
-    ["opik", "em", "mpm"].forEach(function(k){
-      var prod = products[k]; if(!prod) return;
-      add(prod.growth); add(prod.adoption);
-    });
     return out;
   }
 
@@ -654,7 +568,6 @@ def render_section(section) -> str:
 def render_topbar(report_data: dict) -> str:
     meta = report_data.get("meta") or {}
     window = report_data.get("window") or {}
-    collectors = report_data.get("collectors") or {}
 
     title = _esc(meta.get("title") or "Growth report")
     meta_bits = []
@@ -673,13 +586,6 @@ def render_topbar(report_data: dict) -> str:
     if meta.get("source"):
         meta_bits.append(f'<span>Source <b>{_esc(meta["source"])}</b></span>')
 
-    chips = "".join(
-        '<span class="chip {}"><span class="dot"></span>{}</span>'.format(
-            "on" if bool(value) else "off", _esc(key)
-        )
-        for key, value in collectors.items()
-    )
-
     return (
         '<div class="topbar"><div>'
         '<p class="eyebrow">Comet Growth Report</p>'
@@ -690,7 +596,6 @@ def render_topbar(report_data: dict) -> str:
         '<button class="toggle" id="themeBtn" aria-label="Toggle color theme">'
         '<span id="themeIcon">◑</span><span id="themeLbl">Theme</span>'
         "</button>"
-        f'<div class="collectors" aria-label="collector status">{chips}</div>'
         "</div></div>"
     )
 
@@ -702,7 +607,6 @@ def build_html(report_data: dict) -> str:
     """
     report_data = report_data or {}
     sections = report_data.get("sections") or {}
-    products = sections.get("products") or {}
 
     body_parts = [
         render_topbar(report_data),
@@ -711,18 +615,6 @@ def build_html(report_data: dict) -> str:
         render_section(sections.get("leaderboards")),
         render_section(sections.get("personal_vs_service")),
     ]
-
-    for key in PLATFORM_ORDER:
-        product = products.get(key)
-        if not product:
-            continue
-        label = _esc(product.get("label") or key.upper())
-        product_html = render_section(product.get("growth")) + render_section(
-            product.get("adoption")
-        )
-        if product_html:
-            body_parts.append(f'<h2 class="product-heading">{label}</h2>')
-            body_parts.append(product_html)
 
     body_parts.append(FOOTER_HTML)
 

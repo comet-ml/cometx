@@ -345,6 +345,34 @@ def test_build_html_handles_missing_sections_gracefully():
     assert "<style>" in build_html(None)
 
 
+def test_build_html_has_no_products_or_collectors():
+    from cometx.cli.admin_growth_render import build_html
+
+    report = {
+        "meta": {
+            "title": "T",
+            "generated": "x",
+            "source": "s",
+            "scope": "Org-wide (chargeback)",
+        },
+        "window": {"label": "w"},
+        "sections": {
+            "unified": {
+                "title": "Organization overview (chargeback)",
+                "kpis": [],
+                "charts": [],
+                "table": None,
+            }
+        },
+    }
+    doc = build_html(report)
+    assert "product-heading" not in doc
+    assert 'aria-label="collector status"' not in doc
+    assert "drawStacked" not in doc
+    assert "drawArea" not in doc
+    assert "Organization overview (chargeback)" in doc
+
+
 def test_write_html_writes_file_and_returns_path(tmp_path):
     from cometx.cli.admin_growth_report import write_html
 
