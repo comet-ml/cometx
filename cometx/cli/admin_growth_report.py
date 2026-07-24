@@ -175,6 +175,24 @@ def _short_api_error(exc):
         if message:
             parts.append(message.group(1))
         return ": ".join(parts)
+    # Fallback (regexes missed): this string can surface in a user-facing
+    # GrowthReportError, so drop everything from the first sensitive marker
+    # onward -- verbose SDK/HTTP errors dump headers, cookies, body, and CSP.
+    lowered = text.lower()
+    cut = len(text)
+    for marker in (
+        "headers:",
+        "header:",
+        "cookie",
+        "body:",
+        "content-security-policy",
+        "csp",
+        "set-cookie",
+    ):
+        idx = lowered.find(marker)
+        if idx != -1:
+            cut = min(cut, idx)
+    text = text[:cut].strip() or "unexpected error"
     return text if len(text) <= 160 else text[:157] + "..."
 
 
@@ -668,6 +686,16 @@ class GrowthReporter:
 
         rate_pts = adoption_rate_series(users, self.units, now_ms, active_window_days)
         if rate_pts:
+            # adoption_rate_series omits em/opik when that capability has no
+            # signal, so build the chart categories/legend from the keys that
+            # are actually present (overall is always there).
+            present = rate_pts[0]["values"].keys()
+            rate_spec = [
+                ("overall", "Overall", "--ok"),
+                ("em", "Experimentation", "--sdk"),
+                ("opik", "Opik", "--accent"),
+            ]
+            rate_spec = [s for s in rate_spec if s[0] in present]
             charts.append(
                 {
                     "id": "chart-people-adoption-rate",
@@ -675,18 +703,12 @@ class GrowthReporter:
                     "title": "Adoption rates",
                     "hint": f"active users / total; active window {self.active_window} · {self._units_adverb()}",
                     "legend": [
-                        {"label": "Overall", "color": "--ok"},
-                        {"label": "Experimentation", "color": "--sdk"},
-                        {"label": "Opik", "color": "--accent"},
+                        {"label": lbl, "color": col} for _, lbl, col in rate_spec
                     ],
                     "data": {
-                        "categories": ["overall", "em", "opik"],
-                        "labels": {
-                            "overall": "Overall",
-                            "em": "Experimentation",
-                            "opik": "Opik",
-                        },
-                        "colors": ["--ok", "--sdk", "--accent"],
+                        "categories": [k for k, _, _ in rate_spec],
+                        "labels": {k: lbl for k, lbl, _ in rate_spec},
+                        "colors": [col for _, _, col in rate_spec],
                         "points": rate_pts,
                         "window_start": None,
                         "window_end": None,
@@ -835,7 +857,7 @@ class GrowthReporter:
         (
             "em_score",
             "EM activity",
-            lambda u: u.experiment_count + u.data_logged_mb,
+            lambda u: (u.experiment_count or 0) + (u.data_logged_mb or 0),
             "EM activity = experiments + data logged (MB); org-wide (chargeback)",
         ),
     ]
@@ -989,10 +1011,14 @@ class GrowthReporter:
         service = split["service"]
         source = split["source"]
 
+        # `source == "heuristic"` means the admin service-accounts fetch was
+        # unavailable / failed / returned an unrecognized shape (a genuine empty
+        # admin response is honored as admin_api). Say so, rather than implying
+        # the admin API responded with zero accounts.
         hint = (
             "Source: service accounts from admin API."
             if source == "admin_api"
-            else "Source: heuristic (regex); admin API returned no service accounts."
+            else "Source: heuristic (regex); admin service-accounts API unavailable."
         )
 
         charts = []

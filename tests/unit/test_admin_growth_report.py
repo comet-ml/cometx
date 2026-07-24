@@ -214,8 +214,8 @@ def _sample_report_data():
                         "id": "chart-personal-vs-service-experiments",
                         "kind": "groupedBarsH",
                         "title": "Personal vs. service accounts: experiments",
-                        "hint": "Source: heuristic (regex); admin API returned no "
-                        "service accounts.",
+                        "hint": "Source: heuristic (regex); admin "
+                        "service-accounts API unavailable.",
                         "data": {
                             "rows": [
                                 {"label": "Personal", "value": 70},
@@ -1170,6 +1170,49 @@ def test_personal_vs_service_honors_empty_admin_set():
     section = r._build_personal_vs_service_section(parse_users(cb), set())
     assert section is not None
     assert "admin API" in section["charts"][0]["hint"]
+
+
+def test_short_api_error_redacts_header_cookie_body_on_fallback():
+    from cometx.cli.admin_growth_report import _short_api_error
+
+    # No status_code/'message' to parse -> fallback must drop the sensitive tail
+    leaky = (
+        "Connection failed headers: {'set-cookie': 'session=SECRET', "
+        "'content-security-policy': \"base-uri 'self'\"} body: {'token': 'sk-xyz'}"
+    )
+    out = _short_api_error(leaky)
+    assert out == "Connection failed"
+    for bad in ("set-cookie", "SECRET", "content-security-policy", "sk-xyz", "body:"):
+        assert bad not in out
+
+
+def test_personal_vs_service_heuristic_hint_says_unavailable_not_empty():
+    # service_account_names=None means the admin fetch FAILED; the hint must not
+    # imply the admin API returned an empty list.
+    from cometx.cli.admin_growth_report import GrowthReporter
+    from cometx.cli.admin_growth_users import parse_users
+
+    cb = {
+        "workspaces": [],
+        "users": {
+            "report": [
+                {
+                    "username": "alice",
+                    "email": "a",
+                    "experimentCount": 5,
+                    "dataLoggedMb": 2.0,
+                    "lastUsedAt": 1,
+                },
+            ]
+        },
+    }
+    api = MagicMock()
+    r = GrowthReporter(api, window="7d", units="month")
+    section = r._build_personal_vs_service_section(parse_users(cb), None)
+    assert section is not None
+    hint = section["charts"][0]["hint"]
+    assert "unavailable" in hint
+    assert "returned no service accounts" not in hint
 
 
 def test_short_api_error_condenses_verbose_sdk_error():

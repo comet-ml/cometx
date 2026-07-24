@@ -466,3 +466,99 @@ def test_workspace_active_series_seeds_all_workspaces_incl_zero_member():
     # without the seed, ws-empty would be missing -> total 1
     pts_noseed = workspace_active_series(users, "month", now, 60)
     assert all(p["values"]["total"] == 1 for p in pts_noseed)
+
+
+def test_top_users_em_score_tolerates_null_counts():
+    # A present-but-null experimentCount/dataLoggedMb must not raise (would
+    # otherwise blank the whole Users + Leaderboards sections).
+    from cometx.cli.admin_growth_users import parse_users, top_users
+
+    cb = {
+        "workspaces": [],
+        "users": {
+            "report": [
+                {
+                    "username": "a",
+                    "email": "a",
+                    "experimentCount": None,
+                    "dataLoggedMb": None,
+                    "lastUsedAt": 1,
+                },
+                {
+                    "username": "b",
+                    "email": "b",
+                    "experimentCount": 5,
+                    "dataLoggedMb": 2.0,
+                    "lastUsedAt": 1,
+                },
+            ]
+        },
+    }
+    top = top_users(parse_users(cb), "em_score", 5)
+    # b (score 7) ranks; a (nulls -> 0) is not > 0 for bottom but top includes it
+    assert [u.username for u in top][0] == "b"
+
+
+def test_leaderboards_exclude_deleted_and_suspended():
+    from cometx.cli.admin_growth_users import bottom_users, parse_users, top_users
+
+    cb = {
+        "workspaces": [],
+        "users": {
+            "report": [
+                {
+                    "username": "live",
+                    "email": "l",
+                    "experimentCount": 10,
+                    "dataLoggedMb": 0.0,
+                    "lastUsedAt": 1,
+                },
+                {
+                    "username": "gone",
+                    "email": "g",
+                    "experimentCount": 999,
+                    "dataLoggedMb": 0.0,
+                    "lastUsedAt": 1,
+                    "deletedAt": 123,
+                },
+                {
+                    "username": "susp",
+                    "email": "s",
+                    "experimentCount": 500,
+                    "dataLoggedMb": 0.0,
+                    "lastUsedAt": 1,
+                    "suspended": True,
+                },
+            ]
+        },
+    }
+    users = parse_users(cb)
+    names = [u.username for u in top_users(users, "em_score", 5)]
+    assert names == ["live"]  # deleted + suspended excluded despite higher scores
+    assert [u.username for u in bottom_users(users, "em_score", 5)] == ["live"]
+
+
+def test_adoption_rate_series_omits_capability_without_signal():
+    from cometx.cli.admin_growth_users import adoption_rate_series, parse_users
+
+    now = 1_720_000_000_000
+    # users have lastUsedAt (overall) + emLastUsedAt, but NO opikLastUsedAt
+    cb = {
+        "workspaces": [],
+        "users": {
+            "report": [
+                {
+                    "username": "a",
+                    "email": "a",
+                    "createdAt": now - 10**10,
+                    "lastUsedAt": now,
+                    "emLastUsedAt": now,
+                },
+            ]
+        },
+    }
+    pts = adoption_rate_series(parse_users(cb), "month", now, 60)
+    assert pts
+    keys = pts[0]["values"].keys()
+    assert "overall" in keys and "em" in keys
+    assert "opik" not in keys  # no opik signal -> omitted, not a flat 0%

@@ -154,25 +154,35 @@ def _metric_value(user: UserRecord, key: str):
     """Return the raw metric value for `key`, or None if the metric is
     absent for this user (only possible for opik_span_count)."""
     if key == "em_score":
-        return user.experiment_count + user.data_logged_mb
+        return (user.experiment_count or 0) + (user.data_logged_mb or 0)
     if key == "opik_span_count":
         return user.opik_span_count
     raise ValueError("Unsupported key: {}".format(key))
 
 
+def _rankable_users(users):
+    """Users eligible for the activity leaderboards: exclude deleted and
+    suspended accounts, matching the exclusions the time-series builders and
+    `classify_accounts` apply, so the leaderboard doesn't list a
+    deleted/suspended account as a current top user (which would contradict the
+    active/total and capability charts in the same report)."""
+    return [u for u in users if u.deleted_at is None and not u.suspended]
+
+
 def top_users(users, key: str, n: int) -> "list[UserRecord]":
-    """Top `n` users by `key` (descending), skipping users for whom the
-    metric is absent (None)."""
-    scored = [(u, _metric_value(u, key)) for u in users]
+    """Top `n` users by `key` (descending), over non-deleted/non-suspended
+    users, skipping those for whom the metric is absent (None)."""
+    scored = [(u, _metric_value(u, key)) for u in _rankable_users(users)]
     scored = [(u, v) for u, v in scored if v is not None]
     scored.sort(key=lambda pair: pair[1], reverse=True)
     return [u for u, _ in scored[:n]]
 
 
 def bottom_users(users, key: str, n: int) -> "list[UserRecord]":
-    """Bottom `n` users by `key` (ascending), active-aware: only considers
-    users whose metric value is strictly positive."""
-    scored = [(u, _metric_value(u, key)) for u in users]
+    """Bottom `n` users by `key` (ascending), over non-deleted/non-suspended
+    users, active-aware: only considers users whose metric value is strictly
+    positive."""
+    scored = [(u, _metric_value(u, key)) for u in _rankable_users(users)]
     scored = [(u, v) for u, v in scored if v is not None and v > 0]
     scored.sort(key=lambda pair: pair[1])
     return [u for u, _ in scored[:n]]
@@ -396,35 +406,34 @@ def adoption_rate_series(
     that total active within the rolling `active_window_days` window ending at
     bucket-end -- `overall` from `last_used_at` (active on ANY platform), `em`
     from `em_last_used_at`, `opik` from `opik_last_used_at`. Rates are
-    0-guarded when a bucket has no users. Returns `[]` when no user has a
-    known `created_at` (degrade, never crash)."""
+    0-guarded when a bucket has no users.
+
+    `overall` is always present; `em`/`opik` are OMITTED entirely when no user
+    carries that capability timestamp (mirrors `capability_series`), so an
+    absent capability is not charted as a misleading flat 0%. Returns `[]` when
+    no user has a known `created_at` (degrade, never crash)."""
+    has_em = any(u.em_last_used_at is not None for u in users)
+    has_opik = any(u.opik_last_used_at is not None for u in users)
     window_ms = active_window_days * 86400 * 1000
     points = []
     for key, bucket_end_ms, existing in _iter_buckets(users, units, now_ms):
         total = len(existing)
-        if total:
-            overall = sum(
+
+        def rate(getter):
+            if not total:
+                return 0.0
+            hits = sum(
                 1
                 for u in existing
-                if _within_window(u.last_used_at, bucket_end_ms, window_ms)
+                if _within_window(getter(u), bucket_end_ms, window_ms)
             )
-            em = sum(
-                1
-                for u in existing
-                if _within_window(u.em_last_used_at, bucket_end_ms, window_ms)
-            )
-            opik = sum(
-                1
-                for u in existing
-                if _within_window(u.opik_last_used_at, bucket_end_ms, window_ms)
-            )
-            values = {
-                "overall": round(overall / total * 100, 1),
-                "em": round(em / total * 100, 1),
-                "opik": round(opik / total * 100, 1),
-            }
-        else:
-            values = {"overall": 0.0, "em": 0.0, "opik": 0.0}
+            return round(hits / total * 100, 1)
+
+        values = {"overall": rate(lambda u: u.last_used_at)}
+        if has_em:
+            values["em"] = rate(lambda u: u.em_last_used_at)
+        if has_opik:
+            values["opik"] = rate(lambda u: u.opik_last_used_at)
         points.append({"key": key, "values": values})
     return points
 
