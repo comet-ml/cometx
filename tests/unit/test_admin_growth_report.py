@@ -31,89 +31,161 @@ def _win():
 
 
 def _sample_report_data():
-    """A representative `report_data` payload matching the documented C8
-    contract: a top-level `window`, a unified section, and per-product
-    (opik/em/mpm) growth + adoption sections (EM additionally carries a
-    registry-engagement snapshot panel)."""
+    """A representative chargeback-only `report_data` payload: a top-level
+    `window` plus the four chargeback sections (Organization overview, Users,
+    Leaderboards, Personal vs service accounts). No `products`/`collectors` —
+    those belonged to the retired SDK/platform-direct methodology."""
     return {
         "meta": {
             "title": "Growth report — acme <script> & Co",
             "org": "acme-research",
             "generated": "2026-07-09",
-            "source": "Comet Admin API",
+            "source": "Comet Admin API (chargeback)",
+            "scope": "Org-wide: 4 workspaces, 12 users (chargeback)",
         },
         "window": {
             "start": "2026-07-02",
             "end": "2026-07-09",
             "units": "day",
             "label": "Analysis window: Jul 2 – Jul 9, 2026 (7d)",
-            "count_before": 65,
+            "count_before": 0,
         },
-        "collectors": {"opik": True, "em": True, "mpm": False},
         "sections": {
             "unified": {
-                "title": "Workspaces & projects",
+                "title": "Organization overview (chargeback)",
                 "window_chip": "Analysis window: Jul 2 – Jul 9, 2026 (7d)",
                 "kpis": [
-                    {"label": "Workspaces", "value": 4},
-                    {"label": "Projects", "value": 77, "tone": "ok"},
-                    {"label": "New (7d)", "value": "+12"},
+                    {"label": "Total workspaces", "value": 4},
                     {
-                        "label": "Growth (7d)",
+                        "label": "Total projects",
+                        "value": 77,
+                        "sub": "EM projects",
+                        "tone": "ok",
+                    },
+                    {
+                        "label": "New in 7d (% of base)",
                         "value": "18.5%",
-                        "sub": "vs 65 before window",
+                        "sub": "+12 new",
+                    },
+                    {
+                        "label": "Active workspaces %",
+                        "value": "75.0%",
+                        "sub": "3/4 active",
                     },
                 ],
                 "charts": [
                     {
-                        "id": "chart-unified-created",
-                        "kind": "stackedBars",
-                        "title": "Projects created",
-                        "hint": "by kind · monthly",
-                        "legend": [
-                            {"label": "Opik", "color": "--accent"},
-                            {"label": "EM", "color": "--sdk"},
-                            {"label": "MPM", "color": "--ok"},
-                        ],
+                        "id": "chart-unified-platform-mix",
+                        "kind": "groupedBarsH",
+                        "title": "Workspace platform mix",
+                        "hint": "org-wide (chargeback); Opik is a per-user proxy",
                         "data": {
-                            "categories": [
-                                "opik_project",
-                                "em_project",
-                                "mpm_model",
-                            ],
-                            "labels": {
-                                "opik_project": "Opik",
-                                "em_project": "EM",
-                                "mpm_model": "MPM",
-                            },
-                            "colors": ["--accent", "--sdk", "--ok"],
-                            "points": [
-                                {
-                                    "key": "2026-06",
-                                    "values": {
-                                        "opik_project": 3,
-                                        "em_project": 1,
-                                        "mpm_model": 0,
-                                    },
-                                },
-                                {
-                                    "key": "2026-07",
-                                    "values": {
-                                        "opik_project": 2,
-                                        "em_project": 2,
-                                        "mpm_model": 1,
-                                    },
-                                },
-                            ],
-                            "window_start": "2026-07",
-                            "window_end": "2026-07",
+                            "rows": [
+                                {"label": "EM only", "value": 2},
+                                {"label": "Opik only", "value": 1},
+                                {"label": "EM + Opik", "value": 1},
+                                {"label": "Neither", "value": 0},
+                            ]
                         },
                     },
                     {
-                        "id": "chart-unified-by-workspace",
+                        "id": "chart-unified-workspace-churn",
+                        "kind": "barsLine",
+                        "title": "Workspaces added vs. deleted",
+                        "hint": "org-wide (chargeback) · monthly · deletion is a proxy",
+                        "legend": [
+                            {"label": "Added", "color": "--ok"},
+                            {"label": "Deleted", "color": "--warn"},
+                            {"label": "Growth rate", "color": "--accent"},
+                        ],
+                        "data": {
+                            "points": [
+                                {
+                                    "key": "2026-06",
+                                    "values": {"added": 3, "deleted": 0, "rate": 0.0},
+                                },
+                                {
+                                    "key": "2026-07",
+                                    "values": {"added": 1, "deleted": 0, "rate": 33.3},
+                                },
+                            ],
+                            "bars": ["added", "deleted"],
+                            "line": "rate",
+                            "bar_labels": {"added": "Added", "deleted": "Deleted"},
+                            "bar_colors": ["--ok", "--warn"],
+                            "line_label": "Growth rate",
+                            "line_color": "--accent",
+                            "window_start": None,
+                            "window_end": None,
+                        },
+                    },
+                ],
+                "table": {
+                    "title": "By workspace (org-wide, chargeback)",
+                    "headers": [
+                        "Workspace",
+                        "Members",
+                        "Projects",
+                        "Experiments",
+                        "Data (MB)",
+                    ],
+                    "rows": [
+                        ["ws-alpha", 3, 15, 40, 120],
+                        ["ws-beta", 2, 20, 37, 95],
+                    ],
+                },
+            },
+            "people": {
+                "title": "Users",
+                "window_chip": "Analysis window: Jul 2 – Jul 9, 2026 (7d)",
+                "kpis": [
+                    {"label": "Total users", "value": 12},
+                    {"label": "Active users (60d)", "value": 9},
+                    {"label": "Active users %", "value": "75.0%"},
+                    {
+                        "label": "New in 7d (% of base)",
+                        "value": "9.1%",
+                        "sub": "+1 new",
+                    },
+                ],
+                "charts": [
+                    {
+                        "id": "chart-people-active-total",
+                        "kind": "lines",
+                        "title": "Active vs. total users",
+                        "hint": "active window 60d · monthly",
+                        "legend": [
+                            {"label": "Total", "color": "--sdk"},
+                            {"label": "Active", "color": "--ok"},
+                        ],
+                        "data": {
+                            "categories": ["total", "active"],
+                            "labels": {"total": "Total", "active": "Active"},
+                            "colors": ["--sdk", "--ok"],
+                            "points": [
+                                {
+                                    "key": "2026-06",
+                                    "values": {"total": 10, "active": 7},
+                                },
+                                {
+                                    "key": "2026-07",
+                                    "values": {"total": 12, "active": 9},
+                                },
+                            ],
+                            "window_start": None,
+                            "window_end": None,
+                        },
+                    }
+                ],
+            },
+            "leaderboards": {
+                "title": "Leaderboards",
+                "charts": [
+                    {
+                        "id": "chart-lb-ws-experiments-top",
                         "kind": "groupedBarsH",
-                        "title": "Projects by workspace",
-                        "hint": "current totals",
+                        "title": "Top 5 workspaces by experiments",
+                        "hint": "org-wide, exact (chargeback per-workspace)",
                         "data": {
                             "rows": [
                                 {"label": "ws-alpha", "value": 40},
@@ -121,125 +193,37 @@ def _sample_report_data():
                             ]
                         },
                     },
+                    {
+                        "id": "chart-lb-user-opik_span_count-top",
+                        "kind": "groupedBarsH",
+                        "title": "Top 5 users by Opik spans",
+                        "hint": "org-wide (chargeback)",
+                        "data": {
+                            "rows": [
+                                {"label": "alice", "value": 5000},
+                                {"label": "bob", "value": 1200},
+                            ]
+                        },
+                    },
                 ],
-                "table": {
-                    "title": "By workspace",
-                    "headers": ["Workspace", "Opik", "EM", "MPM", "Total"],
-                    "rows": [
-                        ["ws-alpha", 20, 15, 5, 40],
-                        ["ws-beta", 10, 20, 7, 37],
-                    ],
-                },
             },
-            "products": {
-                "opik": {
-                    "label": "Opik",
-                    "growth": {
-                        "title": "Opik — growth",
-                        "window_chip": "Analysis window: Jul 2 – Jul 9, 2026 (7d)",
-                        "kpis": [
-                            {"label": "Workspaces", "value": 2},
-                            {"label": "Total", "value": 30},
-                            {"label": "New (7d)", "value": "+5"},
-                            {
-                                "label": "Growth (7d)",
-                                "value": "20.0%",
-                                "sub": "vs 25 before window",
-                            },
-                        ],
-                        "charts": [
-                            {
-                                "id": "chart-opik-bars",
-                                "kind": "bars",
-                                "title": "New Opik projects",
-                                "hint": "by month",
-                                "data": {
-                                    "points": [
-                                        {"key": "2026-06", "value": 3},
-                                        {"key": "2026-07", "value": 5},
-                                    ],
-                                    "window_start": "2026-07",
-                                    "window_end": "2026-07",
-                                },
-                            },
-                            {
-                                "id": "chart-opik-area",
-                                "kind": "area",
-                                "title": "Opik projects — cumulative",
-                                "hint": "all-time",
-                                "data": {
-                                    "points": [
-                                        {"key": "2026-06", "value": 25},
-                                        {"key": "2026-07", "value": 30},
-                                    ],
-                                    "window_start": "2026-07",
-                                    "window_end": "2026-07",
-                                    "delta": 5,
-                                },
-                            },
-                        ],
-                        "table": {
-                            "headers": ["Workspace", "Opik projects"],
-                            "rows": [["ws-alpha", 20], ["ws-beta", 10]],
+            "personal_vs_service": {
+                "title": "Personal vs. service accounts",
+                "charts": [
+                    {
+                        "id": "chart-personal-vs-service-experiments",
+                        "kind": "groupedBarsH",
+                        "title": "Personal vs. service accounts: experiments",
+                        "hint": "Source: heuristic (regex); admin API returned no "
+                        "service accounts.",
+                        "data": {
+                            "rows": [
+                                {"label": "Personal", "value": 70},
+                                {"label": "Service", "value": 7},
+                            ]
                         },
-                    },
-                    "adoption": {
-                        "title": "Opik — adoption / usage",
-                        "kpis": [{"label": "Span count", "value": 154200}],
-                        "charts": [
-                            {
-                                "id": "chart-opik-spans",
-                                "kind": "bars",
-                                "title": "Span count",
-                                "hint": "by month",
-                                "data": {
-                                    "points": [
-                                        {"key": "2026-06", "value": 70000},
-                                        {"key": "2026-07", "value": 84200},
-                                    ],
-                                    "window_start": "2026-07",
-                                    "window_end": "2026-07",
-                                },
-                            }
-                        ],
-                        "table": {
-                            "title": "Span count by project",
-                            "headers": ["Project", "Span count"],
-                            "rows": [["proj-1", 100000], ["proj-2", 54200]],
-                        },
-                    },
-                },
-                "em": {
-                    "label": "EM",
-                    "growth": {
-                        "title": "EM — growth",
-                        "kpis": [{"label": "Workspaces", "value": 2}],
-                        "charts": [],
-                        "table": None,
-                    },
-                    "adoption": {
-                        "title": "EM — adoption / usage",
-                        "kpis": [{"label": "Experiment count", "value": 900}],
-                        "charts": [],
-                        "panels": [
-                            {
-                                "title": "Model-registry engagement",
-                                "hint": "snapshot, not over-time",
-                                "headers": [
-                                    "Workspace",
-                                    "Registered models",
-                                    "Model versions",
-                                ],
-                                "rows": [
-                                    ["ws-alpha", 2, 3],
-                                    ["ws-beta", 1, 1],
-                                ],
-                            }
-                        ],
-                    },
-                },
-                # mpm intentionally omitted to exercise the "missing section"
-                # robustness path.
+                    }
+                ],
             },
         },
     }
@@ -254,7 +238,7 @@ def test_build_html_is_self_contained_and_secure():
     assert 'id="report-data"' in doc
     assert "http://" not in doc
     assert "https://" not in doc
-    assert "Workspaces & projects" in doc
+    assert "Organization overview (chargeback)" in doc
     assert "<svg" not in doc  # charts are drawn client-side, not server-side
     assert "createElementNS" in doc  # the inline SVG-drawing JS
     assert '"window"' in doc  # the embedded json payload
@@ -335,8 +319,8 @@ def test_build_html_takes_only_report_data_and_ignores_env_secrets(monkeypatch):
 def test_build_html_handles_missing_sections_gracefully():
     from cometx.cli.admin_growth_report import build_html
 
-    # No products at all, and an empty unified section -- must not raise.
-    doc = build_html({"sections": {"unified": {}, "products": {}}})
+    # An empty unified section (and a stray legacy key) -- must not raise.
+    doc = build_html({"sections": {"unified": {}}})
     assert "<style>" in doc
     assert 'id="report-data"' in doc
 
@@ -384,7 +368,7 @@ def test_write_html_writes_file_and_returns_path(tmp_path):
     content = out.read_text(encoding="utf-8")
     assert "<style>" in content
     assert 'id="report-data"' in content
-    assert "Workspaces & projects" in content
+    assert "Organization overview (chargeback)" in content
 
 
 def test_write_growth_html_delegates_to_renderer(tmp_path):
@@ -490,7 +474,7 @@ def test_people_section_built_from_chargeback():
     assert section["title"] == "Users"
     labels = [k["label"] for k in section["kpis"]]
     assert "Active users %" in labels
-    # workspace metrics moved to the Workspaces & projects section
+    # workspace metrics live in the Organization overview section
     assert "Active workspaces %" not in labels
     assert any(x.startswith("Active users (") for x in labels)
 
