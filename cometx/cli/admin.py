@@ -155,7 +155,7 @@ from comet_ml import API
 from cometx.utils import fetch_chargeback_report
 
 from .admin_gpu_report import main as gpu_report_main
-from .admin_growth_report import generate_growth_report
+from .admin_growth_report import GrowthReportError, generate_growth_report
 from .admin_optimizer_report import generate_json_report
 from .admin_usage_report import generate_usage_report
 
@@ -471,16 +471,19 @@ Arguments:
         One or more workspaces to run the growth report for.
         If not provided, all workspaces are included.
 
+Requires an ADMIN API key: the report is built entirely from the admin
+chargeback report. Without admin access the command exits with an error.
+
 Output:
-    Generates a self-contained HTML page containing cross-platform (Opik + EM + MPM)
-    use-case growth and rate charts, broken down by workspace/department.
+    Generates a self-contained HTML page with the organization overview, users,
+    personal-vs-service, and leaderboard sections, all derived from the admin
+    chargeback report and broken down by workspace/department.
 
 Examples:
     cometx admin growth-report
     cometx admin growth-report my-workspace
     cometx admin growth-report workspace1 workspace2 --units week
     cometx admin growth-report my-workspace --window 30d
-    cometx admin growth-report my-workspace --platforms em,opik
     cometx admin growth-report my-workspace --output report.html --no-open
 """
     growth_parser = subparsers.add_parser(
@@ -512,22 +515,10 @@ Examples:
         type=str,
     )
     growth_parser.add_argument(
-        "--platforms",
-        help="Comma-separated list of platforms to include (default: em,opik,mpm)",
-        default="em,opik,mpm",
-        type=str,
-    )
-    growth_parser.add_argument(
         "--output",
         help="Output HTML file path (default: growth_report.html)",
         default="growth_report.html",
         type=str,
-    )
-    growth_parser.add_argument(
-        "--limit",
-        help="Optional limit on the number of items collected per platform",
-        type=int,
-        default=None,
     )
     growth_parser.add_argument(
         "--active-window",
@@ -539,13 +530,6 @@ Examples:
         type=int,
         default=5,
         help="Top/bottom N size for leaderboards (default: 5)",
-    )
-    growth_parser.add_argument(
-        "--no-users",
-        dest="include_users",
-        action="store_false",
-        default=True,
-        help="Skip the chargeback-based users/people layer",
     )
     growth_parser.add_argument(
         "--exclude-personal",
@@ -841,16 +825,16 @@ def admin(parsed_args, remaining=None):
                     parsed_args.WORKSPACE,
                     window=parsed_args.window,
                     units=parsed_args.units,
-                    platforms=parsed_args.platforms,
                     output=parsed_args.output,
                     no_open=parsed_args.no_open,
-                    limit=parsed_args.limit,
                     active_window=parsed_args.active_window,
-                    include_users=parsed_args.include_users,
                     leaderboard_top_n=parsed_args.leaderboard_top_n,
                     exclude_personal=parsed_args.exclude_personal,
                     personal_pattern=parsed_args.personal_pattern,
                 )
+            except GrowthReportError as e:
+                print("ERROR: " + str(e))
+                sys.exit(1)
             except Exception as e:
                 print("ERROR: " + str(e))
                 if parsed_args.debug:
