@@ -431,3 +431,38 @@ def test_parse_workspaces_org_totals_and_platform_mix():
         "both": 1,
         "neither": 1,
     }
+
+
+def test_workspace_active_series_seeds_all_workspaces_incl_zero_member():
+    # A workspace with zero datable members never appears in the membership
+    # reverse-map, but seeding from all_workspaces keeps `total` aligned with
+    # the KPI (workspace_active_stats(..., all_workspaces=...)).
+    from cometx.cli.admin_growth_users import parse_users, workspace_active_series
+
+    now = 1_720_000_000_000
+    cb = {
+        "workspaces": [
+            {"name": "ws-a", "members": [{"userName": "alice"}]},
+            {"name": "ws-empty", "members": []},  # zero members -> not in reverse-map
+        ],
+        "users": {
+            "report": [
+                {
+                    "username": "alice",
+                    "email": "a",
+                    "createdAt": now - 10**10,
+                    "lastUsedAt": now,
+                },
+            ]
+        },
+    }
+    users = parse_users(cb)
+    pts = workspace_active_series(
+        users, "month", now, 60, all_workspaces={"ws-a", "ws-empty"}
+    )
+    assert pts is not None
+    # every bucket's total includes the zero-member workspace (seeded = 2)
+    assert all(p["values"]["total"] == 2 for p in pts)
+    # without the seed, ws-empty would be missing -> total 1
+    pts_noseed = workspace_active_series(users, "month", now, 60)
+    assert all(p["values"]["total"] == 1 for p in pts_noseed)

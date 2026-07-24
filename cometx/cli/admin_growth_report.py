@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 
 from cometx.cli.admin_growth_render import build_html, write_html
 from cometx.cli.admin_growth_users import (
+    _extract_licensed_users,
     active_series,
     adoption_rate_series,
     adoption_stats,
@@ -178,20 +179,11 @@ def _short_api_error(exc):
 
 
 def _chargeback_licensed_users(chargeback):
-    """Return the raw licensed-user records from a chargeback dict, tolerating
-    the same container shapes as `admin_growth_users.parse_users` (dict with
-    `licensedUsers`, dict with `report`, or a bare list)."""
-    users_field = (chargeback or {}).get("users")
-    if isinstance(users_field, dict):
-        if "licensedUsers" in users_field:
-            return users_field.get("licensedUsers") or []
-        report = users_field.get("report")
-        if report is not None:
-            return _chargeback_licensed_users({"users": report})
-        return []
-    if isinstance(users_field, list):
-        return users_field
-    return []
+    """Raw licensed-user records from a chargeback dict. Delegates to the single
+    shared unwrapper `admin_growth_users._extract_licensed_users` so the
+    `licensedUsers` / `report` / bare-list handling lives in exactly one place
+    (used by both `parse_users` and `_scope_chargeback`)."""
+    return _extract_licensed_users((chargeback or {}).get("users"))
 
 
 def _scope_chargeback(chargeback, workspace_names):
@@ -322,6 +314,16 @@ class GrowthReporter:
     def _now(self):
         return datetime.datetime.now(datetime.timezone.utc)
 
+    def _units_adverb(self):
+        """Adverb form of the chart bucket unit for hint text, so `day` reads
+        `daily` rather than the `{units}ly` -> `dayly` typo."""
+        return {
+            "hour": "hourly",
+            "day": "daily",
+            "week": "weekly",
+            "month": "monthly",
+        }.get(self.units, self.units + "ly")
+
     def _personal_pattern_compiled(self):
         """Compiled --personal-pattern regex, or None (with a once-per-reporter
         warning) when the flag is off, no pattern was given, or the pattern is
@@ -436,7 +438,11 @@ class GrowthReporter:
         cb_charts = []
         if people_users:
             ws_active_pts = workspace_active_series(
-                people_users, self.units, now_ms, active_window_days
+                people_users,
+                self.units,
+                now_ms,
+                active_window_days,
+                all_workspaces={w.name for w in (ws_records or [])},
             )
             if ws_active_pts:
                 cb_charts.append(
@@ -489,7 +495,7 @@ class GrowthReporter:
                         "kind": "barsLine",
                         "title": "Workspaces added vs. deleted",
                         "hint": (
-                            f"org-wide (chargeback) · {self.units}ly · "
+                            f"org-wide (chargeback) · {self._units_adverb()} · "
                             "deletion is a proxy"
                         ),
                         "legend": [
@@ -644,7 +650,7 @@ class GrowthReporter:
                 "id": "chart-people-active-total",
                 "kind": "lines",
                 "title": "Active vs. total users",
-                "hint": f"active window {self.active_window} · {self.units}ly",
+                "hint": f"active window {self.active_window} · {self._units_adverb()}",
                 "legend": [
                     {"label": "Total", "color": "--sdk"},
                     {"label": "Active", "color": "--ok"},
@@ -667,7 +673,7 @@ class GrowthReporter:
                     "id": "chart-people-adoption-rate",
                     "kind": "lines",
                     "title": "Adoption rates",
-                    "hint": f"active users / total; active window {self.active_window} · {self.units}ly",
+                    "hint": f"active users / total; active window {self.active_window} · {self._units_adverb()}",
                     "legend": [
                         {"label": "Overall", "color": "--ok"},
                         {"label": "Experimentation", "color": "--sdk"},
@@ -695,7 +701,7 @@ class GrowthReporter:
                     "id": "chart-people-capability",
                     "kind": "lines",
                     "title": "Active users by capability",
-                    "hint": f"active window {self.active_window} · {self.units}ly",
+                    "hint": f"active window {self.active_window} · {self._units_adverb()}",
                     "legend": [
                         {"label": "EM", "color": "--sdk"},
                         {"label": "Opik", "color": "--accent"},
@@ -711,7 +717,7 @@ class GrowthReporter:
                 }
             )
 
-        window_hint = f"active window {self.active_window} · {self.units}ly"
+        window_hint = f"active window {self.active_window} · {self._units_adverb()}"
 
         em_pts = em_user_breakdown_series(users, self.units, now_ms, active_window_days)
         if em_pts:
@@ -777,7 +783,7 @@ class GrowthReporter:
                     "kind": "lines",
                     "title": "Users added vs. deleted",
                     "hint": (
-                        f"per period · {self.units}ly; deletions reflect soft-deletes "
+                        f"per period · {self._units_adverb()}; deletions reflect soft-deletes "
                         "still present in the snapshot"
                     ),
                     "legend": [
@@ -1019,10 +1025,14 @@ class GrowthReporter:
         }
 
     @staticmethod
-    def _scope_label(scope, org_workspaces, org_users):
-        """One-line scope descriptor for the report header."""
+    def _scope_label(scope, org_workspaces, org_users, scoped_count=None):
+        """One-line scope descriptor for the report header. When scoped, the
+        count reflects the workspaces actually present after scoping/filtering
+        (`scoped_count`), not the raw requested arg list, so the badge matches
+        the rendered sections."""
         if scope is not None:
-            return f"Scoped to {len(scope)} selected workspace(s)"
+            n = scoped_count if scoped_count is not None else len(scope)
+            return f"Scoped to {n} selected workspace(s)"
         if org_workspaces is not None:
             return (
                 f"Org-wide: {org_workspaces} workspaces, {org_users} users "
@@ -1093,12 +1103,13 @@ class GrowthReporter:
             personal_vs_service_section = None
             if people_users:
                 service_account_names = _fetch_service_accounts(self.api)
-                # Admin endpoint first; fall back to the regex heuristic when it
-                # is unavailable (None) OR returns an empty set (no service
-                # accounts listed) -- an empty admin list is uninformative and
-                # would otherwise mislabel every account as personal.
-                if not service_account_names:
-                    service_account_names = None
+                # `_fetch_service_accounts` already returns None on any failure
+                # (endpoint unavailable / unrecognized shape) and a set on
+                # success. An empty set is the authoritative "admin API returned
+                # zero service accounts" answer, which classify_accounts honors
+                # as the admin_api source -- do NOT coerce it to None (that would
+                # discard the authoritative answer and fall back to the regex
+                # heuristic).
                 personal_vs_service_section = self._build_personal_vs_service_section(
                     people_users, service_account_names
                 )
@@ -1115,7 +1126,9 @@ class GrowthReporter:
                 "title": "Comet growth report",
                 "generated": window.end.isoformat(),
                 "source": "Comet Admin API (chargeback)",
-                "scope": self._scope_label(scope, org_workspaces, org_users),
+                "scope": self._scope_label(
+                    scope, org_workspaces, org_users, scoped_count=len(ws_records)
+                ),
             },
             "window": self._build_window_block(window, 0),
             "sections": sections,

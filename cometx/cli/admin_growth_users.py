@@ -430,21 +430,31 @@ def adoption_rate_series(
 
 
 def workspace_active_series(
-    users: "list[UserRecord]", units: str, now_ms: int, active_window_days: int
+    users: "list[UserRecord]",
+    units: str,
+    now_ms: int,
+    active_window_days: int,
+    all_workspaces=None,
 ) -> "list[dict] | None":
-    """Per-bucket total vs active WORKSPACES. A workspace is counted as
-    existing in a bucket when it has at least one non-suspended member that
-    exists as of bucket-end, and active when at least one such member was
-    active within the rolling `active_window_days` window ending at bucket-end
-    (the same activity rule used for active users). Membership comes from the
-    chargeback reverse-map (`UserRecord.workspaces`). Returns `None` when no
-    user carries any workspace membership."""
-    if not any(u.workspaces for u in users):
+    """Per-bucket total vs active WORKSPACES. A workspace is active in a bucket
+    when at least one non-suspended member existing as of bucket-end was active
+    within the rolling `active_window_days` window (the same activity rule used
+    for active users). Membership comes from the chargeback reverse-map
+    (`UserRecord.workspaces`).
+
+    When `all_workspaces` (the authoritative chargeback workspace-name set) is
+    given, every bucket's `total` is seeded from it so the chart's total matches
+    `workspace_active_stats(..., all_workspaces=...)` and the KPI -- including
+    workspaces with zero datable members, which never appear in the membership
+    reverse-map. Returns `None` only when there is nothing to show (no
+    membership AND no `all_workspaces`)."""
+    seed_ws = set(all_workspaces) if all_workspaces else set()
+    if not seed_ws and not any(u.workspaces for u in users):
         return None
     window_ms = active_window_days * 86400 * 1000
     points = []
     for key, bucket_end_ms, existing in _iter_buckets(users, units, now_ms):
-        total_ws, active_ws = set(), set()
+        total_ws, active_ws = set(seed_ws), set()
         for u in existing:
             is_active_user = _within_window(u.last_used_at, bucket_end_ms, window_ms)
             for ws in u.workspaces:
@@ -544,6 +554,38 @@ def workspace_churn_series(
     ]
 
 
+def _user_breakdown_series(
+    users, units, now_ms, active_window_days, last_used_getter, counters
+):
+    """Shared per-bucket user-breakdown builder for the EM/Opik capability
+    breakdowns. `active` counts existing users whose `last_used_getter(u)`
+    falls within the rolling `active_window_days` window as of bucket-end; each
+    `(name, predicate)` in `counters` adds a per-bucket count of existing users
+    matching that predicate (snapshot cumulative, so a user is counted from the
+    bucket they first exist). Returns `None` when no user shows any signal
+    (a non-null activity timestamp or any counter predicate true)."""
+
+    def has_signal(u):
+        return last_used_getter(u) is not None or any(pred(u) for _, pred in counters)
+
+    if not any(has_signal(u) for u in users):
+        return None
+    window_ms = active_window_days * 86400 * 1000
+    points = []
+    for key, bucket_end_ms, existing in _iter_buckets(users, units, now_ms):
+        values = {
+            "active": sum(
+                1
+                for u in existing
+                if _within_window(last_used_getter(u), bucket_end_ms, window_ms)
+            )
+        }
+        for name, pred in counters:
+            values[name] = sum(1 for u in existing if pred(u))
+        points.append({"key": key, "values": values})
+    return points
+
+
 def em_user_breakdown_series(
     users: "list[UserRecord]", units: str, now_ms: int, active_window_days: int
 ) -> "list[dict] | None":
@@ -553,35 +595,17 @@ def em_user_breakdown_series(
     cumulative totals, so a user is counted from the bucket they first exist
     (an approximation that matches the client notebook). Returns `None` when
     there is no EM signal at all."""
-    has_em = any(
-        u.em_last_used_at is not None
-        or (u.experiment_count or 0) > 0
-        or (u.data_logged_mb or 0) > 0
-        for u in users
+    return _user_breakdown_series(
+        users,
+        units,
+        now_ms,
+        active_window_days,
+        last_used_getter=lambda u: u.em_last_used_at,
+        counters=[
+            ("experimenters", lambda u: (u.experiment_count or 0) > 0),
+            ("data_pushers", lambda u: (u.data_logged_mb or 0) > 0),
+        ],
     )
-    if not has_em:
-        return None
-    window_ms = active_window_days * 86400 * 1000
-    points = []
-    for key, bucket_end_ms, existing in _iter_buckets(users, units, now_ms):
-        active = sum(
-            1
-            for u in existing
-            if _within_window(u.em_last_used_at, bucket_end_ms, window_ms)
-        )
-        experimenters = sum(1 for u in existing if (u.experiment_count or 0) > 0)
-        data_pushers = sum(1 for u in existing if (u.data_logged_mb or 0) > 0)
-        points.append(
-            {
-                "key": key,
-                "values": {
-                    "active": active,
-                    "experimenters": experimenters,
-                    "data_pushers": data_pushers,
-                },
-            }
-        )
-    return points
 
 
 def opik_user_breakdown_series(
@@ -590,27 +614,14 @@ def opik_user_breakdown_series(
     """Per-bucket Opik user breakdown: `active` (`opik_last_used_at` within the
     rolling window) and `span_producers` (`opik_span_count` > 0, snapshot
     cumulative). Returns `None` when there is no Opik signal at all."""
-    has_opik = any(
-        u.opik_last_used_at is not None or (u.opik_span_count or 0) > 0 for u in users
+    return _user_breakdown_series(
+        users,
+        units,
+        now_ms,
+        active_window_days,
+        last_used_getter=lambda u: u.opik_last_used_at,
+        counters=[("span_producers", lambda u: (u.opik_span_count or 0) > 0)],
     )
-    if not has_opik:
-        return None
-    window_ms = active_window_days * 86400 * 1000
-    points = []
-    for key, bucket_end_ms, existing in _iter_buckets(users, units, now_ms):
-        active = sum(
-            1
-            for u in existing
-            if _within_window(u.opik_last_used_at, bucket_end_ms, window_ms)
-        )
-        span_producers = sum(1 for u in existing if (u.opik_span_count or 0) > 0)
-        points.append(
-            {
-                "key": key,
-                "values": {"active": active, "span_producers": span_producers},
-            }
-        )
-    return points
 
 
 @dataclasses.dataclass(frozen=True)
@@ -621,7 +632,7 @@ class WorkspaceRecord:
     num_experiments: float
     data_mb: float
     num_projects: int
-    members: "list"  # member usernames
+    members: "tuple"  # member usernames (immutable, matching frozen=True)
 
 
 def parse_workspaces(chargeback: dict) -> "list[WorkspaceRecord]":
@@ -638,9 +649,9 @@ def parse_workspaces(chargeback: dict) -> "list[WorkspaceRecord]":
             num_projects = int(projects)
         else:
             num_projects = 0
-        members = [
+        members = tuple(
             m.get("userName") for m in (w.get("members") or []) if m.get("userName")
-        ]
+        )
         out.append(
             WorkspaceRecord(
                 name=w.get("name"),

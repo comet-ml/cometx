@@ -1122,6 +1122,56 @@ def test_exclude_personal_drops_matching_workspaces_from_chargeback():
     assert len(cb["workspaces"]) == 2
 
 
+def test_units_adverb_avoids_dayly_typo():
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    api = MagicMock()
+    assert GrowthReporter(api, window="7d", units="day")._units_adverb() == "daily"
+    assert GrowthReporter(api, window="7d", units="week")._units_adverb() == "weekly"
+    assert GrowthReporter(api, window="7d", units="month")._units_adverb() == "monthly"
+    assert GrowthReporter(api, window="7d", units="hour")._units_adverb() == "hourly"
+
+
+def test_scope_label_uses_post_filter_count_not_requested_args():
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    # three workspaces requested, but only one survives scoping/--exclude-personal
+    label = GrowthReporter._scope_label({"a", "b", "c"}, 100, 50, scoped_count=1)
+    assert label == "Scoped to 1 selected workspace(s)"
+    # falls back to len(scope) when no scoped_count is given
+    assert GrowthReporter._scope_label({"a", "b"}, 100, 50) == (
+        "Scoped to 2 selected workspace(s)"
+    )
+
+
+def test_personal_vs_service_honors_empty_admin_set():
+    # An empty set() from the admin service-accounts API is authoritative
+    # ("zero service accounts"), so the split must report the admin_api source,
+    # NOT fall back to the regex heuristic.
+    from cometx.cli.admin_growth_report import GrowthReporter
+    from cometx.cli.admin_growth_users import parse_users
+
+    cb = {
+        "workspaces": [],
+        "users": {
+            "report": [
+                {
+                    "username": "alice",
+                    "email": "a",
+                    "experimentCount": 5,
+                    "dataLoggedMb": 2.0,
+                    "lastUsedAt": 1,
+                },
+            ]
+        },
+    }
+    api = MagicMock()
+    r = GrowthReporter(api, window="7d", units="month")
+    section = r._build_personal_vs_service_section(parse_users(cb), set())
+    assert section is not None
+    assert "admin API" in section["charts"][0]["hint"]
+
+
 def test_short_api_error_condenses_verbose_sdk_error():
     from cometx.cli.admin_growth_report import _short_api_error
 
