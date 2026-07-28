@@ -11,11 +11,13 @@
 #  Copyright (c) 2024 Cometx Development
 #      Team. All rights reserved.
 # ****************************************
-"""cometx admin growth-report — cross-platform use-case growth & rates, per
-workspace/department (Opik + EM + MPM), rendered as a self-contained HTML page.
+"""cometx admin growth-report — org-wide people/usage growth from the admin
+chargeback report, rendered as a self-contained HTML page.
 
-Distinct from `admin usage-report` (experiment counts over time, PDF/Streamlit):
-growth-report tracks cross-platform use-case creation growth and rates.
+Sources exclusively from `/api/admin/chargeback/report` (admin API key
+required): organization overview, users, leaderboards, and a
+personal-vs-service-account split. Distinct from `admin usage-report`
+(experiment counts over time, PDF/Streamlit).
 """
 
 from __future__ import annotations
@@ -112,11 +114,17 @@ def _extract_service_account_names(payload) -> "set[str] | None":
     """Defensively unwrap the `/admin/service-accounts` response into a
     flat set of account names, tolerating several plausible response
     shapes since the exact schema isn't documented in this codebase: a
-    bare list of entries, or a dict wrapping that list under a common
-    container key (`serviceAccounts`, `accounts`, `users`). Each entry may
-    be a plain string, or a dict carrying the name under `name`,
-    `username`, or `email` (mirrors `_extract_licensed_users`'s defensive
-    style in `admin_growth_users.py`).
+    bare list of entries, or a dict wrapping that list under a
+    service-account-specific container key (`serviceAccounts`,
+    `accounts`). Each entry may be a plain string, or a dict carrying the
+    name under `name`, `username`, or `email` (mirrors
+    `_extract_licensed_users`'s defensive style in `admin_growth_users.py`).
+
+    A generic `users` key is deliberately NOT accepted: if the endpoint
+    ever returned the full user roster under it, every user would be
+    classified as a service account and the report would label that
+    inversion authoritative ("admin API"). Better to fail the parse and
+    fall back to the labeled heuristic.
 
     Returns `None` (not an empty set) when the payload cannot be honestly
     parsed as a service-account container -- either because its shape
@@ -131,7 +139,7 @@ def _extract_service_account_names(payload) -> "set[str] | None":
     container = payload
     recognized = isinstance(payload, list)
     if isinstance(payload, dict):
-        for key in ("serviceAccounts", "accounts", "users"):
+        for key in ("serviceAccounts", "accounts"):
             if key in payload:
                 container = payload[key]
                 recognized = isinstance(container, list)
@@ -493,8 +501,6 @@ class GrowthReporter:
                             "labels": {"total": "Total", "active": "Active"},
                             "colors": ["--sdk", "--ok"],
                             "points": ws_active_pts,
-                            "window_start": None,
-                            "window_end": None,
                         },
                     }
                 )
@@ -544,12 +550,15 @@ class GrowthReporter:
                             "points": churn_pts,
                             "bars": ["added", "deleted"],
                             "line": "rate",
-                            "bar_labels": {"added": "Added", "deleted": "Deleted"},
+                            "bar_labels": {
+                                "added": "Added",
+                                "deleted": "Deleted",
+                                "rate": "Growth rate",
+                            },
                             "bar_colors": ["--ok", "--warn"],
                             "line_label": "Growth rate",
                             "line_color": "--accent",
-                            "window_start": None,
-                            "window_end": None,
+                            "line_suffix": "%",
                         },
                     }
                 )
@@ -601,7 +610,7 @@ class GrowthReporter:
             {
                 "label": f"New in {self.window or '7d'} (% of base)",
                 "value": f"{wg['pct']}%",
-                "sub": f"+{wg['new_in']} new",
+                "sub": f"+{wg['new_in']} new (est. from earliest member)",
             },
             {
                 "label": "Active workspaces %",
@@ -686,8 +695,6 @@ class GrowthReporter:
                     "labels": {"total": "Total", "active": "Active"},
                     "colors": ["--sdk", "--ok"],
                     "points": active_pts,
-                    "window_start": None,
-                    "window_end": None,
                 },
             }
         ]
@@ -709,7 +716,10 @@ class GrowthReporter:
                     "id": "chart-people-adoption-rate",
                     "kind": "lines",
                     "title": "Adoption rates",
-                    "hint": f"active users / total; active window {self.active_window} · {self._units_adverb()}",
+                    "hint": (
+                        f"active users / total; active window "
+                        f"{self.active_window} · {self._units_adverb()}"
+                    ),
                     "legend": [
                         {"label": lbl, "color": col} for _, lbl, col in rate_spec
                     ],
@@ -718,8 +728,6 @@ class GrowthReporter:
                         "labels": {k: lbl for k, lbl, _ in rate_spec},
                         "colors": [col for _, _, col in rate_spec],
                         "points": rate_pts,
-                        "window_start": None,
-                        "window_end": None,
                     },
                 }
             )
@@ -731,7 +739,10 @@ class GrowthReporter:
                     "id": "chart-people-capability",
                     "kind": "lines",
                     "title": "Active users by capability",
-                    "hint": f"active window {self.active_window} · {self._units_adverb()}",
+                    "hint": (
+                        f"active window {self.active_window} · "
+                        f"{self._units_adverb()}"
+                    ),
                     "legend": [
                         {"label": "EM", "color": "--sdk"},
                         {"label": "Opik", "color": "--accent"},
@@ -741,8 +752,6 @@ class GrowthReporter:
                         "labels": {"em": "EM", "opik": "Opik"},
                         "colors": ["--sdk", "--accent"],
                         "points": cap_pts,
-                        "window_start": None,
-                        "window_end": None,
                     },
                 }
             )
@@ -771,8 +780,6 @@ class GrowthReporter:
                         },
                         "colors": ["--sdk", "--accent", "--warn"],
                         "points": em_pts,
-                        "window_start": None,
-                        "window_end": None,
                     },
                 }
             )
@@ -799,8 +806,6 @@ class GrowthReporter:
                         },
                         "colors": ["--accent", "--ok"],
                         "points": opik_pts,
-                        "window_start": None,
-                        "window_end": None,
                     },
                 }
             )
@@ -813,8 +818,8 @@ class GrowthReporter:
                     "kind": "lines",
                     "title": "Users added vs. deleted",
                     "hint": (
-                        f"per period · {self._units_adverb()}; deletions reflect soft-deletes "
-                        "still present in the snapshot"
+                        f"per period · {self._units_adverb()}; deletions reflect "
+                        "soft-deletes still present in the snapshot"
                     ),
                     "legend": [
                         {"label": "Added", "color": "--ok"},
@@ -825,8 +830,6 @@ class GrowthReporter:
                         "labels": {"added": "Added", "deleted": "Deleted"},
                         "colors": ["--ok", "--warn"],
                         "points": user_churn,
-                        "window_start": None,
-                        "window_end": None,
                     },
                 }
             )
@@ -839,7 +842,7 @@ class GrowthReporter:
                 [
                     u.username,
                     _num(u.experiment_count),
-                    _num(u.data_logged_mb),
+                    _num(round(u.data_logged_mb)),
                     _num(u.opik_span_count) if u.opik_span_count is not None else "-",
                 ]
                 for u in top
@@ -1066,7 +1069,10 @@ class GrowthReporter:
         the rendered sections."""
         if scope is not None:
             n = scoped_count if scoped_count is not None else len(scope)
-            return f"Scoped to {n} selected workspace(s)"
+            return (
+                f"Scoped to {n} selected workspace(s) "
+                "(per-user totals remain org-wide)"
+            )
         if org_workspaces is not None:
             return (
                 f"Org-wide: {org_workspaces} workspaces, {org_users} users "

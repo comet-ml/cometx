@@ -21,11 +21,11 @@ and server-rendered KPI/table/panel markup. No external assets, no network
 calls, no secrets -- `report_data` never carries an API key.
 
 Charts render as plain month-on-month / week-on-week series with horizontal
-gridlines for scale. The earlier single-analysis-window overlay (a shaded
-`[window_start, window_end]` band with accent-vs-muted fill and start/end
-dots) has been removed now that the report is period-over-period; the
-`window_start`/`window_end` fields in chart data are retained but no longer
-drawn. A window chip is still rendered next to each section title.
+gridlines for scale. An earlier single-analysis-window overlay (a shaded
+band with start/end dots) was removed once the report became
+period-over-period; the now-defunct `window_start`/`window_end` chart-data
+fields were dropped with it. A window chip is still rendered next to each
+section title.
 """
 
 from __future__ import annotations
@@ -207,17 +207,6 @@ CLIENT_JS = """
     return node;
   }
   function fmt(n){ return (n || 0).toLocaleString("en-US"); }
-  function indexOfKey(points, key){
-    if(key === undefined || key === null) return -1;
-    for(var i = 0; i < points.length; i++){ if(points[i].key === key) return i; }
-    return -1;
-  }
-  function keyInRange(key, start, end){
-    if(key === undefined || key === null) return false;
-    if(start !== undefined && start !== null && key < start) return false;
-    if(end !== undefined && end !== null && key > end) return false;
-    return true;
-  }
 
   var W = 560, H = 220, P = {t: 16, r: 14, b: 28, l: 44};
 
@@ -232,7 +221,7 @@ CLIENT_JS = """
     var guide = el("line", {class: "guide", y1: P.t, y2: H - P.b, x1: 0, x2: 0, opacity: "0"});
     svg.appendChild(guide);
     function show(col){
-      tip.textContent = col.key + ": " + fmt(col.value);
+      tip.textContent = col.label || (col.key + ": " + fmt(col.value));
       tip.classList.add("show");
       var r = host.getBoundingClientRect();
       tip.style.left = (col.x / W) * r.width + "px";
@@ -261,10 +250,22 @@ CLIENT_JS = """
     }
   }
 
+  // Right-hand axis ticks (unlabelled gridlines omitted; the left axis owns
+  // the grid) for a secondary series drawn on its own scale. `suffix` labels
+  // the units, e.g. "%". Colored to match the series it measures.
+  function rAxis(svg, yOf, maxVal, iw, suffix, color){
+    for(var g = 1; g <= 4; g++){
+      var v = maxVal * g / 4, y = yOf(v);
+      var t = el("text", {x: P.l + iw + 6, y: y + 3, "text-anchor": "start",
+        fill: color || tok("--muted"), "font-size": "10", "font-family": "var(--mono)"});
+      t.textContent = fmt(Math.round(v)) + (suffix || ""); svg.appendChild(t);
+    }
+  }
+
   function drawBars(host, data){
     data = data || {}; var points = data.points || [];
     if(!points.length){ host.innerHTML = "<p class=\\"nodata\\">No data</p>"; return; }
-    var accent = tok("--accent"), mute = tok("--bar-mute"), band = tok("--accent-soft");
+    var accent = tok("--accent");
     var svg = el("svg", {viewBox: "0 0 " + W + " " + H, role: "img"});
     var iw = W - P.l - P.r, ih = H - P.t - P.b, n = points.length;
     var max = 1; points.forEach(function(p){ max = Math.max(max, p.value || 0); });
@@ -290,7 +291,6 @@ CLIENT_JS = """
     data = data || {}; var points = data.points || []; var cats = data.categories || [];
     if(!points.length || !cats.length){ host.innerHTML = "<p class=\\"nodata\\">No data</p>"; return; }
     var colors = (data.colors && data.colors.length) ? data.colors : ["--accent", "--sdk", "--ok", "--warn"];
-    var accent = tok("--accent"), band = tok("--accent-soft");
     var svg = el("svg", {viewBox: "0 0 " + W + " " + H, role: "img"});
     var iw = W - P.l - P.r, ih = H - P.t - P.b, n = points.length;
     var max = 1;
@@ -321,6 +321,16 @@ CLIENT_JS = """
         fill: tok("--muted"), "font-size": "10", "font-family": "var(--mono)"});
       xl.textContent = points[i].key; svg.appendChild(xl);
     });
+    // Per-x tooltips: one column spanning the gap around each point, listing
+    // every category's value at that x.
+    var labels = data.labels || {};
+    var slot = n > 1 ? iw / (n - 1) : iw;
+    var cols = points.map(function(p, i){
+      var parts = [p.key];
+      cats.forEach(function(c){ parts.push((labels[c] || c) + " " + fmt((p.values && p.values[c]) || 0)); });
+      return {x: X(i), x0: X(i) - slot / 2, w: slot, key: p.key, label: parts.join("  \\u00b7  ")};
+    });
+    attachTip(host, svg, cols);
     host.appendChild(svg);
   }
 
@@ -373,8 +383,13 @@ CLIENT_JS = """
     if(!points.length || !bars.length){ host.innerHTML = "<p class=\\"nodata\\">No data</p>"; return; }
     var barColors = (data.bar_colors && data.bar_colors.length) ? data.bar_colors : ["--ok", "--warn"];
     var lineColor = data.line_color || "--accent";
+    var lineSuffix = data.line_suffix || "";
+    var barLabels = data.bar_labels || {};
     var svg = el("svg", {viewBox: "0 0 " + W + " " + H, role: "img"});
-    var iw = W - P.l - P.r, ih = H - P.t - P.b, n = points.length;
+    // Reserve extra right margin for the secondary (line) axis labels when a
+    // line is present, so they don't collide with the plot area.
+    var rpad = lineCat ? 34 : 0;
+    var iw = W - P.l - P.r - rpad, ih = H - P.t - P.b, n = points.length;
     var lmax = 1, rmax = 1;
     points.forEach(function(p){
       bars.forEach(function(b){ lmax = Math.max(lmax, (p.values && p.values[b]) || 0); });
@@ -385,7 +400,9 @@ CLIENT_JS = """
     var YR = function(v){ return P.t + ih * (1 - v / rmax); };
     var cx = function(i){ return P.l + slot * i + slot / 2; };
     hGrid(svg, YL, lmax, iw);
+    if(lineCat) rAxis(svg, YR, rmax, iw, lineSuffix, tok(lineColor));
     svg.appendChild(el("line", {class: "axis-base", x1: P.l, x2: P.l + iw, y1: P.t + ih, y2: P.t + ih}));
+    var cols = [];
     points.forEach(function(p, i){
       var gx = P.l + slot * i + (slot - group) / 2;
       bars.forEach(function(b, bi){
@@ -394,6 +411,11 @@ CLIENT_JS = """
         svg.appendChild(el("rect", {x: gx + bw * bi, y: P.t + ih - h, width: Math.max(bw - 2, 1),
           height: h, rx: "2", fill: tok(barColors[bi % barColors.length])}));
       });
+      // Per-column tooltip label: each bar series + the line value.
+      var parts = [p.key];
+      bars.forEach(function(b){ parts.push((barLabels[b] || b) + " " + fmt((p.values && p.values[b]) || 0)); });
+      if(lineCat){ parts.push((barLabels[lineCat] || lineCat) + " " + fmt((p.values && p.values[lineCat]) || 0) + lineSuffix); }
+      cols.push({x: cx(i), x0: P.l + slot * i, w: slot, key: p.key, label: parts.join("  \\u00b7  ")});
       if(i % Math.max(1, Math.ceil(n / 8)) === 0){
         var t = el("text", {x: cx(i), y: H - 8, "text-anchor": "middle", fill: tok("--muted"),
           "font-size": "10", "font-family": "var(--mono)"});
@@ -409,6 +431,7 @@ CLIENT_JS = """
         svg.appendChild(el("circle", {cx: cx(i), cy: YR((p.values && p.values[lineCat]) || 0), r: "2.5", fill: tok(lineColor)}));
       });
     }
+    attachTip(host, svg, cols);
     host.appendChild(svg);
   }
 

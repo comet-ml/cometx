@@ -410,7 +410,10 @@ def fetch_chargeback_report(api, host=None, report_month=None):
         )
     base = "%s://%s" % (parsed.scheme, parsed.netloc)
     url = base + "/api/admin/chargeback/report"
-    if report_month:
-        url += "?reportMonth=%s" % report_month
-    response = api._client.get(url, headers={"Authorization": api.api_key}, params={})
+    # Pass reportMonth as a query param so it's URL-encoded rather than
+    # interpolated raw into the URL.
+    params = {"reportMonth": report_month} if report_month else {}
+    response = api._client.get(
+        url, headers={"Authorization": api.api_key}, params=params
+    )
     return response.json()

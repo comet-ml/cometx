@@ -146,7 +146,7 @@ class _RequestsClient:
             raise ValueError(
                 "Request URL must be an https:// URL with a host; got %r." % url
             )
-        resp = requests.get(url, headers=headers, timeout=30)
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
         resp.raise_for_status()
         return resp
 

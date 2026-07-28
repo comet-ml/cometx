@@ -22,9 +22,12 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import logging
 import re
 
 from cometx.utils import format_time_key, get_next_time_key, parse_time_key
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -242,8 +245,12 @@ def classify_accounts(users, service_account_names=None) -> dict:
 
     `service_account_names`, when a set, is the authoritative list fetched
     from the admin `/admin/service-accounts` endpoint: membership in that
-    set (by `username`) decides the split, and `source` is reported as
-    "admin_api". When it is `None` (the endpoint failed, was disabled, or
+    set decides the split, and `source` is reported as "admin_api".
+    Because the endpoint may identify accounts by either username or
+    email, a user matches if *either* their `username` or their `email` is
+    in the set (avoids the mirror failure where entries carry only email
+    but users are matched on username, silently classifying everyone as
+    personal). When it is `None` (the endpoint failed, was disabled, or
     isn't present in this deployment), falls back to a labeled regex
     heuristic (`_looks_like_service_account`) and reports `source` as
     "heuristic" so callers can surface which method produced the split.
@@ -252,7 +259,10 @@ def classify_accounts(users, service_account_names=None) -> dict:
         source = "admin_api"
 
         def is_service(user: UserRecord) -> bool:
-            return user.username in service_account_names
+            return (
+                user.username in service_account_names
+                or user.email in service_account_names
+            )
 
     else:
         source = "heuristic"
@@ -310,10 +320,23 @@ def _bucket_keys(earliest_ms: int, now_ms: int, units: str) -> "list[str]":
     keys = [start_key]
     key = start_key
     guard = 0
-    while key != end_key and guard < 100_000:
+    guard_max = 100_000
+    while key != end_key and guard < guard_max:
         key = get_next_time_key(key, units)
         keys.append(key)
         guard += 1
+    if key != end_key:
+        # Span too large for these units (e.g. hourly buckets over years):
+        # the series is truncated at the guard, so warn rather than silently
+        # returning a chart that stops short of `now`.
+        LOGGER.warning(
+            "Growth series truncated at %d %s buckets (spanning %s..%s); "
+            "the chart stops before the current period. Use coarser units.",
+            guard_max,
+            units,
+            start_key,
+            end_key,
+        )
     return keys
 
 
@@ -451,14 +474,25 @@ def workspace_active_series(
     for active users). Membership comes from the chargeback reverse-map
     (`UserRecord.workspaces`).
 
+    The per-bucket `total` grows over time: a workspace counts from the bucket
+    in which its earliest member existed (using the same created/not-yet-deleted
+    membership as `_iter_buckets`). This keeps the total line honest about
+    history instead of flat, while still reaching the authoritative count in the
+    final bucket.
+
     When `all_workspaces` (the authoritative chargeback workspace-name set) is
-    given, every bucket's `total` is seeded from it so the chart's total matches
-    `workspace_active_stats(..., all_workspaces=...)` and the KPI -- including
-    workspaces with zero datable members, which never appear in the membership
-    reverse-map. Returns `None` only when there is nothing to show (no
-    membership AND no `all_workspaces`)."""
-    seed_ws = set(all_workspaces) if all_workspaces else set()
-    if not seed_ws and not any(u.workspaces for u in users):
+    given, only its *undatable* members -- workspaces that never appear in the
+    membership reverse-map, e.g. zero-member workspaces the chargeback snapshot
+    lists but whose members carry no `created_at` -- are seeded into every
+    bucket. Those can't be placed on the timeline, so attributing them to all of
+    history is the least-wrong choice and keeps the final bucket matching
+    `workspace_active_stats(..., all_workspaces=...)` and the KPI. Returns `None`
+    only when there is nothing to show (no membership AND no `all_workspaces`)."""
+    all_ws = set(all_workspaces) if all_workspaces else set()
+    datable_ws = {ws for u in users for ws in u.workspaces}
+    # Workspaces we can never place on the timeline: seed them into every bucket.
+    seed_ws = all_ws - datable_ws
+    if not all_ws and not datable_ws:
         return None
     window_ms = active_window_days * 86400 * 1000
     points = []

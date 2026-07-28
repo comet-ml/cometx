@@ -909,7 +909,7 @@ def test_scope_label_org_vs_scoped():
     assert org.startswith("Org-wide: 165 workspaces, 137 users")
     assert org.endswith("(chargeback)")
     assert GrowthReporter._scope_label({"a", "b"}, 165, 137) == (
-        "Scoped to 2 selected workspace(s)"
+        "Scoped to 2 selected workspace(s) (per-user totals remain org-wide)"
     )
     assert GrowthReporter._scope_label(None, None, None) == "Org-wide (chargeback)"
 
@@ -1027,7 +1027,7 @@ def test_unified_section_org_overview_from_chargeback():
     growth = next(k for k in section["kpis"] if k["label"].startswith("New in"))
     # alice's team-a created in Jan (in-window), bob's team-b in Feb (in-window),
     # none before the window start -> 0 before -> 0.0%, "+2 new"
-    assert growth["sub"] == "+2 new"
+    assert growth["sub"] == "+2 new (est. from earliest member)"
     ids = [c["id"] for c in section["charts"]]
     # Chargeback charts stay; SDK creation timelines move to per-product sections.
     assert "chart-unified-platform-mix" in ids
@@ -1189,10 +1189,12 @@ def test_scope_label_uses_post_filter_count_not_requested_args():
 
     # three workspaces requested, but only one survives scoping/--exclude-personal
     label = GrowthReporter._scope_label({"a", "b", "c"}, 100, 50, scoped_count=1)
-    assert label == "Scoped to 1 selected workspace(s)"
+    assert label == (
+        "Scoped to 1 selected workspace(s) (per-user totals remain org-wide)"
+    )
     # falls back to len(scope) when no scoped_count is given
     assert GrowthReporter._scope_label({"a", "b"}, 100, 50) == (
-        "Scoped to 2 selected workspace(s)"
+        "Scoped to 2 selected workspace(s) (per-user totals remain org-wide)"
     )
 
 

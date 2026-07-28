@@ -464,7 +464,9 @@ Examples:
     )
 
     # growth-report subcommand
-    growth_report_description = """Generate a cross-platform use-case growth report for one or more workspaces.
+    growth_report_description = """\
+Generate an org-wide people/usage growth report from the admin \
+chargeback report.
 
 Arguments:
     WORKSPACE (optional, one or more)
@@ -488,7 +490,10 @@ Examples:
 """
     growth_parser = subparsers.add_parser(
         "growth-report",
-        help="Generate a cross-platform use-case growth report for one or more workspaces",
+        help=(
+            "Generate an org-wide people/usage growth report from the "
+            "admin chargeback report"
+        ),
         description=growth_report_description,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

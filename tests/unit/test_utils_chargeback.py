@@ -33,10 +33,10 @@ def test_fetch_chargeback_appends_report_month():
     fetch_chargeback_report(api, report_month="2026-06")
 
     called_url = api._client.get.call_args[0][0]
-    assert (
-        called_url
-        == "https://comet.example.com/api/admin/chargeback/report?reportMonth=2026-06"
-    )
+    assert called_url == "https://comet.example.com/api/admin/chargeback/report"
+    # reportMonth is now passed as a query param (URL-encoded by the client),
+    # not interpolated into the URL string.
+    assert api._client.get.call_args.kwargs["params"] == {"reportMonth": "2026-06"}
 
 
 @pytest.mark.parametrize(
