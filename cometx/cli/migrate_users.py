@@ -137,6 +137,15 @@ class _RequestsClient:
     """
 
     def get(self, url, headers=None, params=None):
+        # Defensive scheme check at the request boundary: callers derive
+        # `url` from operator-supplied --url/--source-url, and we only ever
+        # talk to a Comet server over https. Reject anything else rather than
+        # handing an arbitrary value to requests.get.
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise ValueError(
+                "Request URL must be an https:// URL with a host; got %r." % url
+            )
         resp = requests.get(url, headers=headers, timeout=30)
         resp.raise_for_status()
         return resp

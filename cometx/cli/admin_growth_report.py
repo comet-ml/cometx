@@ -501,13 +501,20 @@ class GrowthReporter:
             ws_churn = workspace_churn_series(people_users, self.units, now_ms)
             if ws_churn:
                 # added/deleted as bars, with an overlaid growth-rate line
-                # (added workspaces / cumulative at start of period).
+                # (added workspaces / surviving total at start of period).
+                # The base tracks the *net* surviving total, so it must
+                # subtract deletions as well as add creations each bucket;
+                # otherwise the denominator drifts high and the rate reads low.
                 churn_pts = []
-                prev_total = 0
+                surviving_total = 0
                 for pt in ws_churn:
                     added = pt["values"]["added"]
                     deleted = pt["values"]["deleted"]
-                    rate = round(added / prev_total * 100, 1) if prev_total else 0.0
+                    rate = (
+                        round(added / surviving_total * 100, 1)
+                        if surviving_total
+                        else 0.0
+                    )
                     churn_pts.append(
                         {
                             "key": pt["key"],
@@ -518,7 +525,7 @@ class GrowthReporter:
                             },
                         }
                     )
-                    prev_total += added
+                    surviving_total += added - deleted
                 cb_charts.append(
                     {
                         "id": "chart-unified-workspace-churn",

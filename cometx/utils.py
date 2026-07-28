@@ -398,10 +398,17 @@ def fetch_chargeback_report(api, host=None, report_month=None):
     if host is not None:
         base = host
     else:
-        parsed = urlparse(api.config["comet.url_override"])
-        base = "%s://%s" % (parsed.scheme, parsed.netloc)
-    while base.endswith("/"):
-        base = base[:-1]
+        base = api.config["comet.url_override"]
+    # Require a well-formed https base before issuing the request. The base
+    # comes from operator-supplied --host/--source-url or the configured
+    # override; enforce a scheme so a malformed value can't be sent verbatim.
+    parsed = urlparse(base)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError(
+            "Chargeback server URL must be an https:// URL with a host; "
+            "got %r." % base
+        )
+    base = "%s://%s" % (parsed.scheme, parsed.netloc)
     url = base + "/api/admin/chargeback/report"
     if report_month:
         url += "?reportMonth=%s" % report_month

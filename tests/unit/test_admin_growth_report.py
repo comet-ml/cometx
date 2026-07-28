@@ -1044,6 +1044,58 @@ def test_unified_section_org_overview_from_chargeback():
     assert section["table"]["title"] == "By workspace (org-wide, chargeback)"
 
 
+def test_unified_churn_rate_uses_net_surviving_base():
+    """The churn growth-rate denominator is the *surviving* total at the start
+    of each bucket, so it must subtract deletions from earlier buckets. If it
+    only accumulated additions the Mar rate below would read 50% (1/2) instead
+    of the correct 100% (1/1, since one of the two Jan workspaces was deleted
+    in Feb)."""
+    from cometx.cli.admin_growth_report import GrowthReporter
+    from cometx.cli.admin_growth_users import parse_users, parse_workspaces
+
+    def _ms(y, mo):
+        return int(
+            datetime.datetime(y, mo, 15, tzinfo=datetime.timezone.utc).timestamp()
+            * 1000
+        )
+
+    jan, feb, mar = _ms(2026, 1), _ms(2026, 2), _ms(2026, 3)
+    now_ms = int(
+        datetime.datetime(2026, 7, 1, tzinfo=datetime.timezone.utc).timestamp() * 1000
+    )
+    cb = {
+        "workspaces": [
+            {"name": "ws-1", "members": [{"userName": "u1"}]},
+            {"name": "ws-2", "members": [{"userName": "u2"}]},
+            {"name": "ws-3", "members": [{"userName": "u3"}]},
+        ],
+        "users": {
+            "licensedUsers": [
+                {"username": "u1", "email": "u1", "createdAt": jan},
+                # u2's workspace is fully deleted in Feb (every member deleted)
+                {"username": "u2", "email": "u2", "createdAt": jan, "deletedAt": feb},
+                {"username": "u3", "email": "u3", "createdAt": mar},
+            ]
+        },
+    }
+    api = MagicMock()
+    r = GrowthReporter(api, window="7d", units="month")
+    section = r._build_unified_section(
+        _win(),
+        people_users=parse_users(cb),
+        ws_records=parse_workspaces(cb),
+        now_ms=now_ms,
+        active_window_days=30,
+    )
+    churn = next(
+        c for c in section["charts"] if c["id"] == "chart-unified-workspace-churn"
+    )
+    by_key = {p["key"]: p["values"] for p in churn["data"]["points"]}
+    # Surviving base at Mar start = 2 added - 1 deleted = 1 -> 1/1 * 100.
+    assert by_key["2026-03"]["added"] == 1
+    assert by_key["2026-03"]["rate"] == 100.0
+
+
 def test_build_raises_when_chargeback_unavailable(monkeypatch):
     import cometx.cli.admin_growth_report as agr
     from cometx.cli.admin_growth_report import GrowthReporter, GrowthReportError
