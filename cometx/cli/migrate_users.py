@@ -137,14 +137,16 @@ class _RequestsClient:
     """
 
     def get(self, url, headers=None, params=None):
-        # Defensive scheme check at the request boundary: callers derive
-        # `url` from operator-supplied --url/--source-url, and we only ever
-        # talk to a Comet server over https. Reject anything else rather than
-        # handing an arbitrary value to requests.get.
+        # Defensive sanity check at the request boundary: callers derive
+        # `url` from operator-supplied --url/--source-url. Reject only
+        # clearly-malformed values (no host, or a non-http(s) scheme) rather
+        # than handing an arbitrary value to requests.get. On-prem Comet
+        # servers are reachable over plain http (see MIGRATIONS.md), so http
+        # is allowed; this is not an SSRF denylist.
         parsed = urllib.parse.urlparse(url)
-        if parsed.scheme != "https" or not parsed.netloc:
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise ValueError(
-                "Request URL must be an https:// URL with a host; got %r." % url
+                "Request URL must be an http(s):// URL with a host; got %r." % url
             )
         resp = requests.get(url, headers=headers, params=params, timeout=30)
         resp.raise_for_status()
@@ -161,9 +163,12 @@ class _ApiShim:
 
 
 def _fetch_chargeback_report(server_url, source_api_key):
-    from cometx.utils import fetch_chargeback_report
+    from cometx.utils import admin_api_url, fetch_chargeback_report
 
-    url = f"{server_url}/api/admin/chargeback/report"
+    # Build the printed URL the same way fetch_chargeback_report builds the
+    # one it requests (preserving any path prefix), so the debug line can't
+    # drift from the URL actually hit.
+    url = admin_api_url(server_url, "/api/admin/chargeback/report")
     print(f"Fetching chargeback report from {url}...")
     api = _ApiShim(server_url, source_api_key)
     return fetch_chargeback_report(api, host=server_url)

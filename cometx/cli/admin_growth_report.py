@@ -26,7 +26,6 @@ import dataclasses
 import datetime
 import os
 import re
-from urllib.parse import urlparse
 
 from cometx.cli.admin_growth_render import build_html, write_html
 from cometx.cli.admin_growth_users import (
@@ -49,7 +48,7 @@ from cometx.cli.admin_growth_users import (
     workspace_churn_series,
     workspace_org_totals,
 )
-from cometx.utils import fetch_chargeback_report, format_time_key
+from cometx.utils import admin_api_url, fetch_chargeback_report, format_time_key
 
 # `build_html` is re-exported here so the growth-report module is the single
 # import surface (tests + callers import it from here). Declaring it in
@@ -88,6 +87,19 @@ def _num(value):
     are naturally integers but arrive as floats from the collectors."""
     if isinstance(value, float) and value.is_integer():
         return int(value)
+    return value
+
+
+def _lb_value(value):
+    """Normalize a leaderboard bar value the same way workspace rows are
+    rendered: round a fractional metric (e.g. `em_score`, which folds in
+    `data_logged_mb`) to a clean integer via `_num(round(...))`. Passes
+    `None` through unchanged so a metric a user lacks stays absent rather
+    than becoming 0."""
+    if value is None:
+        return None
+    if isinstance(value, float):
+        return _num(round(value))
     return value
 
 
@@ -173,11 +185,12 @@ def _fetch_service_accounts(api) -> "set[str] | None":
     labeled regex heuristic instead of crashing or silently reporting a
     zero split under the admin_api label."""
     try:
-        parsed = urlparse(api.config["comet.url_override"])
-        base = "%s://%s" % (parsed.scheme, parsed.netloc)
-        while base.endswith("/"):
-            base = base[:-1]
-        url = base + "/api/admin/service-accounts"
+        # Reuse the shared validated URL builder so this endpoint honors the
+        # same scheme/host/path-prefix handling as fetch_chargeback_report
+        # (the two admin endpoints were previously built inconsistently).
+        url = admin_api_url(
+            api.config["comet.url_override"], "/api/admin/service-accounts"
+        )
         response = api._client.get(
             url, headers={"Authorization": api.api_key}, params={}
         )
@@ -207,13 +220,17 @@ def _short_api_error(exc):
     # onward -- verbose SDK/HTTP errors dump headers, cookies, body, and CSP.
     lowered = text.lower()
     cut = len(text)
+    # NB: markers are matched as substrings anywhere in the text, so each must
+    # be specific enough not to fire on an incidental hostname/message word.
+    # "content-security-policy" already covers the CSP header; a bare "csp"
+    # (3 chars) would truncate errors that merely happen to contain those
+    # letters, so it is intentionally not listed.
     for marker in (
         "headers:",
         "header:",
         "cookie",
         "body:",
         "content-security-policy",
-        "csp",
         "set-cookie",
     ):
         idx = lowered.find(marker)
@@ -344,6 +361,13 @@ class GrowthReporter:
         print("Fetching chargeback report (admin API)...")
         try:
             chargeback = fetch_chargeback_report(self.api)
+        except ValueError as exc:
+            # A ValueError here is a configuration/URL problem (e.g. a
+            # malformed --host or url_override), not an auth failure. Surface
+            # it as-is rather than asserting the API key isn't admin.
+            raise GrowthReportError(
+                f"growth-report could not reach the chargeback endpoint: {exc}"
+            ) from exc
         except Exception as exc:
             raise GrowthReportError(
                 "growth-report requires an admin API key: the chargeback "
@@ -976,7 +1000,10 @@ class GrowthReporter:
                         self._leaderboard_chart(
                             f"chart-lb-user-{key}-top",
                             f"Top {n} users by {label}",
-                            [{"label": u.username, "value": value_fn(u)} for u in top],
+                            [
+                                {"label": u.username, "value": _lb_value(value_fn(u))}
+                                for u in top
+                            ],
                             hint,
                         )
                     )
@@ -987,7 +1014,7 @@ class GrowthReporter:
                             f"chart-lb-user-{key}-bottom",
                             f"Bottom {n} users by {label}",
                             [
-                                {"label": u.username, "value": value_fn(u)}
+                                {"label": u.username, "value": _lb_value(value_fn(u))}
                                 for u in bottom
                             ],
                             hint,

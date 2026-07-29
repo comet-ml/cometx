@@ -39,17 +39,52 @@ def test_fetch_chargeback_appends_report_month():
     assert api._client.get.call_args.kwargs["params"] == {"reportMonth": "2026-06"}
 
 
+def test_fetch_chargeback_allows_http_on_prem_base():
+    # On-prem Comet servers are reached over plain http (documented in
+    # MIGRATIONS.md / README.md); http must not be rejected.
+    from cometx.utils import fetch_chargeback_report
+
+    api = MagicMock()
+    api.config = {"comet.url_override": "http://comet.internal.corp"}
+    api.api_key = "KEY"
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = {}
+    api._client.get.return_value = resp
+
+    fetch_chargeback_report(api)
+
+    called_url = api._client.get.call_args[0][0]
+    assert called_url == "http://comet.internal.corp/api/admin/chargeback/report"
+
+
+def test_fetch_chargeback_preserves_path_prefix():
+    # A base with a path prefix (e.g. /clientlib) must keep that prefix
+    # rather than silently dropping it.
+    from cometx.utils import fetch_chargeback_report
+
+    api = MagicMock()
+    api.config = {"comet.url_override": "https://comet.x.com/clientlib/"}
+    api.api_key = "KEY"
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = {}
+    api._client.get.return_value = resp
+
+    fetch_chargeback_report(api)
+
+    called_url = api._client.get.call_args[0][0]
+    assert called_url == ("https://comet.x.com/clientlib/api/admin/chargeback/report")
+
+
 @pytest.mark.parametrize(
     "base",
     [
-        "http://comet.example.com",  # not https
-        "ftp://comet.example.com",  # wrong scheme
+        "ftp://comet.example.com",  # non-http(s) scheme
         "comet.example.com",  # no scheme/netloc
         "https://",  # empty netloc
         "",  # empty
     ],
 )
-def test_fetch_chargeback_rejects_non_https_base(base):
+def test_fetch_chargeback_rejects_malformed_base(base):
     from cometx.utils import fetch_chargeback_report
 
     api = MagicMock()
@@ -61,7 +96,7 @@ def test_fetch_chargeback_rejects_non_https_base(base):
     api._client.get.assert_not_called()
 
 
-def test_fetch_chargeback_rejects_non_https_host_override():
+def test_fetch_chargeback_rejects_malformed_host_override():
     from cometx.utils import fetch_chargeback_report
 
     api = MagicMock()
@@ -69,5 +104,5 @@ def test_fetch_chargeback_rejects_non_https_host_override():
     api.api_key = "KEY"
 
     with pytest.raises(ValueError):
-        fetch_chargeback_report(api, host="http://127.0.0.1")
+        fetch_chargeback_report(api, host="not-a-url")
     api._client.get.assert_not_called()

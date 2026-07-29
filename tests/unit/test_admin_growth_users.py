@@ -117,6 +117,48 @@ def test_active_series_buckets_total_and_active():
     assert pts[-1]["values"]["total"] == 2
 
 
+def test_active_series_sweep_drops_user_after_deletion():
+    # Guards the _iter_buckets sweep refactor: a user created early and
+    # deleted mid-span must be counted in buckets before their deletion and
+    # excluded from buckets after it (the anti-monotone deletion case the
+    # created-sorted sweep pointer must still honor).
+    from cometx.cli.admin_growth_users import active_series, parse_users
+
+    month = 31 * 86400 * 1000
+    start = NOW - 4 * month
+    cb = {
+        "workspaces": [],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "steady",
+                    "email": "s@x",
+                    "createdAt": start,
+                    "lastUsedAt": NOW,
+                    "deletedAt": None,
+                    "suspended": False,
+                },
+                {
+                    "username": "leaver",
+                    "email": "l@x",
+                    "createdAt": start,
+                    "lastUsedAt": NOW - 3 * month,
+                    # deleted ~2 months before now
+                    "deletedAt": NOW - 2 * month,
+                    "suspended": False,
+                },
+            ]
+        },
+    }
+    pts = active_series(
+        parse_users(cb), units="month", now_ms=NOW, active_window_days=30
+    )
+    totals = [p["values"]["total"] for p in pts]
+    # both present in the first bucket; only 'steady' survives to the last
+    assert totals[0] == 2
+    assert totals[-1] == 1
+
+
 def test_capability_series_none_when_no_capability_fields():
     from cometx.cli.admin_growth_users import capability_series, parse_users
 

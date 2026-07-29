@@ -387,29 +387,40 @@ def remove_extra_slashes(path):
         return ""
 
 
+def admin_api_url(base, path):
+    """Join an operator-supplied server base with an admin API `path`.
+
+    Validates that `base` is a well-formed http(s) URL with a host, then
+    preserves its scheme, host, AND any path prefix (e.g. `/clientlib`) that
+    on-prem deployments sit behind -- only clearly-malformed values (no
+    scheme, non-http(s) scheme, or empty host) are rejected. This is a
+    boundary sanity check, not an SSRF control: it intentionally does not
+    denylist private/loopback hosts, since operators legitimately point these
+    admin commands at internal addresses.
+    """
+    parsed = urlparse(base)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(
+            "Comet server URL must be an http(s):// URL with a host; got %r." % base
+        )
+    prefix = parsed.path.rstrip("/")
+    return "%s://%s%s%s" % (parsed.scheme, parsed.netloc, prefix, path)
+
+
 def fetch_chargeback_report(api, host=None, report_month=None):
     """Fetch the admin chargeback report JSON.
 
     Single source for the `/api/admin/chargeback/report` call used by the
     chargeback-report action, migrate-users, and growth-report. `host`
     overrides the base URL derived from `api.config["comet.url_override"]`;
-    `report_month` (YYYY-MM) adds `?reportMonth=`.
+    `report_month` (YYYY-MM) adds `?reportMonth=`. The base's path prefix (if
+    any) is preserved -- see `admin_api_url`.
     """
     if host is not None:
         base = host
     else:
         base = api.config["comet.url_override"]
-    # Require a well-formed https base before issuing the request. The base
-    # comes from operator-supplied --host/--source-url or the configured
-    # override; enforce a scheme so a malformed value can't be sent verbatim.
-    parsed = urlparse(base)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise ValueError(
-            "Chargeback server URL must be an https:// URL with a host; "
-            "got %r." % base
-        )
-    base = "%s://%s" % (parsed.scheme, parsed.netloc)
-    url = base + "/api/admin/chargeback/report"
+    url = admin_api_url(base, "/api/admin/chargeback/report")
     # Pass reportMonth as a query param so it's URL-encoded rather than
     # interpolated raw into the URL.
     params = {"reportMonth": report_month} if report_month else {}

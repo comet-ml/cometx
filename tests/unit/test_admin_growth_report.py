@@ -1280,3 +1280,25 @@ def test_short_api_error_condenses_verbose_sdk_error():
     assert _short_api_error("plain boom") == "plain boom"
     long = "x" * 300
     assert len(_short_api_error(long)) <= 160
+
+
+def test_num_renders_integral_floats_as_int():
+    from cometx.cli.admin_growth_report import _num
+
+    assert _num(3.0) == 3
+    assert isinstance(_num(3.0), int)
+    assert _num(3.5) == 3.5
+    assert _num(7) == 7
+
+
+def test_lb_value_rounds_fractional_metric_and_passes_none():
+    # #5d: leaderboard bar values must render like workspace rows -- an
+    # em_score of 12.7 (data_logged_mb folded in) shows as 13, not 12.7,
+    # and a metric a user lacks (None) stays absent rather than becoming 0.
+    from cometx.cli.admin_growth_report import _lb_value
+
+    assert _lb_value(12.7) == 13
+    assert isinstance(_lb_value(12.7), int)
+    assert _lb_value(4.0) == 4
+    assert _lb_value(None) is None
+    assert _lb_value(9) == 9

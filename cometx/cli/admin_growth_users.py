@@ -347,24 +347,36 @@ def _iter_buckets(users: "list[UserRecord]", units: str, now_ms: int):
     yet deleted) as of `bucket_end_ms`. `bucket_end_ms` is capped at
     `now_ms` so the current/last bucket reflects "as of now" rather than
     the theoretical end of an in-progress period."""
-    created_times = [u.created_at for u in users if u.created_at is not None]
-    if not created_times:
+    # Sort the eligible (non-suspended, dated) users by `created_at` once so
+    # each bucket can *admit* newly-created users via a sweep pointer instead
+    # of rescanning the whole list. This turns the created-side filter from
+    # O(buckets x users) into a single pass; the only per-bucket work left is
+    # dropping users whose deletion has passed (cheap unless there are many
+    # deletions). Buckets are yielded in increasing time order, and
+    # `created_at` only ever admits (never removes) as time advances, so the
+    # sweep is safe.
+    dated = sorted(
+        (u for u in users if not u.suspended and u.created_at is not None),
+        key=lambda u: u.created_at,
+    )
+    if not dated:
         return
-    earliest_ms = min(created_times)
+    earliest_ms = dated[0].created_at
     if earliest_ms > now_ms:
         earliest_ms = now_ms
 
+    admitted: "list[UserRecord]" = []
+    ptr = 0
+    n = len(dated)
     for key in _bucket_keys(earliest_ms, now_ms, units):
         next_key = get_next_time_key(key, units)
         next_start_ms = _dt_to_ms(parse_time_key(next_key, units))
         bucket_end_ms = min(next_start_ms - 1, now_ms)
+        while ptr < n and dated[ptr].created_at <= bucket_end_ms:
+            admitted.append(dated[ptr])
+            ptr += 1
         existing = [
-            u
-            for u in users
-            if not u.suspended
-            and u.created_at is not None
-            and u.created_at <= bucket_end_ms
-            and (u.deleted_at is None or u.deleted_at >= bucket_end_ms)
+            u for u in admitted if u.deleted_at is None or u.deleted_at >= bucket_end_ms
         ]
         yield key, bucket_end_ms, existing
 
@@ -520,7 +532,7 @@ def churn_series(
     the chargeback snapshot are visible, so hard-deleted accounts are not
     counted -- `deleted` reflects soft-deletes only. Returns `None` when no
     user has a known `created_at`."""
-    created = [u.created_at for u in users if u.created_at]
+    created = [u.created_at for u in users if u.created_at is not None]
     if not created:
         return None
     earliest_ms = min(created)
@@ -530,10 +542,10 @@ def churn_series(
     added_counts: dict = {}
     deleted_counts: dict = {}
     for u in users:
-        if u.created_at:
+        if u.created_at is not None:
             k = format_time_key(_ms_to_dt(u.created_at), units)
             added_counts[k] = added_counts.get(k, 0) + 1
-        if u.deleted_at:
+        if u.deleted_at is not None:
             k = format_time_key(_ms_to_dt(u.deleted_at), units)
             deleted_counts[k] = deleted_counts.get(k, 0) + 1
 
