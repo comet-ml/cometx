@@ -36,10 +36,16 @@ def _make_new_style_key(base_url):
 class TestResolveServerUrl:
     def test_explicit_url_takes_priority(self):
         key = _make_new_style_key("https://encoded.example.com")
-        assert _resolve_server_url(key, "https://explicit.example.com") == "https://explicit.example.com"
+        assert (
+            _resolve_server_url(key, "https://explicit.example.com")
+            == "https://explicit.example.com"
+        )
 
     def test_explicit_url_trailing_slash_stripped(self):
-        assert _resolve_server_url("anykey", "https://example.com/") == "https://example.com"
+        assert (
+            _resolve_server_url("anykey", "https://example.com/")
+            == "https://example.com"
+        )
 
     def test_explicit_url_non_https_exits(self):
         with pytest.raises(SystemExit):
@@ -105,7 +111,9 @@ class TestAddMember:
     @patch("cometx.cli.migrate_users.requests.post")
     def test_success(self, mock_post):
         mock_post.return_value.status_code = 200
-        status, error = _add_member("http://example.com/add", {}, "user@example.com", "ws1")
+        status, error = _add_member(
+            "http://example.com/add", {}, "user@example.com", "ws1"
+        )
         assert status == "added"
         assert error is None
 
@@ -113,7 +121,9 @@ class TestAddMember:
     def test_already_member(self, mock_post):
         mock_post.return_value.status_code = 400
         mock_post.return_value.json.return_value = {"msg": "already member of ws1"}
-        status, error = _add_member("http://example.com/add", {}, "user@example.com", "ws1")
+        status, error = _add_member(
+            "http://example.com/add", {}, "user@example.com", "ws1"
+        )
         assert status == "already_member"
         assert error is None
 
@@ -121,15 +131,20 @@ class TestAddMember:
     def test_failure(self, mock_post):
         mock_post.return_value.status_code = 403
         mock_post.return_value.json.return_value = {"msg": "forbidden"}
-        status, error = _add_member("http://example.com/add", {}, "user@example.com", "ws1")
+        status, error = _add_member(
+            "http://example.com/add", {}, "user@example.com", "ws1"
+        )
         assert status == "failed"
         assert error["status"] == 403
 
     @patch("cometx.cli.migrate_users.requests.post")
     def test_request_exception(self, mock_post):
         import requests as req
+
         mock_post.side_effect = req.exceptions.ConnectionError("timeout")
-        status, error = _add_member("http://example.com/add", {}, "user@example.com", "ws1")
+        status, error = _add_member(
+            "http://example.com/add", {}, "user@example.com", "ws1"
+        )
         assert status == "failed"
         assert error["status"] == "exception"
 
@@ -149,7 +164,10 @@ class TestMigrateUsersDryRun:
         defaults.update(kwargs)
         return argparse.Namespace(**defaults)
 
-    @patch("cometx.cli.migrate_users._resolve_server_url", return_value="https://dest.example.com")
+    @patch(
+        "cometx.cli.migrate_users._resolve_server_url",
+        return_value="https://dest.example.com",
+    )
     @patch("cometx.cli.migrate_users._fetch_chargeback_report")
     @patch("builtins.print")
     def test_dry_run_no_api_calls(self, mock_print, mock_fetch, mock_resolve):
@@ -168,7 +186,10 @@ class TestMigrateUsersDryRun:
             migrate_users(self._make_args())
             mock_post.assert_not_called()
 
-    @patch("cometx.cli.migrate_users._resolve_server_url", return_value="https://dest.example.com")
+    @patch(
+        "cometx.cli.migrate_users._resolve_server_url",
+        return_value="https://dest.example.com",
+    )
     @patch("cometx.cli.migrate_users._fetch_chargeback_report")
     @patch("builtins.print")
     def test_dry_run_prints_per_user(self, mock_print, mock_fetch, mock_resolve):
@@ -187,7 +208,10 @@ class TestMigrateUsersDryRun:
         assert "alice@example.com" in printed
         assert "ws1" in printed
 
-    @patch("cometx.cli.migrate_users._resolve_server_url", return_value="https://dest.example.com")
+    @patch(
+        "cometx.cli.migrate_users._resolve_server_url",
+        return_value="https://dest.example.com",
+    )
     @patch("cometx.cli.migrate_users._fetch_chargeback_report")
     @patch("builtins.print")
     def test_dry_run_skips_no_email(self, mock_print, mock_fetch, mock_resolve):
@@ -210,6 +234,21 @@ class TestMigrateUsersDryRun:
         args = self._make_args(source_api_key=None, chargeback_report=None)
         with pytest.raises(SystemExit):
             migrate_users(args)
+
+    @patch(
+        "cometx.cli.migrate_users._resolve_server_url",
+        return_value="comet.example.com",  # no scheme -> admin_api_url raises
+    )
+    @patch("builtins.print")
+    def test_malformed_source_url_exits_cleanly(self, mock_print, mock_resolve):
+        # A source_url without a scheme (e.g. from an API key's embedded
+        # baseUrl, which isn't validated up front) makes admin_api_url raise
+        # ValueError. That must surface as a clean [ERROR] + exit(1), not an
+        # uncaught traceback.
+        with pytest.raises(SystemExit):
+            migrate_users(self._make_args())
+        printed = " ".join(str(c) for c in mock_print.call_args_list)
+        assert "Invalid source server URL" in printed
 
 
 if __name__ == "__main__":

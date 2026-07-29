@@ -282,6 +282,13 @@ def migrate_users(parsed_args):
             )
         try:
             data = _fetch_chargeback_report(source_url, source_api_key)
+        except ValueError as e:
+            # admin_api_url() rejects a malformed base. source_url may come
+            # from an API key's embedded baseUrl (see _resolve_server_url),
+            # which isn't validated up front -- surface it as a clean CLI
+            # error rather than letting the ValueError crash with a traceback.
+            print(f"[ERROR] Invalid source server URL: {e}")
+            sys.exit(1)
         except requests.exceptions.RequestException as e:
             print(f"[ERROR] Failed to fetch chargeback report: {e}")
             sys.exit(1)
