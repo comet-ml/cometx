@@ -101,9 +101,18 @@ def _resolve_server_url(api_key, explicit_url=None):
     3. Error — no silent fallback to cloud URL.
     """
     if explicit_url:
+        # Same rule as `admin_api_url` (the authority) and `_RequestsClient.get`:
+        # accept http(s) with a host, reject only clearly-malformed values.
+        # Requiring https here would have rejected the on-prem http bases those
+        # two accept -- and that an API key's embedded baseUrl (branch 2 below)
+        # already passes through unchecked, so --url was the stricter path for
+        # no reason. Checked up front so a typo fails before any request.
         parsed = urllib.parse.urlparse(explicit_url)
-        if parsed.scheme != "https":
-            print("[ERROR] --url/--source-url must use https://.")
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            print(
+                "[ERROR] --url/--source-url must be an http(s):// URL with a "
+                "host; got %r." % explicit_url
+            )
             sys.exit(1)
         return explicit_url.rstrip("/")
 

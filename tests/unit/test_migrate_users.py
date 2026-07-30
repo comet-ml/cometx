@@ -47,9 +47,25 @@ class TestResolveServerUrl:
             == "https://example.com"
         )
 
-    def test_explicit_url_non_https_exits(self):
+    def test_explicit_url_allows_http_on_prem(self):
+        # On-prem Comet servers are reached over plain http, and admin_api_url /
+        # _RequestsClient.get both accept it -- --url must not be stricter.
+        assert (
+            _resolve_server_url("anykey", "http://comet.internal.corp")
+            == "http://comet.internal.corp"
+        )
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "ftp://example.com",  # non-http(s) scheme
+            "example.com",  # no scheme/netloc
+            "https://",  # empty netloc
+        ],
+    )
+    def test_explicit_url_malformed_exits(self, url):
         with pytest.raises(SystemExit):
-            _resolve_server_url("anykey", "http://example.com")
+            _resolve_server_url("anykey", url)
 
     def test_new_style_key_decoded(self):
         key = _make_new_style_key("https://self-hosted.example.com")
