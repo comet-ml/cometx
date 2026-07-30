@@ -504,8 +504,13 @@ def workspace_active_series(
     lists but whose members carry no `created_at` -- are seeded into every
     bucket. Those can't be placed on the timeline, so attributing them to all of
     history is the least-wrong choice and keeps the final bucket matching
-    `workspace_active_stats(..., all_workspaces=...)` and the KPI. Returns `None`
-    only when there is nothing to show (no membership AND no `all_workspaces`)."""
+    `workspace_active_stats(..., all_workspaces=...)` and the KPI.
+
+    When no user carries a `created_at` there is no timeline at all, so a single
+    "as of now" bucket is emitted rather than an empty list -- an empty list
+    would make the caller drop the chart while its KPI still showed numbers.
+    Returns `None` only when there is nothing to show (no membership AND no
+    `all_workspaces`)."""
     all_ws = set(all_workspaces) if all_workspaces else set()
     datable_ws = {ws for u in users for ws in u.workspaces}
     # Workspaces we can never place on the timeline: seed them into every bucket.
@@ -524,6 +529,29 @@ def workspace_active_series(
                     active_ws.add(ws)
         points.append(
             {"key": key, "values": {"total": len(total_ws), "active": len(active_ws)}}
+        )
+    if not points:
+        # No user carries a `created_at`, so `_iter_buckets` has no timeline to
+        # bucket and yields nothing -- but `workspace_active_stats` still
+        # reports a total/active from membership alone. Returning `[]` here made
+        # the caller's `if ws_active_pts:` gate drop the chart while its KPI
+        # showed real numbers. Emit a single "as of now" bucket computed the way
+        # the KPI is (membership + `is_active`, ignoring `created_at`) so the two
+        # agree instead of one silently vanishing.
+        total_ws, active_ws = set(seed_ws), set()
+        for u in users:
+            if u.suspended:
+                continue
+            member_active = is_active(u, now_ms, active_window_days)
+            for ws in u.workspaces:
+                total_ws.add(ws)
+                if member_active:
+                    active_ws.add(ws)
+        points.append(
+            {
+                "key": format_time_key(_ms_to_dt(now_ms), units),
+                "values": {"total": len(total_ws), "active": len(active_ws)},
+            }
         )
     return points
 

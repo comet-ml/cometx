@@ -200,6 +200,54 @@ def test_series_share_bucket_start_with_churn_when_earliest_is_suspended():
     assert active[-1]["values"]["total"] == 1
 
 
+def test_workspace_active_series_still_charts_when_no_user_is_dated():
+    # When no user carries a createdAt there is no timeline, but the KPI
+    # (workspace_active_stats) still reports a total/active from membership.
+    # The series must emit a single "as of now" bucket agreeing with that KPI
+    # rather than [] -- an empty list makes the caller drop the chart while its
+    # KPI shows real numbers.
+    from cometx.cli.admin_growth_users import (
+        parse_users,
+        parse_workspaces,
+        workspace_active_series,
+        workspace_active_stats,
+    )
+
+    cb = {
+        "workspaces": [
+            {"name": "team-a", "members": [{"userName": "alice"}]},
+            {"name": "team-b", "members": []},
+        ],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "alice",
+                    "email": "a@x",
+                    "createdAt": None,
+                    "lastUsedAt": NOW,
+                    "deletedAt": None,
+                    "suspended": False,
+                }
+            ]
+        },
+    }
+    users = parse_users(cb)
+    all_ws = {w.name for w in parse_workspaces(cb)}
+    pts = workspace_active_series(
+        users,
+        units="month",
+        now_ms=NOW,
+        active_window_days=30,
+        all_workspaces=all_ws,
+    )
+    stats = workspace_active_stats(
+        users, now_ms=NOW, active_window_days=30, all_workspaces=all_ws
+    )
+    assert pts, "chart must not be dropped while its KPI reports numbers"
+    assert pts[-1]["values"]["total"] == stats["total"] == 2
+    assert pts[-1]["values"]["active"] == stats["active"] == 1
+
+
 def test_capability_series_none_when_no_capability_fields():
     from cometx.cli.admin_growth_users import capability_series, parse_users
 

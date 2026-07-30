@@ -30,9 +30,10 @@ import base64
 import json
 import os
 import sys
-import urllib.parse
 
 import requests
+
+from cometx.utils import InvalidServerURLError, validate_server_base
 
 ADDITIONAL_ARGS = False
 
@@ -101,18 +102,16 @@ def _resolve_server_url(api_key, explicit_url=None):
     3. Error — no silent fallback to cloud URL.
     """
     if explicit_url:
-        # Same rule as `admin_api_url` (the authority) and `_RequestsClient.get`:
-        # accept http(s) with a host, reject only clearly-malformed values.
-        # Requiring https here would have rejected the on-prem http bases those
-        # two accept -- and that an API key's embedded baseUrl (branch 2 below)
-        # already passes through unchecked, so --url was the stricter path for
-        # no reason. Checked up front so a typo fails before any request.
-        parsed = urllib.parse.urlparse(explicit_url)
-        if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            print(
-                "[ERROR] --url/--source-url must be an http(s):// URL with a "
-                "host; got %r." % explicit_url
-            )
+        # One shared rule (`validate_server_base`) across all three call sites,
+        # so --url, the request boundary, and admin_api_url can't drift into
+        # accepting different bases. Requiring https here would have rejected
+        # the on-prem http bases the other two accept -- and that an API key's
+        # embedded baseUrl (branch 2 below) already passes through unchecked.
+        # Checked up front so a typo fails before any request is issued.
+        try:
+            validate_server_base(explicit_url, label="--url/--source-url")
+        except InvalidServerURLError as e:
+            print("[ERROR] %s" % e)
             sys.exit(1)
         return explicit_url.rstrip("/")
 
@@ -146,19 +145,11 @@ class _RequestsClient:
     """
 
     def get(self, url, headers=None, params=None):
-        # Defensive sanity check at the request boundary: callers derive
-        # `url` from operator-supplied --url/--source-url. Reject only
-        # clearly-malformed values (no host, or a non-http(s) scheme) rather
-        # than handing an arbitrary value to requests.get. On-prem Comet
-        # servers are reachable over plain http (see MIGRATIONS.md), so http
-        # is allowed; this is not an SSRF denylist.
-        from cometx.utils import InvalidServerURLError
-
-        parsed = urllib.parse.urlparse(url)
-        if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            raise InvalidServerURLError(
-                "Request URL must be an http(s):// URL with a host; got %r." % url
-            )
+        # Defensive sanity check at the request boundary, using the same shared
+        # rule as --url and admin_api_url: callers derive `url` from
+        # operator-supplied --url/--source-url, so reject clearly-malformed
+        # values rather than handing an arbitrary one to requests.get.
+        validate_server_base(url, label="Request URL")
         resp = requests.get(url, headers=headers, params=params, timeout=30)
         resp.raise_for_status()
         return resp
@@ -291,10 +282,6 @@ def migrate_users(parsed_args):
                 "[WARNING] Source and destination URL and API key are identical. "
                 "Are you sure you want to migrate users to the same environment?"
             )
-        # Imported here (not at module scope) to match `_fetch_chargeback_report`
-        # and keep comet_ml off migrate-users' import path.
-        from cometx.utils import InvalidServerURLError
-
         try:
             data = _fetch_chargeback_report(source_url, source_api_key)
         except InvalidServerURLError as e:

@@ -387,35 +387,52 @@ def remove_extra_slashes(path):
         return ""
 
 
+# The one place the accepted-scheme rule is written down.
+ALLOWED_SERVER_SCHEMES = ("http", "https")
+
+
 class InvalidServerURLError(ValueError):
-    """Raised by `admin_api_url` when the operator-supplied server base is
-    malformed.
+    """Raised when an operator-supplied Comet server URL is malformed.
 
     A distinct type (rather than a bare `ValueError`) so callers can tell a
     URL/config problem apart from the other `ValueError` subclasses that can
     surface from the same call site -- notably `json.JSONDecodeError`, which
-    `response.json()` raises when a server answers 200 with a non-JSON body
+    `response.json()` raises when a server answers 2xx with a non-JSON body
     (an SSO/reverse-proxy HTML login page). Subclasses `ValueError` so
     existing `except ValueError` callers keep working.
     """
 
 
+def validate_server_base(url, label="Comet server URL"):
+    """Validate an operator-supplied server base and return its parse result.
+
+    The single shared rule behind `admin_api_url`, migrate-users'
+    `--url`/`--source-url`, and its request boundary, so those three can't
+    drift into accepting different bases. Accepts http(s) with a host and
+    rejects only clearly-malformed values (no scheme, non-http(s) scheme, or
+    empty host). `label` names the offending input in the error message.
+
+    This is a boundary sanity check, NOT an SSRF control: it intentionally does
+    not denylist private/loopback hosts, since operators legitimately point
+    these admin commands at internal addresses. On-prem Comet servers are
+    reached over plain http, which is why https is not required.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ALLOWED_SERVER_SCHEMES or not parsed.netloc:
+        raise InvalidServerURLError(
+            "%s must be an http(s):// URL with a host; got %r." % (label, url)
+        )
+    return parsed
+
+
 def admin_api_url(base, path):
     """Join an operator-supplied server base with an admin API `path`.
 
-    Validates that `base` is a well-formed http(s) URL with a host, then
-    preserves its scheme, host, AND any path prefix (e.g. `/clientlib`) that
-    on-prem deployments sit behind -- only clearly-malformed values (no
-    scheme, non-http(s) scheme, or empty host) are rejected. This is a
-    boundary sanity check, not an SSRF control: it intentionally does not
-    denylist private/loopback hosts, since operators legitimately point these
-    admin commands at internal addresses.
+    Validates `base` via the shared `validate_server_base`, then preserves its
+    scheme, host, AND any path prefix (e.g. `/clientlib`) that on-prem
+    deployments sit behind.
     """
-    parsed = urlparse(base)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise InvalidServerURLError(
-            "Comet server URL must be an http(s):// URL with a host; got %r." % base
-        )
+    parsed = validate_server_base(base)
     prefix = parsed.path.rstrip("/")
     return "%s://%s%s%s" % (parsed.scheme, parsed.netloc, prefix, path)
 
