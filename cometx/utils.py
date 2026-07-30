@@ -13,9 +13,11 @@
 
 import base64
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 import six
 from comet_ml.config import get_config
@@ -384,3 +386,109 @@ def remove_extra_slashes(path):
         return path
     else:
         return ""
+
+
+# The one place the accepted-scheme rule is written down.
+ALLOWED_SERVER_SCHEMES = ("http", "https")
+
+# `scheme://userinfo@` anywhere in the value -- unanchored so a URL quoted in
+# the middle of an exception message is caught too. The userinfo class excludes
+# `/?#` and whitespace so an `@` later in a path, query, or sentence can't be
+# mistaken for credentials.
+_SCHEME_USERINFO_RE = re.compile(
+    r"(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*://)(?P<info>[^/?#@\s]+)@"
+)
+# A scheme-less base (`user:pass@host`), only at the very start of the value.
+_BARE_USERINFO_RE = re.compile(r"^[^/?#@\s]+@")
+
+
+def redact_url_userinfo(value):
+    """Replace any `user:password@` userinfo in `value` with `***@`.
+
+    Operators can legitimately point these admin commands at a base URL
+    carrying credentials (`https://user:pass@comet.internal`). Those must never
+    reach the terminal or a log, so run every URL through this before printing
+    it or embedding it in an error message. Accepts free text as well as a bare
+    URL, since SDK/HTTP exceptions routinely quote the request URL.
+
+    The URL actually requested is left intact -- stripping userinfo there would
+    break a deployment relying on it for proxy/basic auth, and the credentials
+    are bound for that host either way.
+    """
+    if not isinstance(value, str) or "@" not in value:
+        return value
+    return _BARE_USERINFO_RE.sub(
+        "***@", _SCHEME_USERINFO_RE.sub(lambda m: m.group("scheme") + "***@", value)
+    )
+
+
+class InvalidServerURLError(ValueError):
+    """Raised when an operator-supplied Comet server URL is malformed.
+
+    A distinct type (rather than a bare `ValueError`) so callers can tell a
+    URL/config problem apart from the other `ValueError` subclasses that can
+    surface from the same call site -- notably `json.JSONDecodeError`, which
+    `response.json()` raises when a server answers 2xx with a non-JSON body
+    (an SSO/reverse-proxy HTML login page). Subclasses `ValueError` so
+    existing `except ValueError` callers keep working.
+    """
+
+
+def validate_server_base(url, label="Comet server URL"):
+    """Validate an operator-supplied server base and return its parse result.
+
+    The single shared rule behind `admin_api_url`, migrate-users'
+    `--url`/`--source-url`, and its request boundary, so those three can't
+    drift into accepting different bases. Accepts http(s) with a host and
+    rejects only clearly-malformed values (no scheme, non-http(s) scheme, or
+    empty host). `label` names the offending input in the error message, whose
+    echo of the value is passed through `redact_url_userinfo` so a base carrying
+    credentials can't leak them into the terminal or a log.
+
+    This is a boundary sanity check, NOT an SSRF control: it intentionally does
+    not denylist private/loopback hosts, since operators legitimately point
+    these admin commands at internal addresses. On-prem Comet servers are
+    reached over plain http, which is why https is not required.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ALLOWED_SERVER_SCHEMES or not parsed.netloc:
+        raise InvalidServerURLError(
+            "%s must be an http(s):// URL with a host; got %r."
+            % (label, redact_url_userinfo(url))
+        )
+    return parsed
+
+
+def admin_api_url(base, path):
+    """Join an operator-supplied server base with an admin API `path`.
+
+    Validates `base` via the shared `validate_server_base`, then preserves its
+    scheme, host, AND any path prefix (e.g. `/clientlib`) that on-prem
+    deployments sit behind.
+    """
+    parsed = validate_server_base(base)
+    prefix = parsed.path.rstrip("/")
+    return "%s://%s%s%s" % (parsed.scheme, parsed.netloc, prefix, path)
+
+
+def fetch_chargeback_report(api, host=None, report_month=None):
+    """Fetch the admin chargeback report JSON.
+
+    Single source for the `/api/admin/chargeback/report` call used by the
+    chargeback-report action, migrate-users, and growth-report. `host`
+    overrides the base URL derived from `api.config["comet.url_override"]`;
+    `report_month` (YYYY-MM) adds `?reportMonth=`. The base's path prefix (if
+    any) is preserved -- see `admin_api_url`.
+    """
+    if host is not None:
+        base = host
+    else:
+        base = api.config["comet.url_override"]
+    url = admin_api_url(base, "/api/admin/chargeback/report")
+    # Pass reportMonth as a query param so it's URL-encoded rather than
+    # interpolated raw into the URL.
+    params = {"reportMonth": report_month} if report_month else {}
+    response = api._client.get(
+        url, headers={"Authorization": api.api_key}, params=params
+    )
+    return response.json()

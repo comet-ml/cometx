@@ -580,51 +580,70 @@ cometx admin usage-report --app
 
 #### growth-report
 
-Generate a cross-platform use-case growth & adoption report (Opik projects, EM projects,
-MPM monitored models) as a single self-contained HTML page. Distinct from `usage-report`
-(experiment-count PDF): `growth-report` tracks *how many use cases exist and how fast
-they're being created*, per workspace/department, across all three products.
+Generate an organization growth & adoption report as a single self-contained HTML
+page, built entirely from the **admin chargeback report**. Distinct from
+`usage-report` (experiment-count PDF): `growth-report` gives an org-wide view of
+workspaces, users, and platform adoption, per workspace/department.
+
+**Requires an admin API key** — the report is derived entirely from the admin
+chargeback endpoint, and with a non-admin key the command errors out (non-zero
+exit).
 
 ```
 cometx admin growth-report [WORKSPACE ...]
 ```
 
 **Arguments:**
-* `WORKSPACE` (optional, zero or more) - Workspaces to include. If omitted, all workspaces visible to the current API key are used (via `get_workspaces()`).
+* `WORKSPACE` (optional, zero or more) - Workspaces to scope the report to. If omitted, the report is org-wide.
 
 **Options:**
-* `--units {month,week,day,hour}` - Chart bucket granularity (default: month). Charts always render **all-time** history at this granularity; this is unrelated to `--window` below.
-* `--window WINDOW` - Relative analysis window for the KPIs, e.g. `7d`, `14d`, `30d`, `90d`, `2w`, `6m`, `1y` (default: `7d`). `d`=days, `w`=weeks (×7d), `m`=months (approximated as 30 days), `y`=years (approximated as 365 days) — the approximation is intentional, since the window only needs an "installed base before window" cutoff, not calendar-exact arithmetic.
-* `--platforms PLATFORMS` - Comma-separated list of platforms to include (default: `em,opik,mpm`). Any of `em`, `opik`, `mpm`.
+* `--units {month,week,day,hour}` - Chart bucket granularity (default: month). Charts render all-time history at this granularity; unrelated to `--window` below.
+* `--window WINDOW` - Relative analysis window for the growth KPIs, e.g. `7d`, `14d`, `30d`, `90d`, `2w`, `6m`, `1y` (default: `7d`). `d`=days, `w`=weeks (×7d), `m`=months (≈30 days), `y`=years (≈365 days).
 * `--output PATH` - Output HTML file path (default: `growth_report.html`).
-* `--limit N` - Limit the number of workspaces processed (useful for a fast smoke-test run).
+* `--active-window WINDOW` - Activity window for the users layer, e.g. `30d`/`60d` (default: `60d`). A user is *active* when their last-used timestamp falls within this window.
+* `--leaderboard-top-n N` - Top/bottom N size for the leaderboards section (default: `5`).
+* `--exclude-personal` - Drop workspaces whose name matches `--personal-pattern` from the chargeback data (default: off; no effect without `--personal-pattern`).
+* `--personal-pattern REGEX` - Regex used with `--exclude-personal` to identify personal-workspace names to drop, e.g. `'^user-'` (default: none).
 * `--no-open` - Don't automatically open the generated HTML file after generation.
 
 **Two time concepts:**
 * `--units` controls chart *granularity* — every chart shows the full all-time history bucketed at this resolution.
-* `--window` controls the *analysis window* used for the KPI numbers (Total / New / % growth) — it's drawn as a shaded band on top of the all-time charts rather than filtering them out.
+* `--window` controls the *analysis window* for the "New in {window} (% of base)" growth KPIs — accounts/workspaces created in the last `--window` vs. those that existed before it.
 
-**Growth rates:** growth/adoption rates are computed from use-case **creation timestamps**
-(`--window` boundary vs. each event's `created` time), not from a separate "installed base"
-snapshot, so `pct_growth` is always `new_in_window / count_before_window`.
+**Growth rates:** the growth KPIs are computed from chargeback `createdAt`
+timestamps as `new_in_window / count_before_window × 100`. Workspace creation is
+proxied from each workspace's earliest member `createdAt`.
+
+**Report sections:** an **Organization overview (chargeback)** section (org-wide
+KPIs, workspace platform mix, total-vs-active and added-vs-deleted charts, and a
+by-workspace table), a **Users** section (Total / Active / Active % / New-in-window
+KPIs plus over-time charts), a **Leaderboards** section (top-N and active-aware
+bottom-N workspaces by experiments/projects and users by Opik spans / EM activity,
+exact from chargeback), and a **Personal vs Service accounts** split (service
+accounts from the admin API, with a labeled regex fallback). Each people section
+degrades independently: if its inputs are missing, a warning is printed and only
+that section is dropped.
 
 **Caveats:**
-* **EM "created" is a proxy** — the Comet API has no true EM project-creation timestamp, so EM project creation is approximated as the earliest experiment start time in that project (falling back to the project's `lastUpdated` time if no experiments exist).
-* **Workspace/department "created" is also a proxy** — it's the earliest use-case creation timestamp seen in that workspace, across all platforms.
-* **MPM requires provisioning** — if the account/workspace has no MPM model-monitoring provisioned, the MPM collector degrades gracefully (an empty MPM section, `collectors.mpm: false`) instead of failing the whole report.
-
-Opik and MPM collection require their optional SDKs; install them with `pip install 'cometx[all]'` if they aren't already available. Platforms whose SDK can't be imported are silently dropped from `--platforms` (a note is printed) so the report still succeeds with the remaining platforms.
+* **Chargeback is required** — the whole report is derived from the admin chargeback report; without admin access the command errors out.
+* **Workspace "created" is a proxy** — the earliest member `createdAt`, since chargeback has no workspace-creation timestamp. The added-vs-deleted "deleted" series is also a best-effort proxy (all members removed) and typically reads ~0.
+* **"Total projects" counts EM projects only** — chargeback's per-workspace `projects[]` covers Experiment Management; Opik projects and MPM aren't represented (Opik appears only as a per-user span count; MPM is absent).
 
 **Examples:**
 ```
-# Full cross-platform report for all workspaces, default 7-day window
+# Org-wide report, default 7-day window
 cometx admin growth-report
 
-# Just Opik + EM, 30-day window, monthly chart granularity, for two workspaces
-cometx admin growth-report --platforms em,opik --window 30d my-workspace another-workspace
+# 30-day window, scoped to two workspaces
+cometx admin growth-report --window 30d my-workspace another-workspace
 
-# Fast smoke-test run against a single workspace, don't auto-open
-cometx admin growth-report --limit 1 --no-open --output growth.html my-workspace
+# Write to a file without auto-opening
+cometx admin growth-report --no-open --output growth.html
+
+# 30-day activity window and top/bottom-10 leaderboards, excluding personal
+# workspaces named like "user-..."
+cometx admin growth-report --active-window 30d --leaderboard-top-n 10 \
+  --exclude-personal --personal-pattern '^user-'
 ```
 
 #### gpu-report

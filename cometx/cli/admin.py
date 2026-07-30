@@ -149,12 +149,13 @@ import argparse
 import json
 import os
 import sys
-from urllib.parse import urlparse
 
 from comet_ml import API
 
+from cometx.utils import fetch_chargeback_report
+
 from .admin_gpu_report import main as gpu_report_main
-from .admin_growth_report import generate_growth_report
+from .admin_growth_report import GrowthReportError, generate_growth_report
 from .admin_optimizer_report import generate_json_report
 from .admin_usage_report import generate_usage_report
 
@@ -463,28 +464,36 @@ Examples:
     )
 
     # growth-report subcommand
-    growth_report_description = """Generate a cross-platform use-case growth report for one or more workspaces.
+    growth_report_description = """\
+Generate an org-wide people/usage growth report from the admin \
+chargeback report.
 
 Arguments:
     WORKSPACE (optional, one or more)
         One or more workspaces to run the growth report for.
         If not provided, all workspaces are included.
 
+Requires an ADMIN API key: the report is built entirely from the admin
+chargeback report. Without admin access the command exits with an error.
+
 Output:
-    Generates a self-contained HTML page containing cross-platform (Opik + EM + MPM)
-    use-case growth and rate charts, broken down by workspace/department.
+    Generates a self-contained HTML page with the organization overview, users,
+    personal-vs-service, and leaderboard sections, all derived from the admin
+    chargeback report and broken down by workspace/department.
 
 Examples:
     cometx admin growth-report
     cometx admin growth-report my-workspace
     cometx admin growth-report workspace1 workspace2 --units week
     cometx admin growth-report my-workspace --window 30d
-    cometx admin growth-report my-workspace --platforms em,opik
     cometx admin growth-report my-workspace --output report.html --no-open
 """
     growth_parser = subparsers.add_parser(
         "growth-report",
-        help="Generate a cross-platform use-case growth report for one or more workspaces",
+        help=(
+            "Generate an org-wide people/usage growth report from the "
+            "admin chargeback report"
+        ),
         description=growth_report_description,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -511,22 +520,38 @@ Examples:
         type=str,
     )
     growth_parser.add_argument(
-        "--platforms",
-        help="Comma-separated list of platforms to include (default: em,opik,mpm)",
-        default="em,opik,mpm",
-        type=str,
-    )
-    growth_parser.add_argument(
         "--output",
         help="Output HTML file path (default: growth_report.html)",
         default="growth_report.html",
         type=str,
     )
     growth_parser.add_argument(
-        "--limit",
-        help="Optional limit on the number of items collected per platform",
+        "--active-window",
+        default="60d",
+        help="Activity window for the users/people layer, e.g. 30d/60d (default: 60d)",
+    )
+    growth_parser.add_argument(
+        "--leaderboard-top-n",
         type=int,
+        default=5,
+        help="Top/bottom N size for leaderboards (default: 5)",
+    )
+    growth_parser.add_argument(
+        "--exclude-personal",
+        action="store_true",
+        default=False,
+        help=(
+            "Drop workspaces whose name matches --personal-pattern before "
+            "collection (default: off; has no effect without --personal-pattern)"
+        ),
+    )
+    growth_parser.add_argument(
+        "--personal-pattern",
         default=None,
+        help=(
+            "Regex used with --exclude-personal to identify personal-workspace "
+            "names to drop, e.g. '^user-' (default: none)"
+        ),
     )
     growth_parser.add_argument(
         "--no-open",
@@ -542,39 +567,17 @@ def admin(parsed_args, remaining=None):
         api = API()
 
         if parsed_args.ACTION == "chargeback-report":
-            if parsed_args.host is not None:
-                admin_url = parsed_args.host
-            else:
-                url = api.config["comet.url_override"]
-                result = urlparse(url)
-                admin_url = "%s://%s" % (
-                    result.scheme,
-                    result.netloc,
-                )
-
-            while admin_url.endswith("/"):
-                admin_url = admin_url[:-1]
-
-            admin_url += "/api/admin/chargeback/report"
-
-            print("Attempting to get chargeback report from %s..." % admin_url)
+            print("Attempting to get chargeback report...")
+            report = fetch_chargeback_report(
+                api, host=parsed_args.host, report_month=parsed_args.YEAR_MONTH
+            )
             if parsed_args.YEAR_MONTH:
-                response = api._client.get(
-                    admin_url + ("?reportMonth=%s" % parsed_args.YEAR_MONTH),
-                    headers={"Authorization": api.api_key},
-                    params={},
-                )
                 filename = "comet-chargeback-report-%s.json" % parsed_args.YEAR_MONTH
             else:
-                response = api._client.get(
-                    admin_url,
-                    headers={"Authorization": api.api_key},
-                    params={},
-                )
                 filename = "comet-chargeback-report.json"
             print("Attempting to save chargeback report...")
             with open(filename, "w") as fp:
-                fp.write(json.dumps(response.json()))
+                fp.write(json.dumps(report))
             print("Chargeback report is saved in %r" % filename)
         elif parsed_args.ACTION == "usage-report":
             if parsed_args.app:
@@ -827,11 +830,16 @@ def admin(parsed_args, remaining=None):
                     parsed_args.WORKSPACE,
                     window=parsed_args.window,
                     units=parsed_args.units,
-                    platforms=parsed_args.platforms,
                     output=parsed_args.output,
                     no_open=parsed_args.no_open,
-                    limit=parsed_args.limit,
+                    active_window=parsed_args.active_window,
+                    leaderboard_top_n=parsed_args.leaderboard_top_n,
+                    exclude_personal=parsed_args.exclude_personal,
+                    personal_pattern=parsed_args.personal_pattern,
                 )
+            except GrowthReportError as e:
+                print("ERROR: " + str(e))
+                sys.exit(1)
             except Exception as e:
                 print("ERROR: " + str(e))
                 if parsed_args.debug:

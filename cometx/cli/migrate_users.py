@@ -30,9 +30,14 @@ import base64
 import json
 import os
 import sys
-import urllib.parse
 
 import requests
+
+from cometx.utils import (
+    InvalidServerURLError,
+    redact_url_userinfo,
+    validate_server_base,
+)
 
 ADDITIONAL_ARGS = False
 
@@ -101,9 +106,16 @@ def _resolve_server_url(api_key, explicit_url=None):
     3. Error — no silent fallback to cloud URL.
     """
     if explicit_url:
-        parsed = urllib.parse.urlparse(explicit_url)
-        if parsed.scheme != "https":
-            print("[ERROR] --url/--source-url must use https://.")
+        # One shared rule (`validate_server_base`) across all three call sites,
+        # so --url, the request boundary, and admin_api_url can't drift into
+        # accepting different bases. Requiring https here would have rejected
+        # the on-prem http bases the other two accept -- and that an API key's
+        # embedded baseUrl (branch 2 below) already passes through unchecked.
+        # Checked up front so a typo fails before any request is issued.
+        try:
+            validate_server_base(explicit_url, label="--url/--source-url")
+        except InvalidServerURLError as e:
+            print("[ERROR] %s" % e)
             sys.exit(1)
         return explicit_url.rstrip("/")
 
@@ -125,16 +137,48 @@ def _resolve_server_url(api_key, explicit_url=None):
     sys.exit(1)
 
 
+class _RequestsClient:
+    """Minimal `api._client`-shaped wrapper around `requests`.
+
+    Lets `fetch_chargeback_report` (which expects a comet_ml-API-like object)
+    be reused here without pulling in comet_ml's own API key parsing, which
+    doesn't apply to migrate-users' server_url/source_api_key inputs. Keeps
+    the existing timeout and raise_for_status behavior so callers of
+    `_fetch_chargeback_report` still see `requests.exceptions.RequestException`
+    on HTTP errors.
+    """
+
+    def get(self, url, headers=None, params=None):
+        # Defensive sanity check at the request boundary, using the same shared
+        # rule as --url and admin_api_url: callers derive `url` from
+        # operator-supplied --url/--source-url, so reject clearly-malformed
+        # values rather than handing an arbitrary one to requests.get.
+        validate_server_base(url, label="Request URL")
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+        resp.raise_for_status()
+        return resp
+
+
+class _ApiShim:
+    """Minimal comet_ml-API-shaped object for `fetch_chargeback_report`."""
+
+    def __init__(self, url, key):
+        self.config = {"comet.url_override": url}
+        self.api_key = key
+        self._client = _RequestsClient()
+
+
 def _fetch_chargeback_report(server_url, source_api_key):
-    url = f"{server_url}/api/admin/chargeback/report"
-    print(f"Fetching chargeback report from {url}...")
-    resp = requests.get(
-        url,
-        headers={"Authorization": source_api_key},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
+    from cometx.utils import admin_api_url, fetch_chargeback_report
+
+    # Build the printed URL the same way fetch_chargeback_report builds the
+    # one it requests (preserving any path prefix), so the debug line can't
+    # drift from the URL actually hit. Printed with userinfo redacted: a base
+    # like https://user:pass@host would otherwise put credentials on screen.
+    url = admin_api_url(server_url, "/api/admin/chargeback/report")
+    print(f"Fetching chargeback report from {redact_url_userinfo(url)}...")
+    api = _ApiShim(server_url, source_api_key)
+    return fetch_chargeback_report(api, host=server_url)
 
 
 def _load_chargeback_report(path):
@@ -195,10 +239,9 @@ def _add_member(url, headers, email, workspace_name):
         except ValueError:
             error_msg = response.text
 
-        is_already_member = (
-            isinstance(error_msg, dict)
-            and "already member of" in error_msg.get("msg", "")
-        )
+        is_already_member = isinstance(
+            error_msg, dict
+        ) and "already member of" in error_msg.get("msg", "")
         if is_already_member:
             return "already_member", None
 
@@ -232,13 +275,15 @@ def migrate_users(parsed_args):
         sys.exit(1)
 
     dest_url = _resolve_server_url(api_key, parsed_args.url)
-    print(f"Destination URL: {dest_url}")
+    # Redacted on the way out only -- dest_url itself keeps any userinfo so
+    # requests to a deployment relying on it still authenticate.
+    print(f"Destination URL: {redact_url_userinfo(dest_url)}")
 
     if parsed_args.chargeback_report:
         data = _load_chargeback_report(parsed_args.chargeback_report)
     else:
         source_url = _resolve_server_url(source_api_key, parsed_args.source_url)
-        print(f"Source URL: {source_url}")
+        print(f"Source URL: {redact_url_userinfo(source_url)}")
         if source_url == dest_url and source_api_key == api_key:
             print(
                 "[WARNING] Source and destination URL and API key are identical. "
@@ -246,8 +291,26 @@ def migrate_users(parsed_args):
             )
         try:
             data = _fetch_chargeback_report(source_url, source_api_key)
+        except InvalidServerURLError as e:
+            # admin_api_url() rejects a malformed base. source_url may come
+            # from an API key's embedded baseUrl (see _resolve_server_url),
+            # which isn't validated up front -- surface it as a clean CLI
+            # error rather than letting it crash with a traceback. Matched on
+            # its own type so a non-JSON 200 (json.JSONDecodeError, also a
+            # ValueError) isn't misreported as a bad URL.
+            print(f"[ERROR] Invalid source server URL: {e}")
+            sys.exit(1)
         except requests.exceptions.RequestException as e:
             print(f"[ERROR] Failed to fetch chargeback report: {e}")
+            sys.exit(1)
+        except ValueError as e:
+            # json.JSONDecodeError from response.json(): the endpoint answered
+            # 2xx with a non-JSON body, typically an SSO/reverse-proxy HTML
+            # login page in front of the Comet server.
+            print(
+                "[ERROR] The chargeback endpoint did not return JSON "
+                f"(is {redact_url_userinfo(source_url)} behind a login/proxy?): {e}"
+            )
             sys.exit(1)
 
     workspaces = data.get("workspaces", [])
@@ -356,8 +419,7 @@ def migrate_users(parsed_args):
             if ws_failed:
                 parts.append(f"{ws_failed} failed")
             print(
-                parts[0]
-                + (" (" + ", ".join(parts[1:]) + ")" if len(parts) > 1 else "")
+                parts[0] + (" (" + ", ".join(parts[1:]) + ")" if len(parts) > 1 else "")
             )
 
     print(f"\n{'=' * 60}")
