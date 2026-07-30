@@ -359,9 +359,15 @@ def _iter_buckets(users: "list[UserRecord]", units: str, now_ms: int):
         (u for u in users if not u.suspended and u.created_at is not None),
         key=lambda u: u.created_at,
     )
-    if not dated:
+    # The bucket RANGE is spanned by every dated user, suspended included, so
+    # these series share an x-axis start with `churn_series` (which reads
+    # created_at/deleted_at directly and cannot skip suspended accounts).
+    # Suspended users are still excluded from `existing`, so the leading
+    # buckets read as zero rather than being dropped from the chart.
+    created_times = [u.created_at for u in users if u.created_at is not None]
+    if not created_times:
         return
-    earliest_ms = dated[0].created_at
+    earliest_ms = min(created_times)
     if earliest_ms > now_ms:
         earliest_ms = now_ms
 

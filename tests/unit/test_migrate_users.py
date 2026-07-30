@@ -15,7 +15,7 @@ import argparse
 import base64
 import json
 import unittest
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -249,6 +249,25 @@ class TestMigrateUsersDryRun:
             migrate_users(self._make_args())
         printed = " ".join(str(c) for c in mock_print.call_args_list)
         assert "Invalid source server URL" in printed
+
+    @patch(
+        "cometx.cli.migrate_users._resolve_server_url",
+        return_value="https://comet.example.com",
+    )
+    @patch("cometx.cli.migrate_users._fetch_chargeback_report")
+    @patch("builtins.print")
+    def test_non_json_response_is_not_reported_as_a_bad_url(
+        self, mock_print, mock_fetch, mock_resolve
+    ):
+        # response.json() raises json.JSONDecodeError (a ValueError subclass)
+        # when the endpoint answers 2xx with an HTML login page. That must not
+        # be misreported as a malformed source URL.
+        mock_fetch.side_effect = json.JSONDecodeError("Expecting value", "<html>", 0)
+        with pytest.raises(SystemExit):
+            migrate_users(self._make_args())
+        printed = " ".join(str(c) for c in mock_print.call_args_list)
+        assert "did not return JSON" in printed
+        assert "Invalid source server URL" not in printed
 
 
 if __name__ == "__main__":

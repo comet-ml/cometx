@@ -2,6 +2,8 @@ import datetime
 import importlib
 from unittest.mock import MagicMock
 
+import pytest
+
 
 def test_growth_report_delegate_exists():
     m = importlib.import_module("cometx.cli.admin_growth_report")
@@ -1111,6 +1113,42 @@ def test_build_raises_when_chargeback_unavailable(monkeypatch):
         assert False, "expected GrowthReportError"
     except GrowthReportError as exc:
         assert "admin API key" in str(exc)
+
+
+def test_build_reports_malformed_url_as_a_url_problem(monkeypatch):
+    import cometx.cli.admin_growth_report as agr
+    from cometx.cli.admin_growth_report import GrowthReporter, GrowthReportError
+    from cometx.utils import InvalidServerURLError
+
+    def boom(*a, **k):
+        raise InvalidServerURLError("Comet server URL must be an http(s):// URL")
+
+    monkeypatch.setattr(agr, "fetch_chargeback_report", boom)
+    r = GrowthReporter(MagicMock(), window="7d", units="month")
+    with pytest.raises(GrowthReportError) as exc_info:
+        r.build([])
+    assert "could not reach the chargeback endpoint" in str(exc_info.value)
+    assert "admin API key" not in str(exc_info.value)
+
+
+def test_build_reports_non_json_response_as_unavailable_not_bad_url(monkeypatch):
+    # response.json() raises json.JSONDecodeError -- a ValueError subclass --
+    # when the endpoint answers 2xx with an HTML login page. That must NOT be
+    # reported as a malformed URL; it belongs in the unavailable-endpoint path.
+    import json
+
+    import cometx.cli.admin_growth_report as agr
+    from cometx.cli.admin_growth_report import GrowthReporter, GrowthReportError
+
+    def boom(*a, **k):
+        raise json.JSONDecodeError("Expecting value", "<html>", 0)
+
+    monkeypatch.setattr(agr, "fetch_chargeback_report", boom)
+    r = GrowthReporter(MagicMock(), window="7d", units="month")
+    with pytest.raises(GrowthReportError) as exc_info:
+        r.build([])
+    assert "admin API key" in str(exc_info.value)
+    assert "could not reach the chargeback endpoint" not in str(exc_info.value)
 
 
 def test_generate_growth_report_signature_has_no_sdk_kwargs():

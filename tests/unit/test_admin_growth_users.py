@@ -159,6 +159,47 @@ def test_active_series_sweep_drops_user_after_deletion():
     assert totals[-1] == 1
 
 
+def test_series_share_bucket_start_with_churn_when_earliest_is_suspended():
+    # The _iter_buckets sweep must span every dated user, suspended included,
+    # so the bucket-based series keep the same x-axis start as churn_series
+    # (which reads created_at/deleted_at directly and can't skip suspended
+    # accounts). The suspended user is still absent from `existing`, so the
+    # leading buckets read zero rather than being dropped from the chart.
+    from cometx.cli.admin_growth_users import active_series, churn_series, parse_users
+
+    month = 31 * 86400 * 1000
+    cb = {
+        "workspaces": [],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "old-suspended",
+                    "email": "o@x",
+                    "createdAt": NOW - 6 * month,
+                    "lastUsedAt": None,
+                    "deletedAt": None,
+                    "suspended": True,
+                },
+                {
+                    "username": "recent",
+                    "email": "r@x",
+                    "createdAt": NOW - 2 * month,
+                    "lastUsedAt": NOW,
+                    "deletedAt": None,
+                    "suspended": False,
+                },
+            ]
+        },
+    }
+    users = parse_users(cb)
+    active = active_series(users, units="month", now_ms=NOW, active_window_days=30)
+    churn = churn_series(users, units="month", now_ms=NOW)
+    assert [p["key"] for p in active] == [p["key"] for p in churn]
+    # the suspended account never counts toward `total`, so early buckets are 0
+    assert active[0]["values"]["total"] == 0
+    assert active[-1]["values"]["total"] == 1
+
+
 def test_capability_series_none_when_no_capability_fields():
     from cometx.cli.admin_growth_users import capability_series, parse_users
 

@@ -143,9 +143,11 @@ class _RequestsClient:
         # than handing an arbitrary value to requests.get. On-prem Comet
         # servers are reachable over plain http (see MIGRATIONS.md), so http
         # is allowed; this is not an SSRF denylist.
+        from cometx.utils import InvalidServerURLError
+
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            raise ValueError(
+            raise InvalidServerURLError(
                 "Request URL must be an http(s):// URL with a host; got %r." % url
             )
         resp = requests.get(url, headers=headers, params=params, timeout=30)
@@ -280,17 +282,32 @@ def migrate_users(parsed_args):
                 "[WARNING] Source and destination URL and API key are identical. "
                 "Are you sure you want to migrate users to the same environment?"
             )
+        # Imported here (not at module scope) to match `_fetch_chargeback_report`
+        # and keep comet_ml off migrate-users' import path.
+        from cometx.utils import InvalidServerURLError
+
         try:
             data = _fetch_chargeback_report(source_url, source_api_key)
-        except ValueError as e:
+        except InvalidServerURLError as e:
             # admin_api_url() rejects a malformed base. source_url may come
             # from an API key's embedded baseUrl (see _resolve_server_url),
             # which isn't validated up front -- surface it as a clean CLI
-            # error rather than letting the ValueError crash with a traceback.
+            # error rather than letting it crash with a traceback. Matched on
+            # its own type so a non-JSON 200 (json.JSONDecodeError, also a
+            # ValueError) isn't misreported as a bad URL.
             print(f"[ERROR] Invalid source server URL: {e}")
             sys.exit(1)
         except requests.exceptions.RequestException as e:
             print(f"[ERROR] Failed to fetch chargeback report: {e}")
+            sys.exit(1)
+        except ValueError as e:
+            # json.JSONDecodeError from response.json(): the endpoint answered
+            # 2xx with a non-JSON body, typically an SSO/reverse-proxy HTML
+            # login page in front of the Comet server.
+            print(
+                "[ERROR] The chargeback endpoint did not return JSON "
+                f"(is {source_url} behind a login/proxy?): {e}"
+            )
             sys.exit(1)
 
     workspaces = data.get("workspaces", [])

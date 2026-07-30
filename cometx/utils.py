@@ -387,6 +387,19 @@ def remove_extra_slashes(path):
         return ""
 
 
+class InvalidServerURLError(ValueError):
+    """Raised by `admin_api_url` when the operator-supplied server base is
+    malformed.
+
+    A distinct type (rather than a bare `ValueError`) so callers can tell a
+    URL/config problem apart from the other `ValueError` subclasses that can
+    surface from the same call site -- notably `json.JSONDecodeError`, which
+    `response.json()` raises when a server answers 200 with a non-JSON body
+    (an SSO/reverse-proxy HTML login page). Subclasses `ValueError` so
+    existing `except ValueError` callers keep working.
+    """
+
+
 def admin_api_url(base, path):
     """Join an operator-supplied server base with an admin API `path`.
 
@@ -400,7 +413,7 @@ def admin_api_url(base, path):
     """
     parsed = urlparse(base)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise ValueError(
+        raise InvalidServerURLError(
             "Comet server URL must be an http(s):// URL with a host; got %r." % base
         )
     prefix = parsed.path.rstrip("/")

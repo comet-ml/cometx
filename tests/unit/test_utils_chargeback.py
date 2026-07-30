@@ -85,24 +85,45 @@ def test_fetch_chargeback_preserves_path_prefix():
     ],
 )
 def test_fetch_chargeback_rejects_malformed_base(base):
-    from cometx.utils import fetch_chargeback_report
+    from cometx.utils import InvalidServerURLError, fetch_chargeback_report
 
     api = MagicMock()
     api.config = {"comet.url_override": base}
     api.api_key = "KEY"
 
-    with pytest.raises(ValueError):
+    # A distinct subclass of ValueError so callers can separate a URL problem
+    # from json.JSONDecodeError raised by response.json() (see below).
+    with pytest.raises(InvalidServerURLError):
         fetch_chargeback_report(api)
     api._client.get.assert_not_called()
 
 
+def test_invalid_server_url_error_is_distinct_from_json_decode_error():
+    # Both are ValueErrors, but a non-JSON 2xx body (SSO/proxy login page) is
+    # NOT a URL problem, so `except InvalidServerURLError` must not catch it.
+    import json
+
+    from cometx.utils import InvalidServerURLError, fetch_chargeback_report
+
+    api = MagicMock()
+    api.config = {"comet.url_override": "https://comet.example.com"}
+    api.api_key = "KEY"
+    resp = MagicMock(status_code=200)
+    resp.json.side_effect = json.JSONDecodeError("Expecting value", "<html>", 0)
+    api._client.get.return_value = resp
+
+    assert issubclass(InvalidServerURLError, ValueError)
+    with pytest.raises(json.JSONDecodeError):
+        fetch_chargeback_report(api)
+
+
 def test_fetch_chargeback_rejects_malformed_host_override():
-    from cometx.utils import fetch_chargeback_report
+    from cometx.utils import InvalidServerURLError, fetch_chargeback_report
 
     api = MagicMock()
     api.config = {"comet.url_override": "https://comet.example.com"}
     api.api_key = "KEY"
 
-    with pytest.raises(ValueError):
+    with pytest.raises(InvalidServerURLError):
         fetch_chargeback_report(api, host="not-a-url")
     api._client.get.assert_not_called()

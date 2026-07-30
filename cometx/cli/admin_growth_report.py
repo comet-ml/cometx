@@ -48,7 +48,12 @@ from cometx.cli.admin_growth_users import (
     workspace_churn_series,
     workspace_org_totals,
 )
-from cometx.utils import admin_api_url, fetch_chargeback_report, format_time_key
+from cometx.utils import (
+    InvalidServerURLError,
+    admin_api_url,
+    fetch_chargeback_report,
+    format_time_key,
+)
 
 # `build_html` is re-exported here so the growth-report module is the single
 # import surface (tests + callers import it from here). Declaring it in
@@ -361,10 +366,13 @@ class GrowthReporter:
         print("Fetching chargeback report (admin API)...")
         try:
             chargeback = fetch_chargeback_report(self.api)
-        except ValueError as exc:
-            # A ValueError here is a configuration/URL problem (e.g. a
-            # malformed --host or url_override), not an auth failure. Surface
-            # it as-is rather than asserting the API key isn't admin.
+        except InvalidServerURLError as exc:
+            # A malformed --host / url_override is a configuration problem, not
+            # an auth failure. Surface it as-is rather than asserting the API
+            # key isn't admin. Caught by its own type, not `ValueError`: a
+            # non-JSON 200 (SSO/proxy login page) raises `json.JSONDecodeError`
+            # -- also a `ValueError` -- and belongs in the handler below, which
+            # reports an unusable endpoint rather than a bad URL.
             raise GrowthReportError(
                 f"growth-report could not reach the chargeback endpoint: {exc}"
             ) from exc
