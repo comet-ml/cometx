@@ -248,6 +248,60 @@ def test_workspace_active_series_still_charts_when_no_user_is_dated():
     assert pts[-1]["values"]["active"] == stats["active"] == 1
 
 
+def test_undated_fallback_total_matches_kpi_for_all_suspended_workspace():
+    # A workspace whose only members are suspended is absent from both the
+    # membership reverse-map subset and the seeded set, yet still counts toward
+    # the KPI's all_workspaces denominator. The fallback bucket's `total` must
+    # follow the KPI, not the membership subset.
+    from cometx.cli.admin_growth_users import (
+        parse_users,
+        parse_workspaces,
+        workspace_active_series,
+        workspace_active_stats,
+    )
+
+    cb = {
+        "workspaces": [
+            {"name": "team-a", "members": [{"userName": "alice"}]},
+            {"name": "team-b", "members": [{"userName": "zed"}]},
+        ],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "alice",
+                    "email": "a@x",
+                    "createdAt": None,
+                    "lastUsedAt": NOW,
+                    "deletedAt": None,
+                    "suspended": False,
+                },
+                {
+                    "username": "zed",
+                    "email": "z@x",
+                    "createdAt": None,
+                    "lastUsedAt": NOW,
+                    "deletedAt": None,
+                    "suspended": True,  # team-b's only member
+                },
+            ]
+        },
+    }
+    users = parse_users(cb)
+    all_ws = {w.name for w in parse_workspaces(cb)}
+    pts = workspace_active_series(
+        users,
+        units="month",
+        now_ms=NOW,
+        active_window_days=30,
+        all_workspaces=all_ws,
+    )
+    stats = workspace_active_stats(
+        users, now_ms=NOW, active_window_days=30, all_workspaces=all_ws
+    )
+    assert pts[-1]["values"]["total"] == stats["total"] == 2
+    assert pts[-1]["values"]["active"] == stats["active"] == 1
+
+
 def test_capability_series_none_when_no_capability_fields():
     from cometx.cli.admin_growth_users import capability_series, parse_users
 

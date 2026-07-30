@@ -535,22 +535,19 @@ def workspace_active_series(
         # bucket and yields nothing -- but `workspace_active_stats` still
         # reports a total/active from membership alone. Returning `[]` here made
         # the caller's `if ws_active_pts:` gate drop the chart while its KPI
-        # showed real numbers. Emit a single "as of now" bucket computed the way
-        # the KPI is (membership + `is_active`, ignoring `created_at`) so the two
-        # agree instead of one silently vanishing.
-        total_ws, active_ws = set(seed_ws), set()
-        for u in users:
-            if u.suspended:
-                continue
-            member_active = is_active(u, now_ms, active_window_days)
-            for ws in u.workspaces:
-                total_ws.add(ws)
-                if member_active:
-                    active_ws.add(ws)
+        # showed real numbers. Emit a single "as of now" bucket whose numbers are
+        # `workspace_active_stats`' by construction, so the chart and its KPI
+        # cannot disagree: `total` is the authoritative `all_workspaces` count
+        # when given (NOT the seeded/membership subset -- a workspace whose only
+        # members are suspended is absent from both, yet still counts toward the
+        # KPI denominator), falling back to membership when it isn't.
+        stats = workspace_active_stats(
+            users, now_ms, active_window_days, all_workspaces=all_workspaces
+        )
         points.append(
             {
                 "key": format_time_key(_ms_to_dt(now_ms), units),
-                "values": {"total": len(total_ws), "active": len(active_ws)},
+                "values": {"total": stats["total"], "active": stats["active"]},
             }
         )
     return points

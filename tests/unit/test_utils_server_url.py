@@ -4,7 +4,48 @@ boundary, and admin_api_url."""
 
 import pytest
 
-from cometx.utils import InvalidServerURLError, validate_server_base
+from cometx.utils import (
+    InvalidServerURLError,
+    redact_url_userinfo,
+    validate_server_base,
+)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # credentials replaced, host/path kept
+        ("https://admin:s3cr3t@comet.internal", "https://***@comet.internal"),
+        ("http://user@host/clientlib", "http://***@host/clientlib"),
+        # quoted mid-string, as SDK/HTTP exceptions do
+        (
+            "failed: GET https://u:p@host/api/x returned 403",
+            "failed: GET https://***@host/api/x returned 403",
+        ),
+        # scheme-less base
+        ("admin:s3cr3t@comet.internal", "***@comet.internal"),
+        # an @ in a path is not credentials
+        ("https://comet.internal/a@b", "https://comet.internal/a@b"),
+        # untouched when there is nothing to redact
+        ("https://comet.internal/api", "https://comet.internal/api"),
+        ("", ""),
+    ],
+)
+def test_redact_url_userinfo(raw, expected):
+    assert redact_url_userinfo(raw) == expected
+
+
+def test_redact_url_userinfo_passes_non_strings_through():
+    assert redact_url_userinfo(None) is None
+
+
+def test_validation_error_redacts_credentials():
+    # The error is printed to the terminal / logs, so it must not echo a
+    # password back from the operator-supplied base.
+    with pytest.raises(InvalidServerURLError) as exc_info:
+        validate_server_base("ftp://admin:s3cr3t@comet.internal")
+    assert "s3cr3t" not in str(exc_info.value)
+    assert "***@comet.internal" in str(exc_info.value)
 
 
 @pytest.mark.parametrize(

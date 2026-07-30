@@ -53,6 +53,7 @@ from cometx.utils import (
     admin_api_url,
     fetch_chargeback_report,
     format_time_key,
+    redact_url_userinfo,
 )
 
 # `build_html` is re-exported here so the growth-report module is the single
@@ -242,6 +243,9 @@ def _short_api_error(exc):
         if idx != -1:
             cut = min(cut, idx)
     text = text[:cut].strip() or "unexpected error"
+    # SDK/HTTP exceptions routinely quote the request URL, which may carry
+    # userinfo from the configured base -- redact before this reaches a user.
+    text = redact_url_userinfo(text)
     return text if len(text) <= 160 else text[:157] + "..."
 
 

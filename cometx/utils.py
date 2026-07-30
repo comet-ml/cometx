@@ -13,6 +13,7 @@
 
 import base64
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta
@@ -390,6 +391,36 @@ def remove_extra_slashes(path):
 # The one place the accepted-scheme rule is written down.
 ALLOWED_SERVER_SCHEMES = ("http", "https")
 
+# `scheme://userinfo@` anywhere in the value -- unanchored so a URL quoted in
+# the middle of an exception message is caught too. The userinfo class excludes
+# `/?#` and whitespace so an `@` later in a path, query, or sentence can't be
+# mistaken for credentials.
+_SCHEME_USERINFO_RE = re.compile(
+    r"(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*://)(?P<info>[^/?#@\s]+)@"
+)
+# A scheme-less base (`user:pass@host`), only at the very start of the value.
+_BARE_USERINFO_RE = re.compile(r"^[^/?#@\s]+@")
+
+
+def redact_url_userinfo(value):
+    """Replace any `user:password@` userinfo in `value` with `***@`.
+
+    Operators can legitimately point these admin commands at a base URL
+    carrying credentials (`https://user:pass@comet.internal`). Those must never
+    reach the terminal or a log, so run every URL through this before printing
+    it or embedding it in an error message. Accepts free text as well as a bare
+    URL, since SDK/HTTP exceptions routinely quote the request URL.
+
+    The URL actually requested is left intact -- stripping userinfo there would
+    break a deployment relying on it for proxy/basic auth, and the credentials
+    are bound for that host either way.
+    """
+    if not isinstance(value, str) or "@" not in value:
+        return value
+    return _BARE_USERINFO_RE.sub(
+        "***@", _SCHEME_USERINFO_RE.sub(lambda m: m.group("scheme") + "***@", value)
+    )
+
 
 class InvalidServerURLError(ValueError):
     """Raised when an operator-supplied Comet server URL is malformed.
@@ -410,7 +441,9 @@ def validate_server_base(url, label="Comet server URL"):
     `--url`/`--source-url`, and its request boundary, so those three can't
     drift into accepting different bases. Accepts http(s) with a host and
     rejects only clearly-malformed values (no scheme, non-http(s) scheme, or
-    empty host). `label` names the offending input in the error message.
+    empty host). `label` names the offending input in the error message, whose
+    echo of the value is passed through `redact_url_userinfo` so a base carrying
+    credentials can't leak them into the terminal or a log.
 
     This is a boundary sanity check, NOT an SSRF control: it intentionally does
     not denylist private/loopback hosts, since operators legitimately point
@@ -420,7 +453,8 @@ def validate_server_base(url, label="Comet server URL"):
     parsed = urlparse(url)
     if parsed.scheme not in ALLOWED_SERVER_SCHEMES or not parsed.netloc:
         raise InvalidServerURLError(
-            "%s must be an http(s):// URL with a host; got %r." % (label, url)
+            "%s must be an http(s):// URL with a host; got %r."
+            % (label, redact_url_userinfo(url))
         )
     return parsed
 

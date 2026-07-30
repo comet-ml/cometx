@@ -33,7 +33,11 @@ import sys
 
 import requests
 
-from cometx.utils import InvalidServerURLError, validate_server_base
+from cometx.utils import (
+    InvalidServerURLError,
+    redact_url_userinfo,
+    validate_server_base,
+)
 
 ADDITIONAL_ARGS = False
 
@@ -169,9 +173,10 @@ def _fetch_chargeback_report(server_url, source_api_key):
 
     # Build the printed URL the same way fetch_chargeback_report builds the
     # one it requests (preserving any path prefix), so the debug line can't
-    # drift from the URL actually hit.
+    # drift from the URL actually hit. Printed with userinfo redacted: a base
+    # like https://user:pass@host would otherwise put credentials on screen.
     url = admin_api_url(server_url, "/api/admin/chargeback/report")
-    print(f"Fetching chargeback report from {url}...")
+    print(f"Fetching chargeback report from {redact_url_userinfo(url)}...")
     api = _ApiShim(server_url, source_api_key)
     return fetch_chargeback_report(api, host=server_url)
 
@@ -270,13 +275,15 @@ def migrate_users(parsed_args):
         sys.exit(1)
 
     dest_url = _resolve_server_url(api_key, parsed_args.url)
-    print(f"Destination URL: {dest_url}")
+    # Redacted on the way out only -- dest_url itself keeps any userinfo so
+    # requests to a deployment relying on it still authenticate.
+    print(f"Destination URL: {redact_url_userinfo(dest_url)}")
 
     if parsed_args.chargeback_report:
         data = _load_chargeback_report(parsed_args.chargeback_report)
     else:
         source_url = _resolve_server_url(source_api_key, parsed_args.source_url)
-        print(f"Source URL: {source_url}")
+        print(f"Source URL: {redact_url_userinfo(source_url)}")
         if source_url == dest_url and source_api_key == api_key:
             print(
                 "[WARNING] Source and destination URL and API key are identical. "
@@ -302,7 +309,7 @@ def migrate_users(parsed_args):
             # login page in front of the Comet server.
             print(
                 "[ERROR] The chargeback endpoint did not return JSON "
-                f"(is {source_url} behind a login/proxy?): {e}"
+                f"(is {redact_url_userinfo(source_url)} behind a login/proxy?): {e}"
             )
             sys.exit(1)
 
