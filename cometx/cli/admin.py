@@ -162,6 +162,29 @@ from .admin_usage_report import generate_usage_report
 ADDITIONAL_ARGS = False
 
 
+def _exception_text(exc):
+    """Render `exc` as a printable string, tolerating broken `__str__`.
+
+    `comet_ml.exceptions.NotFound.__str__` returns `None` when the 404 body
+    is not JSON (an HTML error page from a proxy/ingress, say), and
+    `CometRestApiException` siblings can do the same. `str(exc)` then raises
+    `TypeError: __str__ returned non-string`, which buries the real HTTP
+    error under a traceback from the error handler itself. Fall back to the
+    exception's class name -- and its status code when the response carries
+    one -- so the operator still learns what happened.
+    """
+    try:
+        text = str(exc)
+    except Exception:
+        text = None
+    if text:
+        return text
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is not None:
+        return "%s (HTTP %s)" % (type(exc).__name__, status)
+    return type(exc).__name__
+
+
 def add_global_arguments(parser):
     """Add global arguments that are available for all commands."""
     parser.add_argument("--api-key", help="Set the COMET_API_KEY", type=str)
@@ -907,7 +930,7 @@ def admin(parsed_args, remaining=None):
         if parsed_args.debug:
             raise
         else:
-            print("ERROR: " + str(exc))
+            print("ERROR: " + _exception_text(exc))
 
 
 def main(args):

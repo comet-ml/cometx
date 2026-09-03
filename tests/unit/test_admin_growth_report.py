@@ -1553,3 +1553,33 @@ def test_csv_write_failure_exits_nonzero(tmp_path, monkeypatch, capsys):
         admin_mod.admin(args)
     assert exc.value.code != 0
     assert "ERROR" in capsys.readouterr().out
+
+
+def test_exception_text_survives_a_broken_dunder_str():
+    """`comet_ml`'s NotFound.__str__ returns None when the 404 body is not
+    JSON, so `str(exc)` raises TypeError and buries the real HTTP error under
+    a traceback from the error handler itself."""
+    from cometx.cli.admin import _exception_text
+
+    class _Resp:
+        status_code = 404
+
+        def json(self):
+            raise ValueError("not json")
+
+    class _Broken(Exception):
+        response = _Resp()
+
+        def __str__(self):
+            return None
+
+    exc = _Broken()
+    with pytest.raises(TypeError):
+        str(exc)  # the underlying breakage this helper exists to absorb
+    assert _exception_text(exc) == "_Broken (HTTP 404)"
+
+
+def test_exception_text_passes_through_a_normal_message():
+    from cometx.cli.admin import _exception_text
+
+    assert _exception_text(ValueError("boom")) == "boom"
