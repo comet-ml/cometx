@@ -210,3 +210,146 @@ def test_empty_input_yields_no_rows():
     assert build_users_rows([], DATE) == []
     assert build_workspaces_rows([], DATE) == []
     assert build_org_kpi_rows([], DATE) == []
+
+
+def test_collect_org_kpis_emits_expected_metrics():
+    from cometx.cli.admin_growth_csv import collect_org_kpis
+    from cometx.cli.admin_growth_users import WorkspaceRecord
+
+    ws = [
+        WorkspaceRecord(
+            name="research",
+            num_experiments=2130,
+            data_mb=12422.75,
+            num_projects=24,
+            members=("alice",),
+        )
+    ]
+    kpis = collect_org_kpis(
+        users=_users(),
+        ws_records=ws,
+        stats={"total": 2, "active": 1, "adoption_pct": 50.0},
+        growth={"new_in": 1, "before": 5, "pct": 20.0},
+        split={
+            "personal": {"experiments": 100, "data": 5.0, "spans": 10},
+            "service": {"experiments": 900, "data": 50.0, "spans": 90},
+            "source": "admin_api",
+        },
+        active_window_days=60,
+    )
+    by_name = {name: (value, unit) for name, value, unit in kpis}
+
+    assert by_name["total_users"] == (2, "count")
+    assert by_name["active_users_60d"] == (1, "count")
+    assert by_name["active_users_pct"] == (50.0, "percent")
+    assert by_name["new_users_in_window"] == (1, "count")
+    assert by_name["total_workspaces"] == (1, "count")
+    assert by_name["total_projects"] == (24, "count")
+    assert by_name["total_experiments"] == (2130, "count")
+    assert by_name["total_data_mb"] == (12422.75, "megabytes")
+    assert by_name["personal_experiments"] == (100, "count")
+    assert by_name["service_experiments"] == (900, "count")
+    assert by_name["service_account_source"] == ("admin_api", "label")
+
+
+def test_collect_org_kpis_tolerates_missing_sections():
+    """A degraded run (no stats/growth/split) still yields the workspace
+    totals rather than raising."""
+    from cometx.cli.admin_growth_csv import collect_org_kpis
+
+    kpis = collect_org_kpis(
+        users=[],
+        ws_records=[],
+        stats=None,
+        growth=None,
+        split=None,
+        active_window_days=60,
+    )
+    by_name = {name: value for name, value, _unit in kpis}
+    assert by_name["total_workspaces"] == 0
+    assert "total_users" not in by_name
+
+
+def test_write_growth_csvs_creates_three_files(tmp_path):
+    from cometx.cli.admin_growth_csv import write_growth_csvs
+
+    out = tmp_path / "out"
+    paths = write_growth_csvs(
+        users=_users(),
+        ws_records=[],
+        kpis=[("total_users", 2, "count")],
+        out_dir=str(out),
+        report_date=DATE,
+    )
+    assert len(paths) == 3
+    names = sorted(p.name for p in out.iterdir())
+    assert names == [
+        "growth_org_kpis.csv",
+        "growth_users.csv",
+        "growth_workspaces.csv",
+    ]
+
+
+def test_written_csv_round_trips_through_dictreader(tmp_path):
+    import csv as _csv
+
+    from cometx.cli.admin_growth_csv import write_growth_csvs
+
+    out = tmp_path / "out"
+    write_growth_csvs(
+        users=_users(),
+        ws_records=[],
+        kpis=[],
+        out_dir=str(out),
+        report_date=DATE,
+        service_account_names=set(),
+    )
+    with open(out / "growth_users.csv", newline="") as fp:
+        rows = list(_csv.DictReader(fp))
+    assert [r["username"] for r in rows] == ["alice", "carol"]
+    assert rows[0]["report_date"] == DATE
+    assert rows[0]["is_service_account"] == "0"
+
+
+def test_empty_section_still_writes_header_only_file(tmp_path):
+    """A Glue crawler needs the header to infer a schema even with no rows."""
+    import csv as _csv
+
+    from cometx.cli.admin_growth_csv import WORKSPACES_HEADER, write_growth_csvs
+
+    out = tmp_path / "out"
+    write_growth_csvs(
+        users=[], ws_records=[], kpis=[], out_dir=str(out), report_date=DATE
+    )
+    with open(out / "growth_workspaces.csv", newline="") as fp:
+        rows = list(_csv.reader(fp))
+    assert rows == [WORKSPACES_HEADER]
+
+
+def test_write_growth_csvs_creates_nested_missing_dirs(tmp_path):
+    from cometx.cli.admin_growth_csv import write_growth_csvs
+
+    out = tmp_path / "a" / "b" / "c"
+    write_growth_csvs(
+        users=[], ws_records=[], kpis=[], out_dir=str(out), report_date=DATE
+    )
+    assert (out / "growth_users.csv").exists()
+
+
+def test_write_growth_csvs_rejects_path_that_is_a_file(tmp_path):
+    from cometx.cli.admin_growth_csv import write_growth_csvs
+
+    clash = tmp_path / "notadir"
+    clash.write_text("x")
+    try:
+        write_growth_csvs(
+            users=[],
+            ws_records=[],
+            kpis=[],
+            out_dir=str(clash),
+            report_date=DATE,
+        )
+    except Exception as exc:
+        assert "not a directory" in str(exc).lower()
+    else:
+        raise AssertionError("expected an error when out_dir is a file")
