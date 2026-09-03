@@ -156,6 +156,9 @@ report is scoped to just those workspaces.
 - **`--exclude-personal`**: Drop workspaces whose name matches `--personal-pattern` from the chargeback data (default: off; has no effect without `--personal-pattern`).
 - **`--personal-pattern REGEX`**: Regex used with `--exclude-personal` to identify personal-workspace names to drop, e.g. `'^user-'` (default: none).
 - **`--no-open`**: Don't automatically open the generated HTML file after generation.
+- **`--csv-dir DIR`**: Also write Glue-ready CSV fact tables (`growth_users.csv`, `growth_workspaces.csv`, `growth_org_kpis.csv`) into `DIR`. `DIR` is created if it doesn't exist.
+- **`--no-html`**: Skip the HTML report. Requires `--csv-dir` (otherwise there is nothing to write, and the command errors out).
+- **`--chargeback-report FILE`**: Read the chargeback report from a local JSON file (as saved by `cometx admin chargeback-report`) instead of calling the admin API. Useful for CSV-only pipelines that already have a saved chargeback snapshot, or for re-running without another API call.
 
 ### The two time concepts
 
@@ -203,3 +206,83 @@ The report generates a single self-contained HTML file containing:
 - **Workspace "created" is a proxy** — the earliest member `createdAt` in that workspace, since chargeback has no workspace-creation timestamp. The added-vs-deleted "deleted" series is also a best-effort proxy (all members removed) and typically reads ~0.
 - **"Total projects" counts EM projects only** — chargeback's per-workspace `projects[]` covers Experiment Management. Opik projects and MPM aren't represented there (Opik appears only as a per-user span count; MPM is absent), so the platform mix uses an Opik per-user proxy and excludes MPM.
 - **The people layer degrades independently.** If the chargeback payload parses but a section's inputs are missing, a warning is printed and only that section is dropped — the rest of the report still generates.
+
+### CSV export
+
+In addition to (or instead of) the HTML report, `growth-report` can write three
+flat, Glue-ready CSV fact tables — intended for an S3 → Glue → Athena →
+QuickSight pipeline. They export the underlying parsed records rather than the
+HTML report's display-formatted strings, so a Glue crawler infers correct
+numeric/date types instead of typing everything as `string`.
+
+#### Flags
+
+- **`--csv-dir DIR`**: Write the CSV files into `DIR` (created if missing). Can be combined with the normal HTML output, or with `--no-html` for CSV-only runs.
+- **`--no-html`**: Skip the HTML report entirely. Requires `--csv-dir` — with neither, there is nothing to write and the command exits with an error.
+- **`--chargeback-report FILE`**: Read a previously saved chargeback JSON file (from `cometx admin chargeback-report`) instead of calling the admin API. Combine with `--csv-dir` to regenerate CSVs from a snapshot without another API round-trip.
+
+#### Files written
+
+| File | Grain |
+|---|---|
+| `growth_users.csv` | one row per non-deleted user |
+| `growth_workspaces.csv` | one row per workspace |
+| `growth_org_kpis.csv` | one row per org-level metric (long format) |
+
+**`growth_users.csv`**: `report_date, username, email, created_at, last_used_at, em_last_used_at, opik_last_used_at, is_suspended, is_service_account, experiment_count, data_logged_mb, opik_span_count`
+
+**`growth_workspaces.csv`**: `report_date, workspace, member_count, num_projects, num_experiments, data_mb`
+
+**`growth_org_kpis.csv`**: `report_date, metric_name, metric_value, metric_unit` — long format so new metrics arrive as new rows without ever changing the Glue schema. `metric_unit` is one of `count`, `percent`, `megabytes`, `label`.
+
+#### `report_date` convention
+
+`report_date` is the UTC date the run happened, e.g. `2026-09-03`. It is a
+plain column on every row of every file — the files are flat, not written into
+partition directories. On upload to S3, partition by this column, e.g.:
+
+```
+s3://your-bucket/growth-reports/report_date=2026-09-03/growth_users.csv
+```
+
+The partition keeps Athena scans cheap; the column keeps each file
+self-describing on its own. A re-run on a different day produces a new
+partition rather than overwriting the previous run's data.
+
+#### Glue conventions
+
+- lowercase `snake_case` column names
+- ISO-8601 dates (`YYYY-MM-DD`), no locale formatting
+- plain numbers — no thousands separators, no `%` suffixes
+- booleans as `0` / `1`
+- empty field (not a sentinel) for a missing value — this is what Glue reads as `NULL`
+- stable column order — future additions are appended to the right, never inserted
+- header row always present, even when there are zero data rows
+
+#### Caveat: no workspace column in `growth_users.csv`
+
+`growth_users.csv` has no `workspace` column. Chargeback reports
+`experiment_count` / `data_logged_mb` / `opik_span_count` per user, not per
+(user, workspace), so a user belonging to multiple workspaces appears exactly
+once, with totals reported whole — this keeps `SUM(experiment_count)` over the
+file correct with no `DISTINCT` handling required. The consequence is that
+**per-workspace user breakdowns (e.g. "top users within workspace X") are not
+answerable from `growth_users.csv` alone** — there is no user↔workspace link
+in this export. Exact per-workspace totals (`member_count`, `num_projects`,
+`num_experiments`, `data_mb`) live in `growth_workspaces.csv` instead.
+
+#### Examples
+
+```shell
+# Write CSVs alongside the usual HTML report
+cometx admin growth-report --csv-dir ./out
+
+# CSV-only, no HTML
+cometx admin growth-report --csv-dir ./out --no-html
+
+# Regenerate CSVs from a saved chargeback snapshot, no API call
+cometx admin growth-report --chargeback-report report.json --csv-dir ./out
+```
+
+Sample CSVs with synthetic data are available in
+[`docs/csv-samples/`](docs/csv-samples/README.md).
