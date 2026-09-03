@@ -1518,3 +1518,38 @@ def test_growth_report_flags_default_to_current_behavior():
     assert args.csv_dir is None
     assert args.no_html is False
     assert args.chargeback_report is None
+
+
+def test_csv_write_failure_exits_nonzero(tmp_path, monkeypatch, capsys):
+    """A CSV write failure must exit non-zero.
+
+    Regression: the generic `except Exception` handler in the growth-report
+    dispatch printed the error and `return`ed, so the process exited 0. Under
+    a monthly scheduler that reports success while shipping nothing -- the
+    worst possible failure shape. `--csv-dir` pointing at an existing FILE is
+    the realistic trigger.
+    """
+    import argparse
+
+    import cometx.cli.admin as admin_mod
+    import cometx.cli.admin_growth_report as report_mod
+
+    monkeypatch.setattr(admin_mod, "API", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(
+        report_mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(report_mod, "_fetch_service_accounts", lambda api: None)
+
+    clash = tmp_path / "not-a-dir"
+    clash.write_text("x")
+
+    parser = argparse.ArgumentParser()
+    admin_mod.get_parser_arguments(parser)
+    args = parser.parse_args(
+        ["growth-report", "--csv-dir", str(clash), "--no-html", "--no-open"]
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        admin_mod.admin(args)
+    assert exc.value.code != 0
+    assert "ERROR" in capsys.readouterr().out

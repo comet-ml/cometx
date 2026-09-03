@@ -192,7 +192,7 @@ def collect_org_kpis(users, ws_records, stats, growth, split, active_window_days
 
 
 def _write_csv(path, header, rows):
-    with open(path, "w", newline="") as fp:
+    with open(path, "w", newline="", encoding="utf-8") as fp:
         writer = csv.writer(fp, quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
         writer.writerow(header)
         writer.writerows(rows)

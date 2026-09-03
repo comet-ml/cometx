@@ -353,3 +353,109 @@ def test_write_growth_csvs_rejects_path_that_is_a_file(tmp_path):
         assert "not a directory" in str(exc).lower()
     else:
         raise AssertionError("expected an error when out_dir is a file")
+
+
+def _non_ascii_user():
+    from cometx.cli.admin_growth_users import UserRecord
+
+    return UserRecord(
+        username="josé.álvarez",
+        email="josé.álvarez@exämple.com",
+        created_at=NOW - 100,
+        deleted_at=None,
+        suspended=False,
+        last_used_at=NOW,
+        experiment_count=3,
+        data_logged_mb=1.5,
+        opik_span_count=7,
+        em_last_used_at=NOW,
+        opik_last_used_at=None,
+        workspaces=["recherche"],
+    )
+
+
+def test_non_ascii_username_round_trips_as_utf8(tmp_path):
+    """A non-ASCII username survives the write and reads back intact as UTF-8."""
+    import csv as _csv
+
+    from cometx.cli.admin_growth_csv import write_growth_csvs
+
+    out = tmp_path / "out"
+    write_growth_csvs(
+        users=[_non_ascii_user()],
+        ws_records=[],
+        kpis=[],
+        out_dir=str(out),
+        report_date=DATE,
+        service_account_names=set(),
+    )
+    with open(out / "growth_users.csv", newline="", encoding="utf-8") as fp:
+        rows = list(_csv.DictReader(fp))
+    assert [r["username"] for r in rows] == ["josé.álvarez"]
+    assert rows[0]["email"] == "josé.álvarez@exämple.com"
+
+
+def test_non_ascii_username_survives_a_c_locale_process(tmp_path):
+    """The real regression: `_write_csv` must not depend on the ambient locale.
+
+    Without an explicit `encoding="utf-8"`, `open()` falls back to the platform
+    locale, and a `LANG=C` cron/systemd box raises UnicodeEncodeError mid-write
+    -- leaving a truncated CSV for Glue to crawl. This cannot be simulated
+    in-process: `open()` resolves its default encoding in C (patching
+    `locale.getpreferredencoding` has no effect), and CPython's PEP 538 locale
+    coercion turns `LANG=C` back into UTF-8 unless disabled. So the write runs
+    in a genuinely ASCII-locale subprocess.
+    """
+    import csv as _csv
+    import os
+    import subprocess
+    import sys
+
+    out = tmp_path / "out"
+    script = "\n".join(
+        [
+            "import locale",
+            "from cometx.cli.admin_growth_csv import write_growth_csvs",
+            "from cometx.cli.admin_growth_users import UserRecord",
+            # Guard against a vacuous pass: if the subprocess somehow came up
+            # in UTF-8, fail loudly instead of claiming the bug is fixed.
+            "enc = locale.getencoding().lower().replace('-', '').replace('_', '')",
+            "assert enc in ('ascii', 'usascii', 'ansix3.41968'), enc",
+            "u = UserRecord(username={username!r}, email={email!r},".format(
+                username="josé.álvarez", email="josé.álvarez@exämple.com"
+            ),
+            "               created_at={0!r}, deleted_at=None, suspended=False,".format(
+                NOW - 100
+            ),
+            "               last_used_at={0!r}, experiment_count=3,".format(NOW),
+            "               data_logged_mb=1.5, opik_span_count=7,",
+            "               em_last_used_at={0!r}, opik_last_used_at=None,".format(NOW),
+            "               workspaces=['recherche'])",
+            "write_growth_csvs(users=[u], ws_records=[], kpis=[],",
+            "                  out_dir={0!r}, report_date={1!r},".format(
+                str(out), DATE
+            ),
+            "                  service_account_names=set())",
+        ]
+    )
+
+    env = dict(os.environ)
+    env.update(
+        {
+            "LC_ALL": "C",
+            "LANG": "C",
+            # Defeat the two CPython escape hatches that would silently restore
+            # UTF-8 and make this test vacuous.
+            "PYTHONCOERCECLOCALE": "0",
+            "PYTHONUTF8": "0",
+            "PYTHONIOENCODING": "utf-8",  # so a traceback can still be printed
+        }
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    with open(out / "growth_users.csv", newline="", encoding="utf-8") as fp:
+        rows = list(_csv.DictReader(fp))
+    assert [r["username"] for r in rows] == ["josé.álvarez"]

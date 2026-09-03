@@ -888,12 +888,15 @@ def admin(parsed_args, remaining=None):
                 print("ERROR: " + str(e))
                 sys.exit(1)
             except Exception as e:
+                # Must exit non-zero: a CSV write failure (unwritable
+                # --csv-dir, or one pointing at a file) that exited 0 would
+                # report success to a scheduler while shipping nothing.
                 print("ERROR: " + str(e))
                 if parsed_args.debug:
                     import traceback
 
                     traceback.print_exc()
-                return
+                sys.exit(1)
 
     except KeyboardInterrupt:
         if parsed_args.debug:
