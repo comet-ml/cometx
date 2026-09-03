@@ -412,8 +412,15 @@ def test_non_ascii_username_survives_a_c_locale_process(tmp_path):
     import sys
 
     out = tmp_path / "out"
+    # The non-ASCII payload must NOT travel through argv: under an ASCII
+    # locale CPython cannot decode its own command line and dies before
+    # running a single statement (`python -c` would fail with "Unable to
+    # decode the command from the command line"). Write the script to a
+    # UTF-8 file with an explicit coding declaration and pass the PATH --
+    # argv then stays pure ASCII while the source is still read as UTF-8.
     script = "\n".join(
         [
+            "# -*- coding: utf-8 -*-",
             "import locale",
             "from cometx.cli.admin_growth_csv import write_growth_csvs",
             "from cometx.cli.admin_growth_users import UserRecord",
@@ -438,6 +445,8 @@ def test_non_ascii_username_survives_a_c_locale_process(tmp_path):
             "                  service_account_names=set())",
         ]
     )
+    script_path = tmp_path / "write_non_ascii.py"
+    script_path.write_text(script, encoding="utf-8")
 
     env = dict(os.environ)
     env.update(
@@ -452,7 +461,10 @@ def test_non_ascii_username_survives_a_c_locale_process(tmp_path):
         }
     )
     proc = subprocess.run(
-        [sys.executable, "-c", script], env=env, capture_output=True, text=True
+        [sys.executable, str(script_path)],
+        env=env,
+        capture_output=True,
+        text=True,
     )
     assert proc.returncode == 0, proc.stderr
 
