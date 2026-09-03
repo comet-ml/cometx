@@ -27,6 +27,7 @@ import datetime
 import os
 import re
 
+from cometx.cli.admin_growth_csv import collect_org_kpis, write_growth_csvs
 from cometx.cli.admin_growth_render import build_html, write_html
 from cometx.cli.admin_growth_users import (
     _extract_licensed_users,
@@ -323,6 +324,10 @@ def generate_growth_report(
     leaderboard_top_n=5,
     exclude_personal=False,
     personal_pattern=None,
+    csv_dir=None,
+    no_html=False,
+    chargeback=None,
+    report_date=None,
 ):
     reporter = GrowthReporter(
         api,
@@ -333,7 +338,31 @@ def generate_growth_report(
         exclude_personal=exclude_personal,
         personal_pattern=personal_pattern,
     )
-    report_data = reporter.build(workspaces)
+    report_data = reporter.build(workspaces, chargeback=chargeback)
+
+    written = []
+    if csv_dir is not None:
+        users, ws_records, kpis = reporter.last_parsed()
+        # `report_date` is injectable so tests need not freeze the clock; the
+        # CLI never passes it and always gets the UTC run date.
+        if report_date is None:
+            report_date = datetime.datetime.now(tz=datetime.timezone.utc).strftime(
+                "%Y-%m-%d"
+            )
+        written = write_growth_csvs(
+            users,
+            ws_records,
+            kpis,
+            csv_dir,
+            report_date,
+            service_account_names=reporter.last_service_account_names(),
+        )
+        for path in written:
+            print("Wrote %s" % path)
+
+    if no_html:
+        return written[0] if written else None
+
     path = write_growth_html(report_data, output)
     if not no_open:
         _open(path)
@@ -360,37 +389,56 @@ class GrowthReporter:
         self.exclude_personal = exclude_personal
         self.personal_pattern = personal_pattern
         self._warned_no_personal_pattern = False
+        self._last_parsed = ([], [], [])
+        self._last_service_account_names = None
 
-    def build(self, workspaces):
+    def build(self, workspaces, chargeback=None):
         """Fetch the org-wide chargeback report (admin API key required) and
         assemble chargeback-only report_data. Raises GrowthReportError when the
-        chargeback endpoint is unavailable -- there is no SDK fallback."""
+        chargeback endpoint is unavailable -- there is no SDK fallback.
+
+        `chargeback`, when given, is a pre-loaded payload (from
+        `--chargeback-report FILE`) and no API call is made."""
         now = self._now()
         window = parse_window(self.window, now, self.units)
-        print("Fetching chargeback report (admin API)...")
-        try:
-            chargeback = fetch_chargeback_report(self.api)
-        except InvalidServerURLError as exc:
-            # A malformed --host / url_override is a configuration problem, not
-            # an auth failure. Surface it as-is rather than asserting the API
-            # key isn't admin. Caught by its own type, not `ValueError`: a
-            # non-JSON 200 (SSO/proxy login page) raises `json.JSONDecodeError`
-            # -- also a `ValueError` -- and belongs in the handler below, which
-            # reports an unusable endpoint rather than a bad URL.
-            raise GrowthReportError(
-                f"growth-report could not reach the chargeback endpoint: {exc}"
-            ) from exc
-        except Exception as exc:
-            raise GrowthReportError(
-                "growth-report requires an admin API key: the chargeback "
-                f"endpoint is unavailable ({_short_api_error(exc)}). This "
-                "report is built entirely from the admin chargeback report."
-            ) from exc
+        if chargeback is None:
+            print("Fetching chargeback report (admin API)...")
+            try:
+                chargeback = fetch_chargeback_report(self.api)
+            except InvalidServerURLError as exc:
+                # A malformed --host / url_override is a configuration problem,
+                # not an auth failure. Surface it as-is rather than asserting
+                # the API key isn't admin. Caught by its own type, not
+                # `ValueError`: a non-JSON 200 (SSO/proxy login page) raises
+                # `json.JSONDecodeError` -- also a `ValueError` -- and belongs
+                # in the handler below, which reports an unusable endpoint
+                # rather than a bad URL.
+                raise GrowthReportError(
+                    f"growth-report could not reach the chargeback endpoint: {exc}"
+                ) from exc
+            except Exception as exc:
+                raise GrowthReportError(
+                    "growth-report requires an admin API key: the chargeback "
+                    f"endpoint is unavailable ({_short_api_error(exc)}). This "
+                    "report is built entirely from the admin chargeback report."
+                ) from exc
         chargeback = self._filter_personal_chargeback(chargeback)
         print("Building report...")
         now_ms = int(now.timestamp() * 1000)
         scope = set(workspaces) if workspaces else None
         return self._assemble_report_data(chargeback, window, now_ms, scope=scope)
+
+    def last_parsed(self):
+        """The (users, ws_records, org_kpis) captured by the most recent
+        `build()`. Exposed for the CSV exporter so it can reuse the records
+        `_assemble_report_data` already parsed, rather than re-deriving them
+        from the display-formatted `report_data`."""
+        return self._last_parsed
+
+    def last_service_account_names(self):
+        """The service-account name set from the most recent `build()`
+        (`None` when the admin endpoint was unavailable)."""
+        return self._last_service_account_names
 
     def _now(self):
         return datetime.datetime.now(datetime.timezone.utc)
@@ -1144,6 +1192,10 @@ class GrowthReporter:
             people_users = []
             ws_records = []
 
+        # Capture the parsed records for the CSV exporter before they are
+        # folded into display-formatted sections.
+        self._last_parsed = (people_users, ws_records, [])
+
         sections = {
             "unified": self._build_unified_section(
                 window,
@@ -1182,6 +1234,7 @@ class GrowthReporter:
             personal_vs_service_section = None
             if people_users:
                 service_account_names = _fetch_service_accounts(self.api)
+                self._last_service_account_names = service_account_names
                 # `_fetch_service_accounts` already returns None on any failure
                 # (endpoint unavailable / unrecognized shape) and a set on
                 # success. An empty set is the authoritative "admin API returned
@@ -1199,6 +1252,39 @@ class GrowthReporter:
             personal_vs_service_section = None
         if personal_vs_service_section:
             sections["personal_vs_service"] = personal_vs_service_section
+
+        # Org KPIs for the CSV export, from the same parsed records the
+        # sections above used.
+        try:
+            stats = (
+                adoption_stats(people_users, now_ms, active_window_days)
+                if people_users
+                else None
+            )
+            growth = (
+                _window_growth((u.created_at for u in people_users), window)
+                if people_users
+                else None
+            )
+            split = (
+                classify_accounts(people_users, self._last_service_account_names)
+                if people_users
+                else None
+            )
+            self._last_parsed = (
+                people_users,
+                ws_records,
+                collect_org_kpis(
+                    people_users,
+                    ws_records,
+                    stats,
+                    growth,
+                    split,
+                    active_window_days,
+                ),
+            )
+        except Exception as exc:
+            print(f"Warning: failed to collect org KPIs for CSV: {exc}")
 
         return {
             "meta": {

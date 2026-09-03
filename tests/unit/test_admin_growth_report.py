@@ -1340,3 +1340,114 @@ def test_lb_value_rounds_fractional_metric_and_passes_none():
     assert _lb_value(4.0) == 4
     assert _lb_value(None) is None
     assert _lb_value(9) == 9
+
+
+def _chargeback_fixture():
+    NOW = 1_720_000_000_000
+    return {
+        "workspaces": [
+            {
+                "name": "team-a",
+                "numberOfExperiments": 40,
+                "totalSizeInMb": 100.0,
+                "projects": ["p1", "p2"],
+                "members": [{"userName": "alice"}],
+            }
+        ],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "alice",
+                    "email": "a@x.com",
+                    "createdAt": NOW - 100,
+                    "lastUsedAt": NOW,
+                    "experimentCount": 40,
+                    "dataLoggedMb": 100.0,
+                    "opikSpanCount": 5,
+                    "suspended": False,
+                    "deletedAt": None,
+                }
+            ]
+        },
+    }
+
+
+def test_generate_growth_report_writes_csvs(tmp_path, monkeypatch):
+    import cometx.cli.admin_growth_report as mod
+
+    monkeypatch.setattr(
+        mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    out = tmp_path / "csv"
+    mod.generate_growth_report(
+        MagicMock(),
+        [],
+        csv_dir=str(out),
+        no_html=True,
+        no_open=True,
+        report_date="2026-09-03",
+    )
+    names = sorted(p.name for p in out.iterdir())
+    assert names == [
+        "growth_org_kpis.csv",
+        "growth_users.csv",
+        "growth_workspaces.csv",
+    ]
+
+
+def test_no_html_suppresses_html_output(tmp_path, monkeypatch):
+    import cometx.cli.admin_growth_report as mod
+
+    monkeypatch.setattr(
+        mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    html = tmp_path / "report.html"
+    mod.generate_growth_report(
+        MagicMock(),
+        [],
+        output=str(html),
+        csv_dir=str(tmp_path / "csv"),
+        no_html=True,
+        no_open=True,
+        report_date="2026-09-03",
+    )
+    assert not html.exists()
+
+
+def test_preloaded_chargeback_skips_the_api_call(tmp_path, monkeypatch):
+    import cometx.cli.admin_growth_report as mod
+
+    def _boom(api):
+        raise AssertionError("fetch_chargeback_report must not be called")
+
+    monkeypatch.setattr(mod, "fetch_chargeback_report", _boom)
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    mod.generate_growth_report(
+        MagicMock(),
+        [],
+        chargeback=_chargeback_fixture(),
+        csv_dir=str(tmp_path / "csv"),
+        no_html=True,
+        no_open=True,
+        report_date="2026-09-03",
+    )
+    assert (tmp_path / "csv" / "growth_users.csv").exists()
+
+
+def test_html_still_written_when_csv_dir_absent(tmp_path, monkeypatch):
+    """Existing behavior must be untouched when --csv-dir is not passed."""
+    import cometx.cli.admin_growth_report as mod
+
+    monkeypatch.setattr(
+        mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    html = tmp_path / "report.html"
+    mod.generate_growth_report(MagicMock(), [], output=str(html), no_open=True)
+    assert html.exists()
