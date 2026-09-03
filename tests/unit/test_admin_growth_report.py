@@ -1440,7 +1440,16 @@ def test_preloaded_chargeback_skips_the_api_call(tmp_path, monkeypatch):
 
 
 def test_html_still_written_when_csv_dir_absent(tmp_path, monkeypatch):
-    """Existing behavior must be untouched when --csv-dir is not passed."""
+    """Existing behavior must be untouched when --csv-dir is not passed.
+
+    The binding constraint is stronger than "the file exists": HTML output
+    must be byte-identical whether or not --csv-dir is passed, since CSV
+    writing is purely additional output. Freeze the clock (GrowthReporter
+    uses it to compute the KPI window) so the two runs can't differ merely
+    by timestamp, and compare SHA-256 hashes.
+    """
+    import hashlib
+
     import cometx.cli.admin_growth_report as mod
 
     monkeypatch.setattr(
@@ -1448,6 +1457,64 @@ def test_html_still_written_when_csv_dir_absent(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
 
-    html = tmp_path / "report.html"
-    mod.generate_growth_report(MagicMock(), [], output=str(html), no_open=True)
-    assert html.exists()
+    frozen_now = datetime.datetime(2026, 9, 3, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    monkeypatch.setattr(mod.GrowthReporter, "_now", lambda self: frozen_now)
+
+    html_without_csv = tmp_path / "without_csv" / "report.html"
+    html_without_csv.parent.mkdir(parents=True, exist_ok=True)
+    mod.generate_growth_report(
+        MagicMock(), [], output=str(html_without_csv), no_open=True
+    )
+    assert html_without_csv.exists()
+
+    html_with_csv = tmp_path / "with_csv" / "report.html"
+    html_with_csv.parent.mkdir(parents=True, exist_ok=True)
+    mod.generate_growth_report(
+        MagicMock(),
+        [],
+        output=str(html_with_csv),
+        no_open=True,
+        csv_dir=str(tmp_path / "csv"),
+        report_date="2026-09-03",
+    )
+    assert html_with_csv.exists()
+
+    def _sha256(path):
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    assert _sha256(html_without_csv) == _sha256(html_with_csv)
+
+
+def test_growth_parser_accepts_new_flags():
+    import argparse
+
+    from cometx.cli.admin import get_parser_arguments
+
+    parser = argparse.ArgumentParser()
+    get_parser_arguments(parser)
+    args = parser.parse_args(
+        [
+            "growth-report",
+            "--csv-dir",
+            "/tmp/out",
+            "--no-html",
+            "--chargeback-report",
+            "/tmp/cb.json",
+        ]
+    )
+    assert args.csv_dir == "/tmp/out"
+    assert args.no_html is True
+    assert args.chargeback_report == "/tmp/cb.json"
+
+
+def test_growth_report_flags_default_to_current_behavior():
+    import argparse
+
+    from cometx.cli.admin import get_parser_arguments
+
+    parser = argparse.ArgumentParser()
+    get_parser_arguments(parser)
+    args = parser.parse_args(["growth-report"])
+    assert args.csv_dir is None
+    assert args.no_html is False
+    assert args.chargeback_report is None

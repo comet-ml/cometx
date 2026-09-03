@@ -487,6 +487,9 @@ Examples:
     cometx admin growth-report workspace1 workspace2 --units week
     cometx admin growth-report my-workspace --window 30d
     cometx admin growth-report my-workspace --output report.html --no-open
+    cometx admin growth-report --csv-dir ./out
+    cometx admin growth-report --csv-dir ./out --no-html
+    cometx admin growth-report --chargeback-report report.json --csv-dir ./out
 """
     growth_parser = subparsers.add_parser(
         "growth-report",
@@ -558,6 +561,31 @@ Examples:
         help="Don't automatically open the generated HTML file",
         default=False,
         action="store_true",
+    )
+    growth_parser.add_argument(
+        "--csv-dir",
+        default=None,
+        help=(
+            "Also write Glue-ready CSV fact tables (growth_users.csv, "
+            "growth_workspaces.csv, growth_org_kpis.csv) into this directory"
+        ),
+        type=str,
+    )
+    growth_parser.add_argument(
+        "--no-html",
+        help="Skip the HTML report (use with --csv-dir for CSV-only output)",
+        default=False,
+        action="store_true",
+    )
+    growth_parser.add_argument(
+        "--chargeback-report",
+        default=None,
+        help=(
+            "Read the chargeback report from a local JSON file instead of "
+            "calling the admin API (as saved by `cometx admin "
+            "chargeback-report`)"
+        ),
+        type=str,
     )
 
 
@@ -825,6 +853,22 @@ def admin(parsed_args, remaining=None):
                     return
         elif parsed_args.ACTION == "growth-report":
             try:
+                preloaded = None
+                if parsed_args.chargeback_report:
+                    try:
+                        with open(parsed_args.chargeback_report) as fp:
+                            preloaded = json.load(fp)
+                    except (OSError, ValueError) as exc:
+                        # Distinct from the "needs an admin key" message: this
+                        # is a bad local file, not an auth or endpoint problem.
+                        print(
+                            "ERROR: could not read --chargeback-report %r: %s"
+                            % (parsed_args.chargeback_report, exc)
+                        )
+                        sys.exit(1)
+                if parsed_args.no_html and not parsed_args.csv_dir:
+                    print("ERROR: --no-html requires --csv-dir (nothing to write).")
+                    sys.exit(1)
                 generate_growth_report(
                     api,
                     parsed_args.WORKSPACE,
@@ -836,6 +880,9 @@ def admin(parsed_args, remaining=None):
                     leaderboard_top_n=parsed_args.leaderboard_top_n,
                     exclude_personal=parsed_args.exclude_personal,
                     personal_pattern=parsed_args.personal_pattern,
+                    csv_dir=parsed_args.csv_dir,
+                    no_html=parsed_args.no_html,
+                    chargeback=preloaded,
                 )
             except GrowthReportError as e:
                 print("ERROR: " + str(e))
