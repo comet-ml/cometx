@@ -271,6 +271,20 @@ answerable from `growth_users.csv` alone** — there is no user↔workspace link
 in this export. Exact per-workspace totals (`member_count`, `num_projects`,
 `num_experiments`, `data_mb`) live in `growth_workspaces.csv` instead.
 
+#### Caveat: `total_users` and the users table count different things
+
+The `total_users` KPI in `growth_org_kpis.csv` will not always equal the number
+of data rows in `growth_users.csv`. This is intentional — the two answer
+different questions. `total_users` is a licensing/adoption metric and **excludes
+suspended accounts** (it is the denominator behind `active_users_pct`, which
+measures how many of the seats you are paying for are actually in use), while
+`growth_users.csv` is a per-user fact table with **one row per non-deleted
+user**, suspended accounts included. For an organization with suspended or
+deleted accounts the two numbers therefore differ. Because the users table
+carries `is_suspended`, a dashboard can reproduce either definition from the row
+data — `COUNT(*)` for non-deleted users, or `COUNT(*) FILTER (WHERE
+is_suspended = 0)` to match `total_users`.
+
 #### Examples
 
 ```shell
