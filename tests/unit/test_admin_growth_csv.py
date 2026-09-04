@@ -655,6 +655,27 @@ def test_real_world_floats_round_trip_exactly():
         assert float(_num_or_empty(value)) == value
 
 
+def test_no_float_is_quantized():
+    """Avoiding scientific notation must not cost precision. A fixed format
+    like `%.6f` would render 0.1234567 as 0.123457 -- trading a silent NULL
+    in Athena for a silently wrong number, which is worse."""
+    from cometx.cli.admin_growth_csv import _num_or_empty
+
+    for value in (
+        0.1234567,
+        1.23456789,
+        1 / 3,
+        0.1 + 0.2,
+        1e-7,
+        1e-5,
+        1.5e16,
+        123456789012345.6,
+    ):
+        rendered = str(_num_or_empty(value))
+        assert "e" not in rendered.lower(), (value, rendered)
+        assert float(rendered) == value, (value, rendered)
+
+
 def test_non_finite_floats_become_empty_not_garbage():
     """`nan`/`inf` have no honest CSV representation; emitting the literal
     text would make Glue type the column as a string."""

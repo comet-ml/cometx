@@ -15,6 +15,7 @@ Callers pass already-parsed records in.
 
 import csv
 import datetime
+import decimal
 import os
 
 from cometx.cli.admin_growth_users import _looks_like_service_account
@@ -82,25 +83,33 @@ def _num_or_empty(value):
     different things: chargeback omits `opikSpanCount` for deployments without
     Opik, which is not the same as a user with zero spans.
 
-    Floats are formatted explicitly because Python's default repr switches to
+    Floats need explicit handling because Python's default repr switches to
     scientific notation outside roughly 1e-5 .. 1e16 (`0.00001` -> `1e-05`),
     and Athena's CSV SerDe does not parse that form as a double -- the value
-    silently becomes NULL in the dashboard. Both bounds are reachable here: a
-    near-empty workspace can report a tiny `data_mb`. `repr` is kept for ints
-    (arbitrary precision, never exponential) and for anything non-numeric.
+    silently becomes NULL in the dashboard. The low bound is reachable here: a
+    near-empty workspace can report a tiny `data_mb`.
+
+    `repr` is used whenever it does NOT produce an exponent, because it is the
+    shortest string that round-trips to the identical float -- a fixed
+    precision like `%.6f` would quantize ordinary values (0.1234567 ->
+    0.123457), trading one silent corruption for another. Only when repr goes
+    exponential do we expand to positional decimal, via `Decimal`, which is
+    exact rather than rounded. Ints pass through untouched: arbitrary
+    precision, never exponential.
     """
     if value is None:
         return ""
     if isinstance(value, float):
-        # 'f' never uses exponent form; normalize -0.0 and trim the trailing
-        # zeros it pads with, leaving at least one decimal place.
+        # NaN/inf have no honest CSV representation, and emitting the literal
+        # text would force Glue to type the whole column as `string`.
         if value != value or value in (float("inf"), float("-inf")):
-            return ""  # NaN/inf have no honest CSV representation
-        text = "%.6f" % value
-        text = text.rstrip("0")
-        if text.endswith("."):
-            text += "0"
-        return "0.0" if text in ("-0.0", "-0.") else text
+            return ""
+        text = repr(value)
+        if "e" in text or "E" in text:
+            # Exact positional expansion -- `Decimal(float)` is lossless, and
+            # normalize()/format 'f' avoids reintroducing an exponent.
+            text = format(decimal.Decimal(value).normalize(), "f")
+        return "0.0" if text == "-0.0" else text
     return value
 
 
