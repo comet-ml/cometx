@@ -2,8 +2,17 @@
 # -*- coding: utf-8 -*-
 """Unit tests for cometx.cli.admin_growth_csv (Glue-ready CSV fact tables)."""
 
+import os.path
+
+import cometx
+
 NOW = 1_720_000_000_000  # fixed ms; ~2024-07-03 UTC
 DATE = "2026-09-03"
+
+# Directory containing the `cometx` package -- i.e. the repo root for a
+# source checkout. Derived from the imported package rather than hardcoded
+# so it stays correct regardless of where pytest is invoked from.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(cometx.__file__)))
 
 
 def _users():
@@ -458,6 +467,11 @@ def test_non_ascii_username_survives_a_c_locale_process(tmp_path):
             "PYTHONCOERCECLOCALE": "0",
             "PYTHONUTF8": "0",
             "PYTHONIOENCODING": "utf-8",  # so a traceback can still be printed
+            # Running a script BY PATH sets sys.path[0] to the script's own
+            # directory (tmp_path), not the CWD, so `import cometx` would fail
+            # on a checkout without an editable install (as on CI). Point at
+            # the repo root explicitly rather than relying on install mode.
+            "PYTHONPATH": _REPO_ROOT + os.pathsep + env.get("PYTHONPATH", ""),
         }
     )
     proc = subprocess.run(
