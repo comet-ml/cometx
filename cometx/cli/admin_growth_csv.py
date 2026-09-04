@@ -76,13 +76,32 @@ def _ms_to_date(ms) -> str:
 
 
 def _num_or_empty(value):
-    """Pass numbers through unformatted; `None` becomes an empty field.
+    """Render a number in plain decimal; `None` becomes an empty field.
 
     `None` is preserved as empty rather than coerced to 0 because the two mean
     different things: chargeback omits `opikSpanCount` for deployments without
     Opik, which is not the same as a user with zero spans.
+
+    Floats are formatted explicitly because Python's default repr switches to
+    scientific notation outside roughly 1e-5 .. 1e16 (`0.00001` -> `1e-05`),
+    and Athena's CSV SerDe does not parse that form as a double -- the value
+    silently becomes NULL in the dashboard. Both bounds are reachable here: a
+    near-empty workspace can report a tiny `data_mb`. `repr` is kept for ints
+    (arbitrary precision, never exponential) and for anything non-numeric.
     """
-    return "" if value is None else value
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        # 'f' never uses exponent form; normalize -0.0 and trim the trailing
+        # zeros it pads with, leaving at least one decimal place.
+        if value != value or value in (float("inf"), float("-inf")):
+            return ""  # NaN/inf have no honest CSV representation
+        text = "%.6f" % value
+        text = text.rstrip("0")
+        if text.endswith("."):
+            text += "0"
+        return "0.0" if text in ("-0.0", "-0.") else text
+    return value
 
 
 def _str_or_empty(value):

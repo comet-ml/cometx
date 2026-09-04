@@ -124,7 +124,8 @@ def test_numbers_are_plain_no_separators_or_percent():
     rows = build_users_rows(_users(), DATE)
     alice = dict(zip(USERS_HEADER, rows[0]))
     assert alice["experiment_count"] == 1240
-    assert alice["data_logged_mb"] == 8320.5
+    # floats render as plain decimal strings (never scientific notation)
+    assert float(alice["data_logged_mb"]) == 8320.5
     for value in alice.values():
         assert "," not in str(value)
         assert "%" not in str(value)
@@ -194,7 +195,9 @@ def test_workspaces_header_and_rows():
         )
     ]
     rows = build_workspaces_rows(ws, DATE)
-    assert rows == [[DATE, "research", 2, 24, 2130, 12422.75]]
+    # data_mb renders as a plain decimal string (never scientific notation)
+    assert rows[0][:5] == [DATE, "research", 2, 24, 2130]
+    assert float(rows[0][5]) == 12422.75
 
 
 def test_org_kpi_rows_are_long_format():
@@ -240,11 +243,14 @@ def test_label_metrics_keep_metric_value_numeric():
     assert value == ""  # nothing non-numeric in metric_value
     assert unit == "label"
     assert text == "heuristic"
-    # every other metric must leave metric_text empty
+    # Every other metric leaves metric_text empty and keeps metric_value
+    # numeric-parseable (floats are rendered as plain decimal strings, so
+    # check the VALUE parses as a number rather than its Python type).
     for name, (val, _u, txt) in by_name.items():
         if name != "service_account_source":
             assert txt == "", name
-            assert not isinstance(val, str) or val == "", name
+            if val != "":
+                float(val)  # raises if a non-numeric leaked into metric_value
 
 
 def test_empty_input_yields_no_rows():
@@ -288,12 +294,15 @@ def test_collect_org_kpis_emits_expected_metrics():
 
     assert by_name["total_users"] == (2, "count")
     assert by_name["active_users_60d"] == (1, "count")
-    assert by_name["active_users_pct"] == (50.0, "percent")
+    # floats render as plain decimal strings for Glue; compare numerically
+    assert float(by_name["active_users_pct"][0]) == 50.0
+    assert by_name["active_users_pct"][1] == "percent"
     assert by_name["new_users_in_window"] == (1, "count")
     assert by_name["total_workspaces"] == (1, "count")
     assert by_name["total_projects"] == (24, "count")
     assert by_name["total_experiments"] == (2130, "count")
-    assert by_name["total_data_mb"] == (12422.75, "megabytes")
+    assert float(by_name["total_data_mb"][0]) == 12422.75
+    assert by_name["total_data_mb"][1] == "megabytes"
     assert by_name["personal_experiments"] == (100, "count")
     assert by_name["service_experiments"] == (900, "count")
     # provenance rides in metric_text so metric_value stays numeric
@@ -623,3 +632,43 @@ def test_users_in_table_holds_when_a_user_is_both_deleted_and_suspended():
     suspended_live = sum(1 for u in users if u.suspended and u.deleted_at is None)
     broken = kpis["total_users"] - kpis["deleted_users"] + suspended_live
     assert broken != len(rows)
+
+
+def test_floats_never_use_scientific_notation():
+    """Athena's CSV SerDe does not parse `1e-05` / `1e+20` as a double -- the
+    value silently becomes NULL in the dashboard. Python's default repr flips
+    to exponent form outside roughly 1e-5..1e16, and the low end is reachable
+    (a near-empty workspace reporting a tiny data_mb)."""
+    from cometx.cli.admin_growth_csv import _num_or_empty
+
+    for value in (1e-5, 1e-7, 1e16, 1e20, 1.5e16):
+        rendered = str(_num_or_empty(value))
+        assert "e" not in rendered.lower(), (value, rendered)
+
+
+def test_real_world_floats_round_trip_exactly():
+    """Values of the magnitude actually seen in chargeback must not be
+    reformatted or lose precision."""
+    from cometx.cli.admin_growth_csv import _num_or_empty
+
+    for value in (20545.68, 88834.25, 71200.75, 12422.75, 0.0, 118.5):
+        assert float(_num_or_empty(value)) == value
+
+
+def test_non_finite_floats_become_empty_not_garbage():
+    """`nan`/`inf` have no honest CSV representation; emitting the literal
+    text would make Glue type the column as a string."""
+    from cometx.cli.admin_growth_csv import _num_or_empty
+
+    assert _num_or_empty(float("nan")) == ""
+    assert _num_or_empty(float("inf")) == ""
+    assert _num_or_empty(float("-inf")) == ""
+
+
+def test_integers_pass_through_unformatted():
+    """Ints have arbitrary precision and never go exponential; leave them be."""
+    from cometx.cli.admin_growth_csv import _num_or_empty
+
+    assert _num_or_empty(42) == 42
+    assert _num_or_empty(0) == 0
+    assert _num_or_empty(388400) == 388400
