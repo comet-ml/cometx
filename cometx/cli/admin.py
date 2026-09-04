@@ -879,7 +879,13 @@ def admin(parsed_args, remaining=None):
                 preloaded = None
                 if parsed_args.chargeback_report:
                     try:
-                        with open(parsed_args.chargeback_report) as fp:
+                        # Explicit utf-8, matching what the CSV export writes:
+                        # a snapshot with non-ASCII usernames or workspace
+                        # names would otherwise fail to load under a non-UTF-8
+                        # locale (LANG=C on a cron/systemd box).
+                        with open(
+                            parsed_args.chargeback_report, encoding="utf-8"
+                        ) as fp:
                             preloaded = json.load(fp)
                     except (OSError, ValueError) as exc:
                         # Distinct from the "needs an admin key" message: this

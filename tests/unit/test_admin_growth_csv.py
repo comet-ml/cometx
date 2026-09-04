@@ -205,9 +205,46 @@ def test_org_kpi_rows_are_long_format():
         "metric_name",
         "metric_value",
         "metric_unit",
+        "metric_text",
     ]
+    # A 3-tuple still works; metric_text defaults to empty.
     rows = build_org_kpi_rows([("total_users", 6, "count")], DATE)
-    assert rows == [[DATE, "total_users", 6, "count"]]
+    assert rows == [[DATE, "total_users", 6, "count", ""]]
+    # A 4-tuple carries its text payload through.
+    rows = build_org_kpi_rows(
+        [("service_account_source", "", "label", "admin_api")], DATE
+    )
+    assert rows == [[DATE, "service_account_source", "", "label", "admin_api"]]
+
+
+def test_label_metrics_keep_metric_value_numeric():
+    """A single string in `metric_value` would make a Glue crawler type the
+    whole column as `string`, forcing a cast on every SUM/AVG in QuickSight.
+    Non-numeric payloads belong in `metric_text`."""
+    from cometx.cli.admin_growth_csv import collect_org_kpis
+
+    kpis = collect_org_kpis(
+        users=[],
+        ws_records=[],
+        stats=None,
+        growth=None,
+        split={
+            "personal": {"experiments": 1, "data": 1.0, "spans": 1},
+            "service": {"experiments": 0, "data": 0, "spans": 0},
+            "source": "heuristic",
+        },
+        active_window_days=60,
+    )
+    by_name = {name: (value, unit, text) for name, value, unit, text in kpis}
+    value, unit, text = by_name["service_account_source"]
+    assert value == ""  # nothing non-numeric in metric_value
+    assert unit == "label"
+    assert text == "heuristic"
+    # every other metric must leave metric_text empty
+    for name, (val, _u, txt) in by_name.items():
+        if name != "service_account_source":
+            assert txt == "", name
+            assert not isinstance(val, str) or val == "", name
 
 
 def test_empty_input_yields_no_rows():
@@ -247,7 +284,7 @@ def test_collect_org_kpis_emits_expected_metrics():
         },
         active_window_days=60,
     )
-    by_name = {name: (value, unit) for name, value, unit in kpis}
+    by_name = {name: (value, unit) for name, value, unit, _text in kpis}
 
     assert by_name["total_users"] == (2, "count")
     assert by_name["active_users_60d"] == (1, "count")
@@ -259,7 +296,10 @@ def test_collect_org_kpis_emits_expected_metrics():
     assert by_name["total_data_mb"] == (12422.75, "megabytes")
     assert by_name["personal_experiments"] == (100, "count")
     assert by_name["service_experiments"] == (900, "count")
-    assert by_name["service_account_source"] == ("admin_api", "label")
+    # provenance rides in metric_text so metric_value stays numeric
+    assert by_name["service_account_source"] == ("", "label")
+    text_by_name = {name: text for name, _v, _u, text in kpis}
+    assert text_by_name["service_account_source"] == "admin_api"
 
 
 def test_collect_org_kpis_tolerates_missing_sections():
@@ -275,7 +315,7 @@ def test_collect_org_kpis_tolerates_missing_sections():
         split=None,
         active_window_days=60,
     )
-    by_name = {name: value for name, value, _unit in kpis}
+    by_name = {name: value for name, value, _unit, _text in kpis}
     assert by_name["total_workspaces"] == 0
     assert "total_users" not in by_name
 
@@ -513,22 +553,17 @@ def test_deleted_users_kpi_counts_the_excluded_rows():
         split=None,
         active_window_days=60,
     )
-    by_name = {name: value for name, value, _unit in kpis}
+    by_name = {name: value for name, value, _unit, _text in kpis}
     assert by_name["deleted_users"] == 1
 
 
-def test_user_counts_reconcile_across_the_two_files():
-    """The identity a dashboard needs: total_users (excludes suspended) minus
-    deleted, plus suspended back, equals the users-table row count. This is the
-    27-user discrepancy observed against a real deployment."""
-    from cometx.cli.admin_growth_csv import build_users_rows, collect_org_kpis
+def _kpis_for(users):
+    from cometx.cli.admin_growth_csv import collect_org_kpis
 
-    users = _users()  # 3 records: 1 plain, 1 suspended, 1 deleted
     non_suspended = [u for u in users if not u.suspended]
-
-    kpis = dict(
-        (name, value)
-        for name, value, _unit in collect_org_kpis(
+    return {
+        name: value
+        for name, value, _unit, _text in collect_org_kpis(
             users=users,
             ws_records=[],
             stats={"total": len(non_suspended), "active": 1, "adoption_pct": 50.0},
@@ -536,8 +571,55 @@ def test_user_counts_reconcile_across_the_two_files():
             split=None,
             active_window_days=60,
         )
-    )
-    rows = build_users_rows(users, DATE)
-    suspended = sum(1 for u in users if u.suspended and u.deleted_at is None)
+    }
 
-    assert kpis["total_users"] - kpis["deleted_users"] + suspended == len(rows)
+
+def test_users_in_table_kpi_equals_the_row_count():
+    """`users_in_table` is published directly so a dashboard never has to
+    derive the row count from the other metrics."""
+    from cometx.cli.admin_growth_csv import build_users_rows
+
+    users = _users()  # 1 plain, 1 suspended, 1 deleted
+    assert _kpis_for(users)["users_in_table"] == len(build_users_rows(users, DATE))
+
+
+def test_users_in_table_holds_when_a_user_is_both_deleted_and_suspended():
+    """Regression: the arithmetic identity
+    `total_users - deleted_users + suspended` UNDERCOUNTS when a user carries
+    both flags -- they are absent from total_users (suspended) *and* counted in
+    deleted_users (deleted), so subtracting removes them twice. The published
+    `users_in_table` metric must stay correct regardless."""
+    from cometx.cli.admin_growth_csv import build_users_rows
+    from cometx.cli.admin_growth_users import UserRecord
+
+    def _u(name, suspended=False, deleted_at=None):
+        return UserRecord(
+            username=name,
+            email=name + "@x.com",
+            created_at=NOW - 100,
+            deleted_at=deleted_at,
+            suspended=suspended,
+            last_used_at=NOW,
+            experiment_count=1,
+            data_logged_mb=1.0,
+            opik_span_count=1,
+            workspaces=[],
+        )
+
+    users = [
+        _u("live"),
+        _u("suspended", suspended=True),
+        _u("deleted", deleted_at=NOW),
+        _u("deleted_and_suspended", suspended=True, deleted_at=NOW),
+    ]
+    kpis = _kpis_for(users)
+    rows = build_users_rows(users, DATE)
+
+    assert len(rows) == 2  # live + suspended
+    assert kpis["users_in_table"] == len(rows)
+
+    # Demonstrate the old identity is genuinely wrong here, so nobody
+    # reintroduces it as "simpler".
+    suspended_live = sum(1 for u in users if u.suspended and u.deleted_at is None)
+    broken = kpis["total_users"] - kpis["deleted_users"] + suspended_live
+    assert broken != len(rows)

@@ -51,8 +51,14 @@ WORKSPACES_HEADER = [
 ORG_KPIS_HEADER = [
     "report_date",
     "metric_name",
+    # Strictly numeric (or empty). Non-numeric metrics carry their payload in
+    # `metric_text` instead -- a single string here would make a Glue crawler
+    # type the whole column as `string`, forcing a cast on every aggregation.
     "metric_value",
     "metric_unit",
+    # Populated only for `label`-unit metrics (e.g. service_account_source);
+    # empty on every numeric metric.
+    "metric_text",
 ]
 
 
@@ -77,6 +83,11 @@ def _num_or_empty(value):
     Opik, which is not the same as a user with zero spans.
     """
     return "" if value is None else value
+
+
+def _str_or_empty(value):
+    """Render a text payload, mapping `None` to an empty field."""
+    return "" if value is None else str(value)
 
 
 def build_users_rows(users, report_date, service_account_names=None):
@@ -147,8 +158,16 @@ def build_org_kpi_rows(kpis, report_date):
 
     Long rather than wide so new metrics arrive as new ROWS: the Glue schema
     never changes and existing partitions stay readable.
+
+    Accepts `(name, value, unit)` or `(name, value, unit, text)`; the text
+    field defaults to empty so callers holding 3-tuples keep working.
     """
-    return [[report_date, name, value, unit] for name, value, unit in kpis]
+    rows = []
+    for entry in kpis:
+        name, value, unit = entry[0], entry[1], entry[2]
+        text = entry[3] if len(entry) > 3 else ""
+        rows.append([report_date, name, value, unit, text])
+    return rows
 
 
 USERS_FILENAME = "growth_users.csv"
@@ -174,12 +193,24 @@ def collect_org_kpis(users, ws_records, stats, growth, split, active_window_days
 
     # Emitted unconditionally (not gated on `stats`) so the users table always
     # has something to reconcile against. `total_users` excludes SUSPENDED
-    # users while the users table excludes DELETED ones, so the two counts
-    # differ; this metric makes that difference explicit rather than leaving a
-    # dashboard with two tiles that silently disagree:
-    #   total_users - deleted_users + suspended == users-table row count
+    # users while the users table excludes DELETED ones, so the two disagree
+    # for any org with either.
+    #
+    # `users_in_table` is emitted as its own metric rather than left to be
+    # derived: an arithmetic identity over the other counts is wrong whenever a
+    # user is BOTH deleted and suspended, because such a user is absent from
+    # `total_users` (suspended) AND counted in `deleted_users` (deleted), so
+    # subtracting one from the other removes them twice. Publishing the row
+    # count directly means a dashboard never has to reconstruct it.
     kpis.append(
         ("deleted_users", sum(1 for u in users if u.deleted_at is not None), "count")
+    )
+    kpis.append(
+        (
+            "users_in_table",
+            sum(1 for u in users if u.deleted_at is None),
+            "count",
+        )
     )
 
     if growth is not None:
@@ -201,10 +232,20 @@ def collect_org_kpis(users, ws_records, stats, growth, split, active_window_days
             kpis.append(("%s_spans" % bucket, totals.get("spans"), "count"))
         # Surface HOW the split was derived: the admin endpoint is optional and
         # silently falls back to a regex heuristic, which the dashboard should
-        # be able to distinguish.
-        kpis.append(("service_account_source", split.get("source"), "label"))
+        # be able to distinguish. Carried in `metric_text`, NOT `metric_value`
+        # -- a single string in an otherwise-numeric column makes a Glue
+        # crawler type the whole column as `string`, and every SUM/AVG in
+        # QuickSight then needs a cast.
+        kpis.append(("service_account_source", None, "label", split.get("source")))
 
-    return [(name, _num_or_empty(value), unit) for name, value, unit in kpis]
+    # Normalize to 4-tuples: most metrics carry no text, so they are appended
+    # above as 3-tuples and padded here.
+    normalized = []
+    for entry in kpis:
+        name, value, unit = entry[0], entry[1], entry[2]
+        text = entry[3] if len(entry) > 3 else None
+        normalized.append((name, _num_or_empty(value), unit, _str_or_empty(text)))
+    return normalized
 
 
 def _write_csv(path, header, rows):

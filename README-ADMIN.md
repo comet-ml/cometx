@@ -158,7 +158,7 @@ report is scoped to just those workspaces.
 - **`--no-open`**: Don't automatically open the generated HTML file after generation.
 - **`--csv-dir DIR`**: Also write Glue-ready CSV fact tables (`growth_users.csv`, `growth_workspaces.csv`, `growth_org_kpis.csv`) into `DIR`. `DIR` is created if it doesn't exist.
 - **`--no-html`**: Skip the HTML report. Requires `--csv-dir` (otherwise there is nothing to write, and the command errors out).
-- **`--chargeback-report FILE`**: Read the chargeback report from a local JSON file (as saved by `cometx admin chargeback-report`) instead of calling the admin API. Useful for CSV-only pipelines that already have a saved chargeback snapshot, or for re-running without another API call.
+- **`--chargeback-report FILE`**: Read the chargeback report from a local JSON file (as saved by `cometx admin chargeback-report`) instead of calling the chargeback endpoint. Useful for CSV-only pipelines that already have a saved snapshot, or for re-running without re-fetching it. Note this skips the *chargeback* request only — the report still queries `/api/admin/service-accounts` to classify accounts, and falls back to a name-pattern heuristic if that request fails (`service_account_source` records which was used).
 
 ### The two time concepts
 
@@ -219,7 +219,7 @@ numeric/date types instead of typing everything as `string`.
 
 - **`--csv-dir DIR`**: Write the CSV files into `DIR` (created if missing). Can be combined with the normal HTML output, or with `--no-html` for CSV-only runs.
 - **`--no-html`**: Skip the HTML report entirely. Requires `--csv-dir` — with neither, there is nothing to write and the command exits with an error.
-- **`--chargeback-report FILE`**: Read a previously saved chargeback JSON file (from `cometx admin chargeback-report`) instead of calling the admin API. Combine with `--csv-dir` to regenerate CSVs from a snapshot without another API round-trip.
+- **`--chargeback-report FILE`**: Read a previously saved chargeback JSON file (from `cometx admin chargeback-report`) instead of re-fetching it. Combine with `--csv-dir` to regenerate CSVs from a snapshot. This skips the chargeback request only — `/api/admin/service-accounts` is still queried to classify accounts (see `service_account_source`), so it is not a fully offline mode.
 
 #### Files written
 
@@ -237,7 +237,9 @@ Use the `deleted_users` KPI to see how many were excluded.
 
 **`growth_workspaces.csv`**: `report_date, workspace, member_count, num_projects, num_experiments, data_mb`
 
-**`growth_org_kpis.csv`**: `report_date, metric_name, metric_value, metric_unit` — long format so new metrics arrive as new rows without ever changing the Glue schema. `metric_unit` is one of `count`, `percent`, `megabytes`, `label`.
+**`growth_org_kpis.csv`**: `report_date, metric_name, metric_value, metric_unit, metric_text` — long format so new metrics arrive as new rows without ever changing the Glue schema. `metric_unit` is one of `count`, `percent`, `megabytes`, `label`.
+
+`metric_value` is strictly numeric (or empty), so Glue types it as a number and QuickSight can aggregate it without casts. Metrics whose payload is text — currently only `service_account_source`, with unit `label` — leave `metric_value` empty and carry their value in `metric_text`, which is empty for every numeric metric.
 
 #### `report_date` convention
 
@@ -289,14 +291,19 @@ carries `is_suspended`, a dashboard can reproduce either definition from the row
 data — `COUNT(*)` for non-deleted users, or `COUNT(*) FILTER (WHERE
 is_suspended = 0)` to match `total_users`.
 
-The `deleted_users` KPI makes the difference explicit, so the two files
-reconcile exactly:
+Two KPIs make this explicit rather than leaving it to be derived:
 
-```
-total_users - deleted_users + suspended = growth_users.csv row count
-```
+- **`users_in_table`** — the exact number of data rows in `growth_users.csv`
+- **`deleted_users`** — how many roster accounts were excluded as deleted
 
-On a real deployment we measured `434 - 27 + 1 = 408`, matching the row count.
+Use `users_in_table` to reconcile; do **not** compute the row count as
+`total_users - deleted_users + suspended`. That arithmetic undercounts whenever
+an account is both deleted *and* suspended, since such an account is missing
+from `total_users` and also counted in `deleted_users`, so subtracting removes
+it twice.
+
+On a real deployment: `total_users` 434, `deleted_users` 27, `users_in_table`
+408.
 
 #### Examples
 
