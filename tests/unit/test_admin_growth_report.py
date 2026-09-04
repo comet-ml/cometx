@@ -1340,3 +1340,246 @@ def test_lb_value_rounds_fractional_metric_and_passes_none():
     assert _lb_value(4.0) == 4
     assert _lb_value(None) is None
     assert _lb_value(9) == 9
+
+
+def _chargeback_fixture():
+    NOW = 1_720_000_000_000
+    return {
+        "workspaces": [
+            {
+                "name": "team-a",
+                "numberOfExperiments": 40,
+                "totalSizeInMb": 100.0,
+                "projects": ["p1", "p2"],
+                "members": [{"userName": "alice"}],
+            }
+        ],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "alice",
+                    "email": "a@x.com",
+                    "createdAt": NOW - 100,
+                    "lastUsedAt": NOW,
+                    "experimentCount": 40,
+                    "dataLoggedMb": 100.0,
+                    "opikSpanCount": 5,
+                    "suspended": False,
+                    "deletedAt": None,
+                }
+            ]
+        },
+    }
+
+
+def test_generate_growth_report_writes_csvs(tmp_path, monkeypatch):
+    import cometx.cli.admin_growth_report as mod
+
+    monkeypatch.setattr(
+        mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    out = tmp_path / "csv"
+    mod.generate_growth_report(
+        MagicMock(),
+        [],
+        csv_dir=str(out),
+        no_html=True,
+        no_open=True,
+        report_date="2026-09-03",
+    )
+    names = sorted(p.name for p in out.iterdir())
+    assert names == [
+        "growth_org_kpis.csv",
+        "growth_users.csv",
+        "growth_workspaces.csv",
+    ]
+
+
+def test_no_html_suppresses_html_output(tmp_path, monkeypatch):
+    import cometx.cli.admin_growth_report as mod
+
+    monkeypatch.setattr(
+        mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    html = tmp_path / "report.html"
+    mod.generate_growth_report(
+        MagicMock(),
+        [],
+        output=str(html),
+        csv_dir=str(tmp_path / "csv"),
+        no_html=True,
+        no_open=True,
+        report_date="2026-09-03",
+    )
+    assert not html.exists()
+
+
+def test_preloaded_chargeback_skips_the_api_call(tmp_path, monkeypatch):
+    import cometx.cli.admin_growth_report as mod
+
+    def _boom(api):
+        raise AssertionError("fetch_chargeback_report must not be called")
+
+    monkeypatch.setattr(mod, "fetch_chargeback_report", _boom)
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    mod.generate_growth_report(
+        MagicMock(),
+        [],
+        chargeback=_chargeback_fixture(),
+        csv_dir=str(tmp_path / "csv"),
+        no_html=True,
+        no_open=True,
+        report_date="2026-09-03",
+    )
+    assert (tmp_path / "csv" / "growth_users.csv").exists()
+
+
+def test_html_still_written_when_csv_dir_absent(tmp_path, monkeypatch):
+    """Existing behavior must be untouched when --csv-dir is not passed.
+
+    The binding constraint is stronger than "the file exists": HTML output
+    must be byte-identical whether or not --csv-dir is passed, since CSV
+    writing is purely additional output. Freeze the clock (GrowthReporter
+    uses it to compute the KPI window) so the two runs can't differ merely
+    by timestamp, and compare SHA-256 hashes.
+    """
+    import hashlib
+
+    import cometx.cli.admin_growth_report as mod
+
+    monkeypatch.setattr(
+        mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    frozen_now = datetime.datetime(2026, 9, 3, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    monkeypatch.setattr(mod.GrowthReporter, "_now", lambda self: frozen_now)
+
+    html_without_csv = tmp_path / "without_csv" / "report.html"
+    html_without_csv.parent.mkdir(parents=True, exist_ok=True)
+    mod.generate_growth_report(
+        MagicMock(), [], output=str(html_without_csv), no_open=True
+    )
+    assert html_without_csv.exists()
+
+    html_with_csv = tmp_path / "with_csv" / "report.html"
+    html_with_csv.parent.mkdir(parents=True, exist_ok=True)
+    mod.generate_growth_report(
+        MagicMock(),
+        [],
+        output=str(html_with_csv),
+        no_open=True,
+        csv_dir=str(tmp_path / "csv"),
+        report_date="2026-09-03",
+    )
+    assert html_with_csv.exists()
+
+    def _sha256(path):
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    assert _sha256(html_without_csv) == _sha256(html_with_csv)
+
+
+def test_growth_parser_accepts_new_flags():
+    import argparse
+
+    from cometx.cli.admin import get_parser_arguments
+
+    parser = argparse.ArgumentParser()
+    get_parser_arguments(parser)
+    args = parser.parse_args(
+        [
+            "growth-report",
+            "--csv-dir",
+            "/tmp/out",
+            "--no-html",
+            "--chargeback-report",
+            "/tmp/cb.json",
+        ]
+    )
+    assert args.csv_dir == "/tmp/out"
+    assert args.no_html is True
+    assert args.chargeback_report == "/tmp/cb.json"
+
+
+def test_growth_report_flags_default_to_current_behavior():
+    import argparse
+
+    from cometx.cli.admin import get_parser_arguments
+
+    parser = argparse.ArgumentParser()
+    get_parser_arguments(parser)
+    args = parser.parse_args(["growth-report"])
+    assert args.csv_dir is None
+    assert args.no_html is False
+    assert args.chargeback_report is None
+
+
+def test_csv_write_failure_exits_nonzero(tmp_path, monkeypatch, capsys):
+    """A CSV write failure must exit non-zero.
+
+    Regression: the generic `except Exception` handler in the growth-report
+    dispatch printed the error and `return`ed, so the process exited 0. Under
+    a monthly scheduler that reports success while shipping nothing -- the
+    worst possible failure shape. `--csv-dir` pointing at an existing FILE is
+    the realistic trigger.
+    """
+    import argparse
+
+    import cometx.cli.admin as admin_mod
+    import cometx.cli.admin_growth_report as report_mod
+
+    monkeypatch.setattr(admin_mod, "API", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(
+        report_mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(report_mod, "_fetch_service_accounts", lambda api: None)
+
+    clash = tmp_path / "not-a-dir"
+    clash.write_text("x")
+
+    parser = argparse.ArgumentParser()
+    admin_mod.get_parser_arguments(parser)
+    args = parser.parse_args(
+        ["growth-report", "--csv-dir", str(clash), "--no-html", "--no-open"]
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        admin_mod.admin(args)
+    assert exc.value.code != 0
+    assert "ERROR" in capsys.readouterr().out
+
+
+def test_exception_text_survives_a_broken_dunder_str():
+    """`comet_ml`'s NotFound.__str__ returns None when the 404 body is not
+    JSON, so `str(exc)` raises TypeError and buries the real HTTP error under
+    a traceback from the error handler itself."""
+    from cometx.cli.admin import _exception_text
+
+    class _Resp:
+        status_code = 404
+
+        def json(self):
+            raise ValueError("not json")
+
+    class _Broken(Exception):
+        response = _Resp()
+
+        def __str__(self):
+            return None
+
+    exc = _Broken()
+    with pytest.raises(TypeError):
+        str(exc)  # the underlying breakage this helper exists to absorb
+    assert _exception_text(exc) == "_Broken (HTTP 404)"
+
+
+def test_exception_text_passes_through_a_normal_message():
+    from cometx.cli.admin import _exception_text
+
+    assert _exception_text(ValueError("boom")) == "boom"
