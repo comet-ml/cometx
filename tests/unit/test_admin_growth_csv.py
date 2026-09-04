@@ -80,6 +80,7 @@ def test_users_header_is_exact_and_ordered():
         "experiment_count",
         "data_logged_mb",
         "opik_span_count",
+        "deleted_at",
     ]
 
 
@@ -485,3 +486,58 @@ def test_non_ascii_username_survives_a_c_locale_process(tmp_path):
     with open(out / "growth_users.csv", newline="", encoding="utf-8") as fp:
         rows = list(_csv.DictReader(fp))
     assert [r["username"] for r in rows] == ["josé.álvarez"]
+
+
+def test_deleted_at_column_is_last_and_empty_for_emitted_rows():
+    """`deleted_at` is exposed so the column is present and typed for Glue,
+    but deleted users are still filtered out -- so it is always empty on the
+    rows we actually emit. Appended last, per the stable-column-order rule."""
+    from cometx.cli.admin_growth_csv import USERS_HEADER, build_users_rows
+
+    assert USERS_HEADER[-1] == "deleted_at"
+
+    rows = build_users_rows(_users(), DATE)
+    by_name = {r[1]: dict(zip(USERS_HEADER, r)) for r in rows}
+    assert "dave" not in by_name  # still excluded (deleted_at was set)
+    assert all(r["deleted_at"] == "" for r in by_name.values())
+
+
+def test_deleted_users_kpi_counts_the_excluded_rows():
+    from cometx.cli.admin_growth_csv import collect_org_kpis
+
+    kpis = collect_org_kpis(
+        users=_users(),  # alice, carol (suspended), dave (deleted)
+        ws_records=[],
+        stats={"total": 2, "active": 1, "adoption_pct": 50.0},
+        growth=None,
+        split=None,
+        active_window_days=60,
+    )
+    by_name = {name: value for name, value, _unit in kpis}
+    assert by_name["deleted_users"] == 1
+
+
+def test_user_counts_reconcile_across_the_two_files():
+    """The identity a dashboard needs: total_users (excludes suspended) minus
+    deleted, plus suspended back, equals the users-table row count. This is the
+    27-user discrepancy observed against a real deployment."""
+    from cometx.cli.admin_growth_csv import build_users_rows, collect_org_kpis
+
+    users = _users()  # 3 records: 1 plain, 1 suspended, 1 deleted
+    non_suspended = [u for u in users if not u.suspended]
+
+    kpis = dict(
+        (name, value)
+        for name, value, _unit in collect_org_kpis(
+            users=users,
+            ws_records=[],
+            stats={"total": len(non_suspended), "active": 1, "adoption_pct": 50.0},
+            growth=None,
+            split=None,
+            active_window_days=60,
+        )
+    )
+    rows = build_users_rows(users, DATE)
+    suspended = sum(1 for u in users if u.suspended and u.deleted_at is None)
+
+    assert kpis["total_users"] - kpis["deleted_users"] + suspended == len(rows)

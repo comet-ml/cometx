@@ -229,7 +229,11 @@ numeric/date types instead of typing everything as `string`.
 | `growth_workspaces.csv` | one row per workspace |
 | `growth_org_kpis.csv` | one row per org-level metric (long format) |
 
-**`growth_users.csv`**: `report_date, username, email, created_at, last_used_at, em_last_used_at, opik_last_used_at, is_suspended, is_service_account, experiment_count, data_logged_mb, opik_span_count`
+**`growth_users.csv`**: `report_date, username, email, created_at, last_used_at, em_last_used_at, opik_last_used_at, is_suspended, is_service_account, experiment_count, data_logged_mb, opik_span_count, deleted_at`
+
+`deleted_at` is always empty on emitted rows — deleted users are excluded from
+this table. The column exists so it is present and typed for a Glue crawler.
+Use the `deleted_users` KPI to see how many were excluded.
 
 **`growth_workspaces.csv`**: `report_date, workspace, member_count, num_projects, num_experiments, data_mb`
 
@@ -284,6 +288,15 @@ deleted accounts the two numbers therefore differ. Because the users table
 carries `is_suspended`, a dashboard can reproduce either definition from the row
 data — `COUNT(*)` for non-deleted users, or `COUNT(*) FILTER (WHERE
 is_suspended = 0)` to match `total_users`.
+
+The `deleted_users` KPI makes the difference explicit, so the two files
+reconcile exactly:
+
+```
+total_users - deleted_users + suspended = growth_users.csv row count
+```
+
+On a real deployment we measured `434 - 27 + 1 = 408`, matching the row count.
 
 #### Examples
 

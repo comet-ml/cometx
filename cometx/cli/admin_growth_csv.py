@@ -32,6 +32,11 @@ USERS_HEADER = [
     "experiment_count",
     "data_logged_mb",
     "opik_span_count",
+    # Always empty on emitted rows -- deleted users are filtered out (see
+    # `build_users_rows`). Present so the column is typed for Glue and so the
+    # schema need not change if that policy is ever revisited. Appended last,
+    # per the stable-column-order rule.
+    "deleted_at",
 ]
 
 WORKSPACES_HEADER = [
@@ -116,6 +121,7 @@ def build_users_rows(users, report_date, service_account_names=None):
                 _num_or_empty(user.experiment_count),
                 _num_or_empty(user.data_logged_mb),
                 _num_or_empty(user.opik_span_count),
+                _ms_to_date(user.deleted_at),
             ]
         )
     return rows
@@ -165,6 +171,16 @@ def collect_org_kpis(users, ws_records, stats, growth, split, active_window_days
             ("active_users_%dd" % active_window_days, stats.get("active"), "count")
         )
         kpis.append(("active_users_pct", stats.get("adoption_pct"), "percent"))
+
+    # Emitted unconditionally (not gated on `stats`) so the users table always
+    # has something to reconcile against. `total_users` excludes SUSPENDED
+    # users while the users table excludes DELETED ones, so the two counts
+    # differ; this metric makes that difference explicit rather than leaving a
+    # dashboard with two tiles that silently disagree:
+    #   total_users - deleted_users + suspended == users-table row count
+    kpis.append(
+        ("deleted_users", sum(1 for u in users if u.deleted_at is not None), "count")
+    )
 
     if growth is not None:
         kpis.append(("new_users_in_window", growth.get("new_in"), "count"))
