@@ -21,6 +21,8 @@ from xml.sax.saxutils import escape
 
 import matplotlib.pyplot as plt
 from comet_ml import API
+
+from .admin_utils import get_distinct_colors, save_chart
 from comet_ml.query import Metadata
 from PIL import Image
 from reportlab.lib import colors
@@ -41,8 +43,6 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 from rich.table import Table
-
-from .admin_utils import get_distinct_colors, save_chart
 
 # Suppress matplotlib warnings about non-GUI backend
 warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")

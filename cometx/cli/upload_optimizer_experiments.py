@@ -249,7 +249,7 @@ class Uploader:
                         filename = os.path.join(self.path, (experiment_key + ".zip"))
 
                     # Upload experiment
-                    url, uploaded_id = self.upload_experiment(filename)
+                    (url, uploaded_id) = self.upload_experiment(filename)
 
                     # Update status with uploaded_id and url
                     self.progress_ui.update_worker_status(

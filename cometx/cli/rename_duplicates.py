@@ -165,7 +165,9 @@ def rename_duplicates(parsed_args):
         # Get workspaces to process
         all_workspaces = api.get_workspaces()
         if filter_workspace:
-            workspaces_to_process = [w for w in all_workspaces if w == filter_workspace]
+            workspaces_to_process = [
+                w for w in all_workspaces if w == filter_workspace
+            ]
         else:
             workspaces_to_process = all_workspaces
 
@@ -189,7 +191,9 @@ def rename_duplicates(parsed_args):
             # Get projects for this workspace
             all_projects = api.get_projects(workspace)
             if filter_project:
-                projects_to_process = [p for p in all_projects if p == filter_project]
+                projects_to_process = [
+                    p for p in all_projects if p == filter_project
+                ]
             else:
                 projects_to_process = all_projects
 

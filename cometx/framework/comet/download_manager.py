@@ -1264,7 +1264,9 @@ class DownloadManager:
                 path = assets_path
             else:
                 path = os.path.join(assets_path, asset_type)
-            filename = sanitize_filename(asset.get("diskFileName", asset["fileName"]))
+            filename = sanitize_filename(
+                asset.get("diskFileName", asset["fileName"])
+            )
             file_path = os.path.join(path, filename)
             if file_path not in filenames and self._should_write(file_path):
                 filenames.add(file_path)

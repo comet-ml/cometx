@@ -20,7 +20,6 @@ $ cometx config --auto-log-notebook yes
 $ cometx config --auto-log-notebook no
 
 """
-
 import argparse
 import os
 import shutil
