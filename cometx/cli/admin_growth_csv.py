@@ -167,15 +167,22 @@ def build_users_rows(users, report_date, service_account_names=None):
 
 
 def build_workspaces_rows(ws_records, report_date):
-    """One row per workspace. Exact per-workspace totals, no double-counting."""
+    """One row per workspace. Exact per-workspace totals, no double-counting.
+
+    Numerics go through `_num_or_empty` for the same reason the users table
+    does: a workspace reporting a tiny `totalSizeInMb` would otherwise render
+    as `4e-06`, which Athena's CSV SerDe reads as NULL, and a NaN/inf from the
+    API would be written as literal text and force Glue to type the column as
+    `string`.
+    """
     return [
         [
             report_date,
             w.name,
             len(w.members),
-            w.num_projects,
-            w.num_experiments,
-            w.data_mb,
+            _num_or_empty(w.num_projects),
+            _num_or_empty(w.num_experiments),
+            _num_or_empty(w.data_mb),
         ]
         for w in ws_records
     ]

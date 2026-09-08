@@ -693,3 +693,37 @@ def test_integers_pass_through_unformatted():
     assert _num_or_empty(42) == 42
     assert _num_or_empty(0) == 0
     assert _num_or_empty(388400) == 388400
+
+
+def test_workspace_numerics_go_through_the_float_guard():
+    """Regression: `build_workspaces_rows` emitted raw floats, so a workspace
+    with a tiny `totalSizeInMb` wrote `4e-06` (NULL to Athena) and a NaN/inf
+    from the API wrote literal text (forcing Glue to type the column as
+    `string`). The users table and org KPIs already guarded this."""
+    from cometx.cli.admin_growth_csv import build_workspaces_rows
+    from cometx.cli.admin_growth_users import WorkspaceRecord
+
+    ws = [
+        WorkspaceRecord(
+            name="tiny",
+            num_experiments=1,
+            data_mb=4e-06,
+            num_projects=1,
+            members=(),
+        ),
+        WorkspaceRecord(
+            name="broken",
+            num_experiments=float("nan"),
+            data_mb=float("inf"),
+            num_projects=1,
+            members=(),
+        ),
+    ]
+    rows = {r[1]: r for r in build_workspaces_rows(ws, DATE)}
+
+    tiny = str(rows["tiny"][5])
+    assert "e" not in tiny.lower()
+    assert float(tiny) == 4e-06  # exact, not quantized
+
+    assert rows["broken"][4] == ""  # nan
+    assert rows["broken"][5] == ""  # inf

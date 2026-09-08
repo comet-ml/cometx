@@ -318,5 +318,7 @@ cometx admin growth-report --csv-dir ./out --no-html
 cometx admin growth-report --chargeback-report report.json --csv-dir ./out
 ```
 
-Sample CSVs with synthetic data are available in
-[`docs/csv-samples/`](docs/csv-samples/README.md).
+To see the exact shape of the output before wiring up a pipeline, run the
+command against any workspace with `--csv-dir` — the three files above are
+written with their full headers even when a section has no rows, so a Glue
+crawler can infer the schema from an empty run.

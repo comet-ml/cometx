@@ -152,7 +152,7 @@ import sys
 
 from comet_ml import API
 
-from cometx.utils import fetch_chargeback_report
+from cometx.utils import exception_text, fetch_chargeback_report
 
 from .admin_gpu_report import main as gpu_report_main
 from .admin_growth_report import GrowthReportError, generate_growth_report
@@ -162,27 +162,10 @@ from .admin_usage_report import generate_usage_report
 ADDITIONAL_ARGS = False
 
 
-def _exception_text(exc):
-    """Render `exc` as a printable string, tolerating broken `__str__`.
-
-    `comet_ml.exceptions.NotFound.__str__` returns `None` when the 404 body
-    is not JSON (an HTML error page from a proxy/ingress, say), and
-    `CometRestApiException` siblings can do the same. `str(exc)` then raises
-    `TypeError: __str__ returned non-string`, which buries the real HTTP
-    error under a traceback from the error handler itself. Fall back to the
-    exception's class name -- and its status code when the response carries
-    one -- so the operator still learns what happened.
-    """
-    try:
-        text = str(exc)
-    except Exception:
-        text = None
-    if text:
-        return text
-    status = getattr(getattr(exc, "response", None), "status_code", None)
-    if status is not None:
-        return "%s (HTTP %s)" % (type(exc).__name__, status)
-    return type(exc).__name__
+# Local alias for the shared renderer. Lives in `cometx.utils` so
+# `admin_growth_report._short_api_error` can use the same tolerant rendering
+# without importing this module (admin.py imports FROM that module).
+_exception_text = exception_text
 
 
 def add_global_arguments(parser):
@@ -914,13 +897,17 @@ def admin(parsed_args, remaining=None):
                     chargeback=preloaded,
                 )
             except GrowthReportError as e:
-                print("ERROR: " + str(e))
+                # `_exception_text`, not `str(e)`: a broken `__str__` would
+                # raise here and skip the `sys.exit(1)` below entirely.
+                print("ERROR: " + _exception_text(e))
                 sys.exit(1)
             except Exception as e:
                 # Must exit non-zero: a CSV write failure (unwritable
                 # --csv-dir, or one pointing at a file) that exited 0 would
                 # report success to a scheduler while shipping nothing.
-                print("ERROR: " + str(e))
+                # Rendering must not itself raise, or the exit is skipped and
+                # the outer handler returns 0 -- defeating the guarantee.
+                print("ERROR: " + _exception_text(e))
                 if parsed_args.debug:
                     import traceback
 

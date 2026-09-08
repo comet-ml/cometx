@@ -128,7 +128,8 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# Local working docs — not product code, never commit (public repo).
-# Design specs/plans, customer correspondence, and customer-deliverable
-# CSV samples all live here and stay local.
-docs/
+# Local working artifacts — not product code, never commit (public repo).
+# Scoped to the specific directories rather than all of `docs/`, so a future
+# real documentation directory is not silently swallowed.
+docs/superpowers/
+docs/csv-samples/

@@ -52,6 +52,7 @@ from cometx.cli.admin_growth_users import (
 from cometx.utils import (
     InvalidServerURLError,
     admin_api_url,
+    exception_text,
     fetch_chargeback_report,
     format_time_key,
     redact_url_userinfo,
@@ -212,7 +213,12 @@ def _short_api_error(exc):
     headers, cookies, and CSP) into a single short line: "status: message"
     when parseable, else a truncated one-liner. Keeps per-workspace warnings
     readable instead of pasting a wall of response headers per failure."""
-    text = " ".join(str(exc).split())
+    # `exception_text`, not `str(exc)`: this runs inside `except` blocks, and
+    # `NotFound.__str__` returns None for a non-JSON 404 body (an ingress HTML
+    # page). A bare str() would raise TypeError from inside the handler and
+    # replace the real HTTP error with a traceback -- the exact scenario the
+    # chargeback fetch in `build()` is trying to report on.
+    text = " ".join(exception_text(exc).split())
     status = re.search(r"status_code:\s*(\d+)", text)
     message = re.search(r"'message':\s*'([^']*)'", text)
     if status or message:
@@ -342,6 +348,17 @@ def generate_growth_report(
 
     written = []
     if csv_dir is not None:
+        # Refuse to publish an export that degraded to nothing. The HTML
+        # report can honestly show an empty section, but a header-only CSV is
+        # indistinguishable in Glue from "this org genuinely has no users",
+        # and exiting 0 would tell a monthly scheduler the run succeeded.
+        if reporter.export_blocked():
+            raise GrowthReportError(
+                "refusing to write CSVs: %s. The HTML report degrades to an "
+                "empty section, but an empty CSV would be ingested as real "
+                "data. Re-run once the source data is available, or omit "
+                "--csv-dir to generate the HTML only." % reporter.export_blocked()
+            )
         users, ws_records, kpis = reporter.last_parsed()
         # `report_date` is injectable so tests need not freeze the clock; the
         # CLI never passes it and always gets the UTC run date.
@@ -390,6 +407,10 @@ class GrowthReporter:
         self.personal_pattern = personal_pattern
         self._warned_no_personal_pattern = False
         self._last_parsed = ([], [], [])
+        # Set to a reason string when a section failed in a way that would
+        # make the CSV export silently empty; `generate_growth_report` raises
+        # rather than publishing it. See `_assemble_report_data`.
+        self._export_blocked = None
         self._last_service_account_names = None
 
     def build(self, workspaces, chargeback=None):
@@ -434,6 +455,11 @@ class GrowthReporter:
         `_assemble_report_data` already parsed, rather than re-deriving them
         from the display-formatted `report_data`."""
         return self._last_parsed
+
+    def export_blocked(self):
+        """A reason string when the most recent `build()` degraded badly
+        enough that a CSV export would be misleadingly empty, else `None`."""
+        return self._export_blocked
 
     def last_service_account_names(self):
         """The service-account name set from the most recent `build()`
@@ -1191,6 +1217,13 @@ class GrowthReporter:
             )
             people_users = []
             ws_records = []
+            # The HTML report degrades to an empty section, but an empty CSV
+            # export is indistinguishable from "this org has no users" once it
+            # lands in Glue. Record the failure so the CSV writer refuses
+            # rather than publishing a header-only partition and exiting 0.
+            self._export_blocked = (
+                "chargeback report could not be parsed (%s)" % _short_api_error(exc)
+            )
 
         # Capture the parsed records for the CSV exporter before they are
         # folded into display-formatted sections.
@@ -1284,7 +1317,16 @@ class GrowthReporter:
                 ),
             )
         except Exception as exc:
-            print(f"Warning: failed to collect org KPIs for CSV: {exc}")
+            print(
+                "Warning: failed to collect org KPIs for CSV: %s"
+                % _short_api_error(exc)
+            )
+            # Same reasoning as the parse failure above: a header-only
+            # growth_org_kpis.csv would be ingested as a real, empty monthly
+            # partition. Block the export instead of shipping it.
+            self._export_blocked = (
+                "org KPIs could not be collected (%s)" % _short_api_error(exc)
+            )
 
         return {
             "meta": {

@@ -1,6 +1,6 @@
 import datetime
 import importlib
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1583,3 +1583,100 @@ def test_exception_text_passes_through_a_normal_message():
     from cometx.cli.admin import _exception_text
 
     assert _exception_text(ValueError("boom")) == "boom"
+
+
+def test_broken_dunder_str_does_not_defeat_the_nonzero_exit():
+    """Regression: the growth-report handlers used bare `str(e)`. A broken
+    `__str__` raised inside the `except`, so `sys.exit(1)` never ran, the
+    TypeError fell through to the outer handler, and the process exited 0 --
+    defeating the very guarantee the non-zero exit exists to provide."""
+    import cometx.cli.admin as admin_mod
+
+    class _Broken(Exception):
+        def __str__(self):
+            return None
+
+    with patch.object(admin_mod, "API", MagicMock()), patch.object(
+        admin_mod, "generate_growth_report", side_effect=_Broken()
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            admin_mod.main(["growth-report", "--csv-dir", "/tmp/does-not-matter"])
+    assert excinfo.value.code == 1
+
+
+def test_parse_failure_refuses_to_write_empty_csvs(tmp_path, monkeypatch):
+    """A header-only CSV set is indistinguishable in Glue from 'this org has
+    no users'. Exiting 0 after a parse failure would tell a monthly scheduler
+    the run succeeded while shipping nothing."""
+    import cometx.cli.admin_growth_report as mod
+
+    monkeypatch.setattr(
+        mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    def _boom(_payload):
+        raise ValueError("unexpected chargeback shape")
+
+    monkeypatch.setattr(mod, "parse_users", _boom)
+
+    out = tmp_path / "csv"
+    with pytest.raises(mod.GrowthReportError) as excinfo:
+        mod.generate_growth_report(
+            MagicMock(),
+            [],
+            csv_dir=str(out),
+            no_html=True,
+            no_open=True,
+            report_date="2026-09-08",
+        )
+    assert "refusing to write CSVs" in str(excinfo.value)
+    assert not out.exists() or not list(out.iterdir())
+
+
+def test_kpi_collection_failure_refuses_to_write_empty_csvs(tmp_path, monkeypatch):
+    """Same shape for the org KPIs: a header-only growth_org_kpis.csv would be
+    ingested as a real, empty monthly partition."""
+    import cometx.cli.admin_growth_report as mod
+
+    monkeypatch.setattr(
+        mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("kpi collection exploded")
+
+    monkeypatch.setattr(mod, "collect_org_kpis", _boom)
+
+    out = tmp_path / "csv"
+    with pytest.raises(mod.GrowthReportError) as excinfo:
+        mod.generate_growth_report(
+            MagicMock(),
+            [],
+            csv_dir=str(out),
+            no_html=True,
+            no_open=True,
+            report_date="2026-09-08",
+        )
+    assert "refusing to write CSVs" in str(excinfo.value)
+
+
+def test_degraded_run_still_produces_html_without_csv_dir(tmp_path, monkeypatch):
+    """The block applies only to the CSV export -- the HTML report keeps its
+    existing degrade-and-continue behaviour."""
+    import cometx.cli.admin_growth_report as mod
+
+    monkeypatch.setattr(
+        mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    def _boom(_payload):
+        raise ValueError("unexpected chargeback shape")
+
+    monkeypatch.setattr(mod, "parse_users", _boom)
+
+    html = tmp_path / "report.html"
+    mod.generate_growth_report(MagicMock(), [], output=str(html), no_open=True)
+    assert html.exists()
