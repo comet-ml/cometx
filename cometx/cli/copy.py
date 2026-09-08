@@ -78,10 +78,9 @@ import threading
 import time
 import urllib.parse
 import zipfile
-
-import requests
 from datetime import datetime, timedelta
 
+import requests
 from comet_ml import APIExperiment, Artifact, Experiment, OfflineExperiment
 from comet_ml._typing import TemporaryFilePath
 from comet_ml.file_uploader import GitPatchUploadProcessor
@@ -800,7 +799,9 @@ class CopyManager:
         # Restore default signal handler
         signal.signal(signal.SIGINT, signal.default_int_handler)
 
-    def copy(self, source, destination, symlink, ignore, debug, sync, create_workspaces=False):
+    def copy(
+        self, source, destination, symlink, ignore, debug, sync, create_workspaces=False
+    ):
         """ """
         self.ignore = ignore
         self.debug = debug
@@ -1231,9 +1232,7 @@ class CopyManager:
             else:
                 asset_map[old_asset_id] = result["assetId"]
 
-    def _log_asset(
-        self, experiment, path, asset_type, asset_data, asset_map
-    ):
+    def _log_asset(self, experiment, path, asset_type, asset_data, asset_map):
         log_as_filename = asset_data.get("logAsFileName", None)
         original_filename = asset_data["fileName"]
         disk_filename = asset_data.get("diskFileName", original_filename)
@@ -1397,7 +1396,7 @@ class CopyManager:
             # The dir field includes a "models/" prefix added by the
             # backend; strip it to get the actual model name.
             if dir_name.startswith("models/"):
-                model_name = dir_name[len("models/"):]
+                model_name = dir_name[len("models/") :]
             else:
                 model_name = dir_name
             binary_io = open(filename, "rb")
@@ -1443,7 +1442,7 @@ class CopyManager:
                     if asset_type == "model-element":
                         dir_name = asset_data.get("dir", "")
                         if dir_name.startswith("models/"):
-                            model_name = dir_name[len("models/"):]
+                            model_name = dir_name[len("models/") :]
                         else:
                             model_name = dir_name
                         raw_metadata = asset_data.get("metadata")

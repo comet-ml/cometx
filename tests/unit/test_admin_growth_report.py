@@ -1680,3 +1680,65 @@ def test_degraded_run_still_produces_html_without_csv_dir(tmp_path, monkeypatch)
     html = tmp_path / "report.html"
     mod.generate_growth_report(MagicMock(), [], output=str(html), no_open=True)
     assert html.exists()
+
+
+def test_null_snapshot_file_is_rejected_not_silently_fetched(tmp_path):
+    """`build()` treats `chargeback is None` as the live-fetch sentinel, so a
+    file containing JSON `null` fell through to the API -- and then blamed the
+    admin endpoint for what is actually a bad local file."""
+    import cometx.cli.admin as admin_mod
+    import cometx.cli.admin_growth_report as mod
+
+    snapshot = tmp_path / "null.json"
+    snapshot.write_text("null")
+
+    # Record rather than raise: the CLI's broad `except Exception` would
+    # swallow an AssertionError and still exit 1, so the test could not tell
+    # a rejected snapshot from a live fetch that merely failed.
+    fetches = []
+
+    def _record_fetch(*args, **kwargs):
+        fetches.append(1)
+        raise RuntimeError("endpoint unreachable")
+
+    with patch.object(admin_mod, "API", MagicMock()), patch.object(
+        mod, "fetch_chargeback_report", _record_fetch
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            admin_mod.main(
+                [
+                    "growth-report",
+                    "--chargeback-report",
+                    str(snapshot),
+                    "--csv-dir",
+                    str(tmp_path / "out"),
+                    "--no-html",
+                ]
+            )
+    assert excinfo.value.code == 1
+    assert fetches == [], "a null snapshot silently fell back to a live fetch"
+
+
+def test_non_object_snapshot_file_is_rejected(tmp_path):
+    """A JSON list/string is equally not a chargeback report."""
+    import cometx.cli.admin as admin_mod
+    import cometx.cli.admin_growth_report as mod
+
+    snapshot = tmp_path / "list.json"
+    snapshot.write_text("[]")
+
+    with patch.object(admin_mod, "API", MagicMock()), patch.object(
+        mod, "fetch_chargeback_report", MagicMock()
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            admin_mod.main(
+                [
+                    "growth-report",
+                    "--chargeback-report",
+                    str(snapshot),
+                    "--csv-dir",
+                    str(tmp_path / "out"),
+                    "--no-html",
+                ]
+            )
+    assert excinfo.value.code == 1

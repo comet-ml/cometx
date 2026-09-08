@@ -878,6 +878,22 @@ def admin(parsed_args, remaining=None):
                             % (parsed_args.chargeback_report, exc)
                         )
                         sys.exit(1)
+                    if not isinstance(preloaded, dict):
+                        # `build()` treats `chargeback is None` as "fetch it
+                        # live", so a file containing JSON `null` would
+                        # silently fall back to the API -- and then blame the
+                        # admin endpoint for what is actually a bad local
+                        # file. Any non-object payload is a bad snapshot.
+                        print(
+                            "ERROR: --chargeback-report %r does not contain a "
+                            "chargeback report (expected a JSON object, got "
+                            "%s)."
+                            % (
+                                parsed_args.chargeback_report,
+                                type(preloaded).__name__,
+                            )
+                        )
+                        sys.exit(1)
                 if parsed_args.no_html and not parsed_args.csv_dir:
                     print("ERROR: --no-html requires --csv-dir (nothing to write).")
                     sys.exit(1)

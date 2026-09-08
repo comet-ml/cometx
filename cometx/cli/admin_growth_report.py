@@ -1314,6 +1314,7 @@ class GrowthReporter:
                     growth,
                     split,
                     active_window_days,
+                    scope=scope,
                 ),
             )
         except Exception as exc:

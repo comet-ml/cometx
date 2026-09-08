@@ -40,6 +40,7 @@ Where TYPE is one of the following names:
 * other
 * tensorboard-folder-assets
 """
+
 import argparse
 import glob
 import json

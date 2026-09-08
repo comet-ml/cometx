@@ -243,11 +243,15 @@ def test_label_metrics_keep_metric_value_numeric():
     assert value == ""  # nothing non-numeric in metric_value
     assert unit == "label"
     assert text == "heuristic"
-    # Every other metric leaves metric_text empty and keeps metric_value
-    # numeric-parseable (floats are rendered as plain decimal strings, so
-    # check the VALUE parses as a number rather than its Python type).
-    for name, (val, _u, txt) in by_name.items():
-        if name != "service_account_source":
+    # The rule generalizes by UNIT, not by metric name: a `label` metric may
+    # carry metric_text and leaves metric_value empty; every other unit must
+    # leave metric_text empty and keep metric_value numeric-parseable (floats
+    # render as plain decimal strings, so parse the VALUE rather than checking
+    # its Python type).
+    for name, (val, unit_, txt) in by_name.items():
+        if unit_ == "label":
+            assert val == "", name
+        else:
             assert txt == "", name
             if val != "":
                 float(val)  # raises if a non-numeric leaked into metric_value
@@ -727,3 +731,31 @@ def test_workspace_numerics_go_through_the_float_guard():
 
     assert rows["broken"][4] == ""  # nan
     assert rows["broken"][5] == ""  # inf
+
+
+def test_scope_kpi_distinguishes_scoped_from_org_wide():
+    """Without this, a workspace-filtered export is byte-shaped exactly like
+    an org-wide one -- same filenames, same headers -- and `total_workspaces`
+    just reads lower. Loaded into the same Glue partition that looks like an
+    org that shrank overnight."""
+    from cometx.cli.admin_growth_csv import collect_org_kpis
+
+    def _scope_of(scope):
+        kpis = collect_org_kpis(
+            users=[],
+            ws_records=[],
+            stats=None,
+            growth=None,
+            split=None,
+            active_window_days=60,
+            scope=scope,
+        )
+        return {name: (value, unit, text) for name, value, unit, text in kpis}["scope"]
+
+    value, unit, text = _scope_of(None)
+    assert (value, unit, text) == ("", "label", "organization")
+
+    value, unit, text = _scope_of({"beta", "alpha"})
+    assert value == ""  # metric_value stays numeric-only
+    assert unit == "label"
+    assert text == "workspaces:alpha,beta"  # sorted, so it is stable per run

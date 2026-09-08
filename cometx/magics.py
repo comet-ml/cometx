@@ -65,9 +65,7 @@ selected = ui.dropdown(
 if selected:
     ui.display_markdown("<pre>" + selected["code"] + "</pre>")
     ui.display_markdown("To edit and run here: **%%cometx {line} %r**" % selected["templateName"])
-""".format(
-                workspace=workspace, line=line
-            )
+""".format(workspace=workspace, line=line)
         else:
             panel_name = remove_quotes(panel_name)
             from cometx import API
@@ -146,8 +144,6 @@ def main(st):
 from cometx._ui import Streamlit
 st = Streamlit()
 st._run(main)
-""".format(
-        cell=cell
-    )
+""".format(cell=cell)
     get_ipython().run_cell(code)
     # print(code)

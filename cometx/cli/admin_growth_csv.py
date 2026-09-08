@@ -210,7 +210,15 @@ WORKSPACES_FILENAME = "growth_workspaces.csv"
 ORG_KPIS_FILENAME = "growth_org_kpis.csv"
 
 
-def collect_org_kpis(users, ws_records, stats, growth, split, active_window_days):
+def collect_org_kpis(
+    users,
+    ws_records,
+    stats,
+    growth,
+    split,
+    active_window_days,
+    scope=None,
+):
     """Flatten the report's org-level numbers into (name, value, unit) triples.
 
     Each input block is optional: the HTML report degrades section-by-section
@@ -252,6 +260,19 @@ def collect_org_kpis(users, ws_records, stats, growth, split, active_window_days
         kpis.append(("new_users_in_window", growth.get("new_in"), "count"))
         kpis.append(("new_users_in_window_pct", growth.get("pct"), "percent"))
 
+    # Scope provenance. Without it a workspace-filtered export is byte-shaped
+    # exactly like an org-wide one: same filenames, same headers, and
+    # `total_workspaces` simply reads lower. Loaded into the same Glue
+    # partition that would look like an org that shrank overnight, and a
+    # scoped run would silently replace an org-wide snapshot.
+    kpis.append(
+        (
+            "scope",
+            None,
+            "label",
+            "organization" if not scope else "workspaces:" + ",".join(sorted(scope)),
+        )
+    )
     kpis.append(("total_workspaces", len(ws_records), "count"))
     kpis.append(("total_projects", sum(w.num_projects for w in ws_records), "count"))
     kpis.append(
