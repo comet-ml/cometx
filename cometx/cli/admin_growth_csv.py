@@ -265,14 +265,29 @@ def collect_org_kpis(
     # `total_workspaces` simply reads lower. Loaded into the same Glue
     # partition that would look like an org that shrank overnight, and a
     # scoped run would silently replace an org-wide snapshot.
-    kpis.append(
-        (
-            "scope",
-            None,
-            "label",
-            "organization" if not scope else "workspaces:" + ",".join(sorted(scope)),
-        )
-    )
+    #
+    # `scope` describes what the export ACTUALLY contains, derived from the
+    # surviving records -- not the raw request. The two differ whenever a
+    # requested workspace does not exist, or was dropped by
+    # `--exclude-personal`: naming a workspace that contributes no rows would
+    # send a dashboard filtering on it to an empty result. The request is
+    # preserved separately as `scope_requested` when it differs, so an
+    # operator can still see that a filter was asked for and did not land.
+    if not scope:
+        kpis.append(("scope", None, "label", "organization"))
+    else:
+        effective = sorted({w.name for w in ws_records if w.name})
+        kpis.append(("scope", None, "label", "workspaces:" + ",".join(effective)))
+        requested = sorted(scope)
+        if requested != effective:
+            kpis.append(
+                (
+                    "scope_requested",
+                    None,
+                    "label",
+                    "workspaces:" + ",".join(requested),
+                )
+            )
     kpis.append(("total_workspaces", len(ws_records), "count"))
     kpis.append(("total_projects", sum(w.num_projects for w in ws_records), "count"))
     kpis.append(

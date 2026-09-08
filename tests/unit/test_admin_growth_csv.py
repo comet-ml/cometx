@@ -739,23 +739,65 @@ def test_scope_kpi_distinguishes_scoped_from_org_wide():
     just reads lower. Loaded into the same Glue partition that looks like an
     org that shrank overnight."""
     from cometx.cli.admin_growth_csv import collect_org_kpis
+    from cometx.cli.admin_growth_users import WorkspaceRecord
 
-    def _scope_of(scope):
+    def _ws(*names):
+        return [
+            WorkspaceRecord(
+                name=n, num_experiments=1, data_mb=1.0, num_projects=1, members=()
+            )
+            for n in names
+        ]
+
+    def _kpis(scope, ws_records):
         kpis = collect_org_kpis(
             users=[],
-            ws_records=[],
+            ws_records=ws_records,
             stats=None,
             growth=None,
             split=None,
             active_window_days=60,
             scope=scope,
         )
-        return {name: (value, unit, text) for name, value, unit, text in kpis}["scope"]
+        return {name: (value, unit, text) for name, value, unit, text in kpis}
 
-    value, unit, text = _scope_of(None)
-    assert (value, unit, text) == ("", "label", "organization")
+    org = _kpis(None, _ws("alpha", "beta"))["scope"]
+    assert org == ("", "label", "organization")
 
-    value, unit, text = _scope_of({"beta", "alpha"})
+    scoped = _kpis({"beta", "alpha"}, _ws("alpha", "beta"))
+    value, unit, text = scoped["scope"]
     assert value == ""  # metric_value stays numeric-only
     assert unit == "label"
     assert text == "workspaces:alpha,beta"  # sorted, so it is stable per run
+    # request matched reality, so no separate `scope_requested` row
+    assert "scope_requested" not in scoped
+
+
+def test_scope_reports_what_was_exported_not_what_was_asked_for():
+    """Regression: `scope` serialized the raw CLI request, so it could name a
+    workspace that does not exist or was dropped by `--exclude-personal` --
+    sending a dashboard that filters on it to an empty result. It must
+    describe the records actually present; the request is preserved
+    separately when the two differ."""
+    from cometx.cli.admin_growth_csv import collect_org_kpis
+    from cometx.cli.admin_growth_users import WorkspaceRecord
+
+    surviving = [
+        WorkspaceRecord(
+            name="team-a", num_experiments=1, data_mb=1.0, num_projects=1, members=()
+        )
+    ]
+    kpis = {
+        name: text
+        for name, _v, _u, text in collect_org_kpis(
+            users=[],
+            ws_records=surviving,
+            stats=None,
+            growth=None,
+            split=None,
+            active_window_days=60,
+            scope={"team-a", "ghost"},
+        )
+    }
+    assert kpis["scope"] == "workspaces:team-a"  # only what is really there
+    assert kpis["scope_requested"] == "workspaces:ghost,team-a"

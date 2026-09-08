@@ -239,7 +239,9 @@ Use the `deleted_users` KPI to see how many were excluded.
 
 **`growth_org_kpis.csv`**: `report_date, metric_name, metric_value, metric_unit, metric_text` — long format so new metrics arrive as new rows without ever changing the Glue schema. `metric_unit` is one of `count`, `percent`, `megabytes`, `label`.
 
-`metric_value` is strictly numeric (or empty), so Glue types it as a number and QuickSight can aggregate it without casts. Metrics whose payload is text — currently only `service_account_source`, with unit `label` — leave `metric_value` empty and carry their value in `metric_text`, which is empty for every numeric metric.
+`metric_value` is strictly numeric (or empty), so Glue types it as a number and QuickSight can aggregate it without casts. Metrics whose payload is text carry unit `label`, leave `metric_value` empty, and put their value in `metric_text` (empty for every numeric metric).
+
+The `label` metrics describe how the run was produced: `service_account_source` (`admin_api` or `heuristic`) and `scope` (`organization`, or `workspaces:a,b` listing the workspaces actually present in the export). When a `--workspace` filter names something that produced no rows — misspelled, non-existent, or dropped by `--exclude-personal` — a `scope_requested` metric records what was asked for, so the discrepancy is visible rather than silent.
 
 #### `report_date` convention
 

@@ -1742,3 +1742,64 @@ def test_non_object_snapshot_file_is_rejected(tmp_path):
                 ]
             )
     assert excinfo.value.code == 1
+
+
+def test_structurally_empty_snapshot_is_rejected(tmp_path):
+    """`{}` passes the JSON-object check, and the parsers are deliberately
+    permissive -- they return empty lists rather than raising, so the
+    export-blocked guard never fires. Without this check we would publish a
+    'successful' zero-row export indistinguishable from a genuinely empty
+    organization."""
+    import cometx.cli.admin as admin_mod
+    import cometx.cli.admin_growth_report as mod
+
+    snapshot = tmp_path / "empty.json"
+    snapshot.write_text("{}")
+    out = tmp_path / "out"
+
+    with patch.object(admin_mod, "API", MagicMock()), patch.object(
+        mod, "fetch_chargeback_report", MagicMock()
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            admin_mod.main(
+                [
+                    "growth-report",
+                    "--chargeback-report",
+                    str(snapshot),
+                    "--csv-dir",
+                    str(out),
+                    "--no-html",
+                ]
+            )
+    assert excinfo.value.code == 1
+    assert not out.exists() or not list(out.iterdir())
+
+
+def test_snapshot_with_only_one_section_is_accepted(tmp_path):
+    """A report carrying `workspaces` but no `users` is degraded but real --
+    it must still export, or the check would reject legitimate snapshots."""
+    import cometx.cli.admin_growth_report as mod
+
+    payload = {
+        "workspaces": [
+            {
+                "name": "team-a",
+                "numberOfExperiments": 3,
+                "totalSizeInMb": 1.0,
+                "projects": ["p"],
+                "members": [],
+            }
+        ]
+    }
+    out = tmp_path / "out"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        mod.generate_growth_report(
+            MagicMock(),
+            [],
+            chargeback=payload,
+            csv_dir=str(out),
+            no_html=True,
+            no_open=True,
+            report_date="2026-09-08",
+        )
+    assert (out / "growth_workspaces.csv").exists()
