@@ -1869,7 +1869,7 @@ def test_a_scope_that_matches_still_exports(tmp_path):
     assert (out / "growth_users.csv").exists()
 
 
-def test_export_blocked_resets_between_builds():
+def test_export_block_reason_resets_between_builds():
     """A reused reporter whose first build failed must not block every later
     export. The CLI builds once, so this guards the invariant rather than a
     live path."""
@@ -1878,6 +1878,6 @@ def test_export_blocked_resets_between_builds():
     reporter = mod.GrowthReporter(MagicMock(), window="7d", units="month")
     with patch.object(mod, "_fetch_service_accounts", lambda api: None):
         reporter.build([], chargeback={})
-        assert reporter.export_blocked() is not None
+        assert reporter.export_block_reason() is not None
         reporter.build([], chargeback=_chargeback_fixture())
-        assert reporter.export_blocked() is None
+        assert reporter.export_block_reason() is None

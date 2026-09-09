@@ -352,13 +352,13 @@ def generate_growth_report(
         # report can honestly show an empty section, but a header-only CSV is
         # indistinguishable in Glue from "this org genuinely has no users",
         # and exiting 0 would tell a monthly scheduler the run succeeded.
-        blocked = reporter.export_blocked()
-        if blocked:
+        block_reason = reporter.export_block_reason()
+        if block_reason:
             raise GrowthReportError(
                 "refusing to write CSVs: %s. The HTML report degrades to an "
                 "empty section, but an empty CSV would be ingested as real "
                 "data. Re-run once the source data is available, or omit "
-                "--csv-dir to generate the HTML only." % blocked
+                "--csv-dir to generate the HTML only." % block_reason
             )
         users, ws_records, kpis = reporter.last_parsed()
         # `report_date` is injectable so tests need not freeze the clock; the
@@ -411,7 +411,7 @@ class GrowthReporter:
         # Set to a reason string when a section failed in a way that would
         # make the CSV export silently empty; `generate_growth_report` raises
         # rather than publishing it. See `_assemble_report_data`.
-        self._export_blocked = None
+        self._export_block_reason = None
         self._last_service_account_names = None
 
     def build(self, workspaces, chargeback=None):
@@ -426,7 +426,7 @@ class GrowthReporter:
         # Reset per build: a reused reporter whose first build failed would
         # otherwise block every later export. The CLI builds once, so this is
         # an invariant rather than a live fix.
-        self._export_blocked = None
+        self._export_block_reason = None
         if chargeback is None:
             print("Fetching chargeback report (admin API)...")
             try:
@@ -458,7 +458,7 @@ class GrowthReporter:
         if not isinstance(chargeback, dict) or (
             not chargeback.get("users") and not chargeback.get("workspaces")
         ):
-            self._export_blocked = (
+            self._export_block_reason = (
                 "the chargeback report contains neither a 'users' nor a "
                 "'workspaces' section"
             )
@@ -476,10 +476,10 @@ class GrowthReporter:
         # string "workspaces:" that every dashboard filter then has to
         # special-case. Checked after assembly, since only then do we know
         # which workspaces survived scoping and --exclude-personal.
-        if scope and self._export_blocked is None:
+        if scope and self._export_block_reason is None:
             _users, ws_records, _kpis = self._last_parsed
             if not ws_records:
-                self._export_blocked = (
+                self._export_block_reason = (
                     "no workspaces matched %s (nothing to export)"
                     % ", ".join(sorted(scope))
                 )
@@ -492,10 +492,10 @@ class GrowthReporter:
         from the display-formatted `report_data`."""
         return self._last_parsed
 
-    def export_blocked(self):
+    def export_block_reason(self):
         """A reason string when the most recent `build()` degraded badly
         enough that a CSV export would be misleadingly empty, else `None`."""
-        return self._export_blocked
+        return self._export_block_reason
 
     def last_service_account_names(self):
         """The service-account name set from the most recent `build()`
@@ -1257,7 +1257,7 @@ class GrowthReporter:
             # export is indistinguishable from "this org has no users" once it
             # lands in Glue. Record the failure so the CSV writer refuses
             # rather than publishing a header-only partition and exiting 0.
-            self._export_blocked = (
+            self._export_block_reason = (
                 "chargeback report could not be parsed (%s)" % _short_api_error(exc)
             )
 
@@ -1365,7 +1365,7 @@ class GrowthReporter:
             # Same reasoning as the parse failure above: a header-only
             # growth_org_kpis.csv would be ingested as a real, empty monthly
             # partition. Block the export instead of shipping it.
-            self._export_blocked = (
+            self._export_block_reason = (
                 "org KPIs could not be collected (%s)" % _short_api_error(exc)
             )
 

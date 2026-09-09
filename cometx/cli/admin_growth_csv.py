@@ -83,12 +83,12 @@ def _num_or_empty(value):
     different things: chargeback omits `opikSpanCount` for deployments without
     Opik, which is not the same as a user with zero spans.
 
-    Booleans are rejected to empty. `bool` subclasses `int`, so a malformed
-    payload carrying `true` in a numeric field would otherwise write the
-    literal `True` into the column and make a Glue crawler type it as
-    `string` -- the same failure mode as an unguarded float or a stray label.
-    Coercing to 1/0 would be worse: it invents a count the source never
-    reported.
+    Booleans are converted to empty fields. `bool` subclasses `int`, so a
+    malformed payload carrying `true` in a numeric field would otherwise
+    write the literal `True` into the column and make a Glue crawler type it
+    as `string` -- the same failure mode as an unguarded float or a stray
+    label. Coercing to 1/0 would be worse: it invents a count the source
+    never reported.
 
     Floats need explicit handling because Python's default repr switches to
     scientific notation outside roughly 1e-5 .. 1e16 (`0.00001` -> `1e-05`),

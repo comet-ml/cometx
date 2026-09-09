@@ -898,7 +898,7 @@ def admin(parsed_args, remaining=None):
                         # `{}` or an object with neither section passes the
                         # type check above, and the parsers are deliberately
                         # permissive -- they return empty lists rather than
-                        # raising, so `_export_blocked` never fires and we
+                        # raising, so `_export_block_reason` never fires and we
                         # would publish a "successful" zero-row export that
                         # is indistinguishable from a genuinely empty org.
                         print(
