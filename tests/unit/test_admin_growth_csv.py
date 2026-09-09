@@ -801,3 +801,48 @@ def test_scope_reports_what_was_exported_not_what_was_asked_for():
     }
     assert kpis["scope"] == "workspaces:team-a"  # only what is really there
     assert kpis["scope_requested"] == "workspaces:ghost,team-a"
+
+
+def test_booleans_in_numeric_fields_become_empty_not_true_false():
+    """`bool` subclasses `int`, so a malformed payload carrying `true` in a
+    numeric field would write the literal `True` into the column and make a
+    Glue crawler type it as `string`. Coercing to 1/0 would be worse -- it
+    invents a count the source never reported."""
+    from cometx.cli.admin_growth_csv import (
+        USERS_HEADER,
+        _num_or_empty,
+        build_users_rows,
+    )
+    from cometx.cli.admin_growth_users import parse_users
+
+    assert _num_or_empty(True) == ""
+    assert _num_or_empty(False) == ""
+    # a real number is untouched by the guard
+    assert _num_or_empty(0) == 0
+    assert _num_or_empty(5) == 5
+
+    payload = {
+        "workspaces": [],
+        "users": {
+            "report": [
+                {
+                    "username": "a",
+                    "email": "a@x.com",
+                    "createdAt": NOW,
+                    "lastUsedAt": NOW,
+                    "experimentCount": True,
+                    "dataLoggedMb": False,
+                    "opikSpanCount": 5,
+                    "suspended": True,
+                    "deletedAt": None,
+                }
+            ]
+        },
+    }
+    row = dict(zip(USERS_HEADER, build_users_rows(parse_users(payload), DATE)[0]))
+    assert row["experiment_count"] == ""
+    assert row["data_logged_mb"] == ""
+    assert row["opik_span_count"] == 5
+    # the genuine boolean columns still emit 0/1 -- they never go through
+    # `_num_or_empty`, and this guards against a fix that breaks them
+    assert row["is_suspended"] == 1
