@@ -352,12 +352,13 @@ def generate_growth_report(
         # report can honestly show an empty section, but a header-only CSV is
         # indistinguishable in Glue from "this org genuinely has no users",
         # and exiting 0 would tell a monthly scheduler the run succeeded.
-        if reporter.export_blocked():
+        blocked = reporter.export_blocked()
+        if blocked:
             raise GrowthReportError(
                 "refusing to write CSVs: %s. The HTML report degrades to an "
                 "empty section, but an empty CSV would be ingested as real "
                 "data. Re-run once the source data is available, or omit "
-                "--csv-dir to generate the HTML only." % reporter.export_blocked()
+                "--csv-dir to generate the HTML only." % blocked
             )
         users, ws_records, kpis = reporter.last_parsed()
         # `report_date` is injectable so tests need not freeze the clock; the
@@ -422,6 +423,10 @@ class GrowthReporter:
         `--chargeback-report FILE`) and no API call is made."""
         now = self._now()
         window = parse_window(self.window, now, self.units)
+        # Reset per build: a reused reporter whose first build failed would
+        # otherwise block every later export. The CLI builds once, so this is
+        # an invariant rather than a live fix.
+        self._export_blocked = None
         if chargeback is None:
             print("Fetching chargeback report (admin API)...")
             try:
@@ -435,7 +440,8 @@ class GrowthReporter:
                 # in the handler below, which reports an unusable endpoint
                 # rather than a bad URL.
                 raise GrowthReportError(
-                    f"growth-report could not reach the chargeback endpoint: {exc}"
+                    "growth-report could not reach the chargeback endpoint: "
+                    "%s" % exception_text(exc)
                 ) from exc
             except Exception as exc:
                 raise GrowthReportError(
@@ -443,11 +449,41 @@ class GrowthReporter:
                     f"endpoint is unavailable ({_short_api_error(exc)}). This "
                     "report is built entirely from the admin chargeback report."
                 ) from exc
+        # Structural check AFTER the fetch, so it covers both sources with one
+        # implementation. The CLI validates a `--chargeback-report` file too,
+        # but the live path is the one that runs monthly in production -- and
+        # the chargeback parsers are deliberately permissive, returning empty
+        # lists rather than raising, so without this a `{}` response publishes
+        # a zero-row export and exits 0.
+        if not isinstance(chargeback, dict) or (
+            not chargeback.get("users") and not chargeback.get("workspaces")
+        ):
+            self._export_blocked = (
+                "the chargeback report contains neither a 'users' nor a "
+                "'workspaces' section"
+            )
+
         chargeback = self._filter_personal_chargeback(chargeback)
         print("Building report...")
         now_ms = int(now.timestamp() * 1000)
         scope = set(workspaces) if workspaces else None
-        return self._assemble_report_data(chargeback, window, now_ms, scope=scope)
+        report_data = self._assemble_report_data(
+            chargeback, window, now_ms, scope=scope
+        )
+
+        # A scope that matched nothing is a filter that did not land: the
+        # export would be empty, and `scope` would serialize as the bare
+        # string "workspaces:" that every dashboard filter then has to
+        # special-case. Checked after assembly, since only then do we know
+        # which workspaces survived scoping and --exclude-personal.
+        if scope and self._export_blocked is None:
+            _users, ws_records, _kpis = self._last_parsed
+            if not ws_records:
+                self._export_blocked = (
+                    "no workspaces matched %s (nothing to export)"
+                    % ", ".join(sorted(scope))
+                )
+        return report_data
 
     def last_parsed(self):
         """The (users, ws_records, org_kpis) captured by the most recent
@@ -1258,7 +1294,10 @@ class GrowthReporter:
                 people_users, ws_records
             )
         except Exception as exc:
-            print(f"Warning: failed to build leaderboards section; skipping: {exc}")
+            print(
+                "Warning: failed to build leaderboards section; skipping: %s"
+                % _short_api_error(exc)
+            )
             leaderboards_section = None
         if leaderboards_section:
             sections["leaderboards"] = leaderboards_section
@@ -1280,7 +1319,8 @@ class GrowthReporter:
                 )
         except Exception as exc:
             print(
-                f"Warning: failed to build personal-vs-service section; skipping: {exc}"
+                "Warning: failed to build personal-vs-service section; "
+                "skipping: %s" % _short_api_error(exc)
             )
             personal_vs_service_section = None
         if personal_vs_service_section:

@@ -1803,3 +1803,81 @@ def test_snapshot_with_only_one_section_is_accepted(tmp_path):
             report_date="2026-09-08",
         )
     assert (out / "growth_workspaces.csv").exists()
+
+
+def test_live_fetch_returning_empty_report_is_blocked(tmp_path):
+    """The structural guard must cover the LIVE path, not just
+    `--chargeback-report`. The live path is the one that runs monthly in
+    production, and the chargeback parsers are permissive -- a `{}` response
+    would otherwise publish a zero-row export and exit 0."""
+    import cometx.cli.admin_growth_report as mod
+
+    out = tmp_path / "out"
+    with patch.object(mod, "fetch_chargeback_report", lambda api: {}), patch.object(
+        mod, "_fetch_service_accounts", lambda api: None
+    ):
+        with pytest.raises(mod.GrowthReportError) as excinfo:
+            mod.generate_growth_report(
+                MagicMock(),
+                [],
+                csv_dir=str(out),
+                no_html=True,
+                no_open=True,
+                report_date="2026-09-09",
+            )
+    assert "refusing to write CSVs" in str(excinfo.value)
+    assert not out.exists() or not list(out.iterdir())
+
+
+def test_scope_matching_no_workspaces_is_blocked(tmp_path):
+    """A filter that matched nothing would publish an empty partition and
+    serialize `scope` as the bare string `workspaces:`, which every dashboard
+    filter would then have to special-case."""
+    import cometx.cli.admin_growth_report as mod
+
+    out = tmp_path / "out"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        with pytest.raises(mod.GrowthReportError) as excinfo:
+            mod.generate_growth_report(
+                MagicMock(),
+                ["ghost"],
+                chargeback=_chargeback_fixture(),
+                csv_dir=str(out),
+                no_html=True,
+                no_open=True,
+                report_date="2026-09-09",
+            )
+    assert "no workspaces matched" in str(excinfo.value)
+    assert not out.exists() or not list(out.iterdir())
+
+
+def test_a_scope_that_matches_still_exports(tmp_path):
+    """The block must not fire for a filter that legitimately matches."""
+    import cometx.cli.admin_growth_report as mod
+
+    out = tmp_path / "out"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        mod.generate_growth_report(
+            MagicMock(),
+            ["team-a"],
+            chargeback=_chargeback_fixture(),
+            csv_dir=str(out),
+            no_html=True,
+            no_open=True,
+            report_date="2026-09-09",
+        )
+    assert (out / "growth_users.csv").exists()
+
+
+def test_export_blocked_resets_between_builds():
+    """A reused reporter whose first build failed must not block every later
+    export. The CLI builds once, so this guards the invariant rather than a
+    live path."""
+    import cometx.cli.admin_growth_report as mod
+
+    reporter = mod.GrowthReporter(MagicMock(), window="7d", units="month")
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        reporter.build([], chargeback={})
+        assert reporter.export_blocked() is not None
+        reporter.build([], chargeback=_chargeback_fixture())
+        assert reporter.export_blocked() is None
