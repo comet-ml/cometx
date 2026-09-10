@@ -384,22 +384,35 @@ def _quiet_remove(path):
         pass
 
 
-def _apply_default_file_mode(path):
-    """Give `path` the mode a plain `open(path, "w")` would have produced.
+def _apply_default_file_mode(fd, path):
+    """Give the file behind `fd` the mode a plain `open(path, "w")` would have.
 
     `mkstemp` deliberately creates 0600. These are published data files: the
-    upload step may well run as another user or group, and silently narrowing
-    permissions from what the previous implementation wrote would break such a
-    pipeline for no stated reason. Reading the umask requires temporarily
-    setting it, which is safe here -- this is a single-threaded CLI process.
+    upload step may run as another user or group, and silently narrowing them
+    from what the previous implementation wrote would break such a pipeline
+    with no error anywhere. Reading the umask requires temporarily setting it,
+    which is safe here -- this is a single-threaded CLI process.
+
+    Applied to the DESCRIPTOR rather than the pathname: the open file is ours
+    by construction, so there is no window in which the name could be pointed
+    at something else between creating the file and setting its mode.
     """
+    fchmod = getattr(os, "fchmod", None)
+    if fchmod is None:  # Windows: no POSIX modes to restore.
+        return
     umask = os.umask(0)
     os.umask(umask)
     try:
-        os.chmod(path, 0o666 & ~umask)
-    except OSError:
-        # A filesystem without POSIX modes is not a reason to fail the export.
-        pass
+        fchmod(fd, 0o666 & ~umask)
+    except OSError as exc:
+        # Not fatal: a filesystem without POSIX modes is no reason to fail an
+        # otherwise-good export. Not silent either -- the file stays at 0600,
+        # and an uploader running as another user would fail to read it with
+        # nothing on the console to explain why.
+        print(
+            "Warning: could not set permissions on %s (%s); it will be "
+            "readable only by the current user" % (path, exc)
+        )
 
 
 def _stage_csv(out_dir, filename, header, rows):
@@ -414,12 +427,14 @@ def _stage_csv(out_dir, filename, header, rows):
     """
     fd, tmp = tempfile.mkstemp(dir=out_dir, prefix=filename + ".", suffix=".tmp")
     try:
+        # `fdopen` takes ownership of the descriptor, so the file is closed on
+        # the way out whether or not the write succeeds.
         with os.fdopen(fd, "w", newline="", encoding="utf-8") as fp:
+            _apply_default_file_mode(fp.fileno(), tmp)
             _write_csv_rows(fp, header, rows)
     except BaseException:
         _quiet_remove(tmp)
         raise
-    _apply_default_file_mode(tmp)
     return tmp
 
 
@@ -456,32 +471,27 @@ def write_growth_csvs(
         (ORG_KPIS_FILENAME, ORG_KPIS_HEADER, build_org_kpi_rows(kpis, report_date)),
     ]
 
-    # Stage every table, then commit them together. The three files are ONE
-    # partition: a run that died halfway would otherwise leave this month's
-    # growth_users.csv beside last month's growth_workspaces.csv, and nothing
-    # about the files would say the run failed.
+    # Stage every table to its own temporary, then move them all into place.
+    # The three files are ONE partition: writing them directly, one after
+    # another, left this month's growth_users.csv beside last month's
+    # growth_workspaces.csv for the whole duration of a run that failed
+    # halfway -- with nothing about the files to say the run failed.
     #
-    # Two phases, so a failure in either leaves the previous generation whole:
+    # Staging shrinks that to the microseconds between three renames, because
+    # the realistic failure (a full disk) happens during the write, when
+    # nothing a reader can see has been touched yet.
     #
-    #   stage  -- every table is written to its own temporary. A write failure
-    #             here (a full disk is the realistic one) has touched nothing
-    #             the reader can see.
-    #   commit -- each temporary is `os.replace`d into place, the displaced
-    #             file kept aside until all three have landed. A failure
-    #             partway rolls the earlier ones back, so the directory
-    #             returns to the generation it held before this call.
-    #
-    # What this does NOT provide is a single atomic boundary across three
-    # files: POSIX has no multi-file rename, so a reader walking `out_dir`
-    # *during* the commit can still catch a mix. Closing that would mean
-    # publishing into a versioned directory and swapping a symlink, which
-    # changes the output layout this command's consumers already read. The
-    # exposure is the microseconds between three renames, against a consumer
-    # that uploads after the process exits and checks the exit code -- and it
-    # is already far narrower than writing the files in place, which left the
-    # mix visible for the whole duration of the write.
+    # It is deliberately NOT a transaction. There is no rollback of files
+    # already replaced, and POSIX has no multi-file atomic rename, so a commit
+    # that fails partway -- or a reader walking `out_dir` mid-commit -- can
+    # still see a mixed set. Guarding that needs either a versioned directory
+    # and a symlink swap (which changes the output layout consumers read) or
+    # backup-and-restore bookkeeping, and the bookkeeping costs more in
+    # complexity and bugs than the failure it covers: `os.replace` within one
+    # directory fails only on the kind of I/O error that has already made the
+    # export untrustworthy. The exit code is the signal that matters, and it
+    # is non-zero in every one of these cases.
     staged = []
-    committed = []
     written = []
     try:
         for filename, header, rows in targets:
@@ -489,44 +499,13 @@ def write_growth_csvs(
 
         for tmp, filename in staged:
             path = os.path.join(out_dir, filename)
-            backup = None
-            if os.path.exists(path):
-                # Hold the previous generation under a name of our own until
-                # every replace has succeeded.
-                fd, backup = tempfile.mkstemp(
-                    dir=out_dir, prefix=filename + ".", suffix=".bak"
-                )
-                os.close(fd)
-                os.replace(path, backup)
-            try:
-                os.replace(tmp, path)
-            except BaseException:
-                if backup is not None:
-                    os.replace(backup, path)
-                raise
-            committed.append((path, backup))
+            os.replace(tmp, path)
             written.append(os.path.abspath(path))
-    except BaseException:
-        # Roll the partition back to the generation it held on entry.
-        for path, backup in reversed(committed):
-            try:
-                if backup is None:
-                    os.remove(path)
-                else:
-                    os.replace(backup, path)
-            except OSError:
-                pass
-        written = []
-        raise
     finally:
-        # Whatever survived: unreplaced temporaries after a failure, and the
-        # displaced originals after a success. A leftover .tmp/.bak means the
-        # process was killed outright -- reference the three filenames
-        # explicitly when uploading rather than globbing the directory.
+        # Only temporaries that were never renamed still exist. A leftover
+        # .tmp means the process was killed outright -- reference the three
+        # filenames explicitly when uploading rather than globbing.
         for tmp, _filename in staged:
             if os.path.exists(tmp):
                 _quiet_remove(tmp)
-        for _path, backup in committed:
-            if backup is not None and os.path.exists(backup):
-                _quiet_remove(backup)
     return written

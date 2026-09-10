@@ -976,9 +976,13 @@ def test_concurrent_runs_get_distinct_temp_names(tmp_path):
     assert os.path.exists(a) and os.path.exists(b)
 
 
-def test_a_failed_commit_rolls_back_to_the_previous_generation(tmp_path):
-    """A failure partway through the commit must leave the directory on the
-    generation it held on entry -- not a mix of old and new files."""
+def test_a_failed_commit_is_not_rolled_back(tmp_path):
+    """Pins the deliberate limit, so nobody assumes a guarantee that is not
+    there. Staging makes the realistic failure (a write dying partway) publish
+    nothing, but the commit is not a transaction: a replace that fails after an
+    earlier one succeeded leaves a mixed set behind, and the non-zero exit is
+    what says so. Backup-and-restore bookkeeping to close this cost more in
+    complexity and bugs than the failure it covered."""
     from unittest.mock import patch
 
     import pytest
@@ -987,33 +991,32 @@ def test_a_failed_commit_rolls_back_to_the_previous_generation(tmp_path):
 
     out = tmp_path / "out"
     out.mkdir()
-    previous = {}
     for name in (mod.USERS_FILENAME, mod.WORKSPACES_FILENAME, mod.ORG_KPIS_FILENAME):
-        previous[name] = "previous generation of %s\n" % name
-        (out / name).write_text(previous[name], encoding="utf-8")
+        (out / name).write_text("previous generation\n", encoding="utf-8")
 
     real_replace = os.replace
-    seen = []
 
     def flaky_replace(src, dst):
-        # Fail the workspaces table's publish -- the second of three, so one
-        # file has already been replaced and two have not. Only the publish
-        # itself lands on the final filename (moving the displaced file aside
-        # targets a .bak), so the first hit is the one to fail; the second is
-        # the rollback restoring it, which must be allowed through.
         if str(dst).endswith(mod.WORKSPACES_FILENAME):
-            seen.append(dst)
-            if len(seen) == 1:
-                raise OSError(5, "I/O error")
+            raise OSError(5, "I/O error")
         return real_replace(src, dst)
 
     with patch.object(mod.os, "replace", flaky_replace):
         with pytest.raises(OSError):
             mod.write_growth_csvs([], [], [], str(out), DATE)
 
-    for name, content in previous.items():
-        assert (out / name).read_text(encoding="utf-8") == content, name
-    assert sorted(p.name for p in out.iterdir()) == sorted(previous)
+    # The users table was published before the failure and stays published --
+    # the caller learns from the exception, not from the directory.
+    assert (
+        (out / mod.USERS_FILENAME)
+        .read_text(encoding="utf-8")
+        .startswith("report_date,")
+    )
+    assert (out / mod.WORKSPACES_FILENAME).read_text(
+        encoding="utf-8"
+    ) == "previous generation\n"
+    # No staging debris is left for the uploader to find, either way.
+    assert not [p.name for p in out.iterdir() if ".tmp" in p.name]
 
 
 def test_published_files_are_readable_not_mkstemp_private(tmp_path):
