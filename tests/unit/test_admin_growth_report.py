@@ -1775,9 +1775,12 @@ def test_structurally_empty_snapshot_is_rejected(tmp_path):
     assert not out.exists() or not list(out.iterdir())
 
 
-def test_snapshot_with_only_one_section_is_accepted(tmp_path):
-    """A report carrying `workspaces` but no `users` is degraded but real --
-    it must still export, or the check would reject legitimate snapshots."""
+def test_snapshot_missing_either_section_is_blocked(tmp_path):
+    """EITHER section missing blocks, not just both. A workspaces-only payload
+    still yields a header-only growth_users.csv and drops the total_users /
+    active_users_* / new_users_* KPIs entirely -- the exact
+    "indistinguishable from an org with no users" case this guard exists to
+    prevent."""
     import cometx.cli.admin_growth_report as mod
 
     payload = {
@@ -1793,16 +1796,18 @@ def test_snapshot_with_only_one_section_is_accepted(tmp_path):
     }
     out = tmp_path / "out"
     with patch.object(mod, "_fetch_service_accounts", lambda api: None):
-        mod.generate_growth_report(
-            MagicMock(),
-            [],
-            chargeback=payload,
-            csv_dir=str(out),
-            no_html=True,
-            no_open=True,
-            report_date="2026-09-08",
-        )
-    assert (out / "growth_workspaces.csv").exists()
+        with pytest.raises(mod.GrowthReportError) as excinfo:
+            mod.generate_growth_report(
+                MagicMock(),
+                [],
+                chargeback=payload,
+                csv_dir=str(out),
+                no_html=True,
+                no_open=True,
+                report_date="2026-09-08",
+            )
+    assert "missing its 'users' section" in str(excinfo.value)
+    assert not out.exists() or not list(out.iterdir())
 
 
 def test_live_fetch_returning_empty_report_is_blocked(tmp_path):
@@ -1881,3 +1886,92 @@ def test_export_block_reason_resets_between_builds():
         assert reporter.export_block_reason() is not None
         reporter.build([], chargeback=_chargeback_fixture())
         assert reporter.export_block_reason() is None
+
+
+def test_exclude_personal_run_is_not_labelled_organization(tmp_path):
+    """Regression: the scope metric only branched on --workspace, so a run
+    that dropped personal workspaces labelled itself `organization` --
+    provenance byte-identical to a genuine org-wide run, which would
+    overwrite the org-wide Glue partition."""
+    import csv as _csv
+
+    import cometx.cli.admin_growth_report as mod
+
+    now = 1_720_000_000_000
+
+    def _user(name):
+        return {
+            "username": name,
+            "email": name + "@x.com",
+            "createdAt": now,
+            "lastUsedAt": now,
+            "experimentCount": 1,
+            "dataLoggedMb": 1.0,
+            "opikSpanCount": 1,
+            "suspended": False,
+            "deletedAt": None,
+        }
+
+    payload = {
+        "workspaces": [
+            {
+                "name": "team-a",
+                "numberOfExperiments": 5,
+                "totalSizeInMb": 1.0,
+                "projects": ["p"],
+                "members": [{"userName": "a"}],
+            },
+            {
+                "name": "user-bob",
+                "numberOfExperiments": 9,
+                "totalSizeInMb": 2.0,
+                "projects": ["q"],
+                "members": [{"userName": "b"}],
+            },
+        ],
+        "users": {"report": [_user("a"), _user("b")]},
+    }
+    out = tmp_path / "out"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        mod.generate_growth_report(
+            MagicMock(),
+            [],
+            chargeback=payload,
+            csv_dir=str(out),
+            no_html=True,
+            no_open=True,
+            report_date="2026-09-10",
+            exclude_personal=True,
+            personal_pattern="^user-",
+        )
+    kpis = {
+        r["metric_name"]: (r["metric_value"], r["metric_text"])
+        for r in _csv.DictReader(open(out / "growth_org_kpis.csv"))
+    }
+    assert kpis["scope"][1] == "organization_excluding_personal"
+    assert kpis["excluded_personal_workspaces"][0] == "1"
+
+
+def test_plain_org_wide_run_is_still_labelled_organization(tmp_path):
+    """The new branch must not fire when nothing was excluded."""
+    import csv as _csv
+
+    import cometx.cli.admin_growth_report as mod
+
+    out = tmp_path / "out"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        mod.generate_growth_report(
+            MagicMock(),
+            [],
+            chargeback=_chargeback_fixture(),
+            csv_dir=str(out),
+            no_html=True,
+            no_open=True,
+            report_date="2026-09-10",
+        )
+    kpis = {
+        r["metric_name"]: r["metric_text"]
+        for r in _csv.DictReader(open(out / "growth_org_kpis.csv"))
+    }
+    assert kpis["scope"] == "organization"
+    assert "excluded_personal_workspaces" not in kpis

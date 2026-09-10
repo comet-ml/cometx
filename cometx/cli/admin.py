@@ -894,19 +894,11 @@ def admin(parsed_args, remaining=None):
                             )
                         )
                         sys.exit(1)
-                    if not preloaded.get("users") and not preloaded.get("workspaces"):
-                        # `{}` or an object with neither section passes the
-                        # type check above, and the parsers are deliberately
-                        # permissive -- they return empty lists rather than
-                        # raising, so `_export_block_reason` never fires and we
-                        # would publish a "successful" zero-row export that
-                        # is indistinguishable from a genuinely empty org.
-                        print(
-                            "ERROR: --chargeback-report %r contains neither a "
-                            "'users' nor a 'workspaces' section; it is not a "
-                            "usable chargeback report." % parsed_args.chargeback_report
-                        )
-                        sys.exit(1)
+                    # Section presence is NOT checked here: `build()` applies
+                    # the same rule to both the snapshot and the live fetch,
+                    # so duplicating it meant two implementations that could
+                    # (and did) disagree about whether one missing section
+                    # was enough to block.
                 if parsed_args.no_html and not parsed_args.csv_dir:
                     print("ERROR: --no-html requires --csv-dir (nothing to write).")
                     sys.exit(1)

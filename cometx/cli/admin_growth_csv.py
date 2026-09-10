@@ -225,6 +225,7 @@ def collect_org_kpis(
     split,
     active_window_days,
     scope=None,
+    excluded_personal=0,
 ):
     """Flatten the report's org-level numbers into (name, value, unit) triples.
 
@@ -280,8 +281,26 @@ def collect_org_kpis(
     # send a dashboard filtering on it to an empty result. The request is
     # preserved separately as `scope_requested` when it differs, so an
     # operator can still see that a filter was asked for and did not land.
+    #
+    # `--exclude-personal` is the OTHER way the export can be a subset of the
+    # org, and it is independent of `--workspace`: a run that dropped personal
+    # workspaces but named none explicitly would otherwise label itself
+    # `organization` and overwrite a genuine org-wide partition.
     if not scope:
-        kpis.append(("scope", None, "label", "organization"))
+        kpis.append(
+            (
+                "scope",
+                None,
+                "label",
+                (
+                    "organization"
+                    if not excluded_personal
+                    else "organization_excluding_personal"
+                ),
+            )
+        )
+        if excluded_personal:
+            kpis.append(("excluded_personal_workspaces", excluded_personal, "count"))
     else:
         effective = sorted({w.name for w in ws_records if w.name})
         kpis.append(("scope", None, "label", "workspaces:" + ",".join(effective)))
@@ -295,6 +314,10 @@ def collect_org_kpis(
                     "workspaces:" + ",".join(requested),
                 )
             )
+        # Both filters can be active at once; the explicit list already names
+        # what survived, but the count says how much --exclude-personal took.
+        if excluded_personal:
+            kpis.append(("excluded_personal_workspaces", excluded_personal, "count"))
     kpis.append(("total_workspaces", len(ws_records), "count"))
     kpis.append(("total_projects", sum(w.num_projects for w in ws_records), "count"))
     kpis.append(

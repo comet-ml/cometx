@@ -450,25 +450,39 @@ class GrowthReporter:
                     "report is built entirely from the admin chargeback report."
                 ) from exc
         # Structural check AFTER the fetch, so it covers both sources with one
-        # implementation. The CLI validates a `--chargeback-report` file too,
-        # but the live path is the one that runs monthly in production -- and
-        # the chargeback parsers are deliberately permissive, returning empty
-        # lists rather than raising, so without this a `{}` response publishes
-        # a zero-row export and exits 0.
-        if not isinstance(chargeback, dict) or (
-            not chargeback.get("users") and not chargeback.get("workspaces")
-        ):
+        # implementation. The chargeback parsers are deliberately permissive,
+        # returning empty lists rather than raising, so without this a report
+        # missing a section publishes a header-only table and exits 0.
+        #
+        # EITHER section missing is a block, not both: a payload carrying only
+        # `workspaces` still yields a header-only growth_users.csv and drops
+        # the total_users / active_users_* / new_users_* KPIs entirely, which
+        # is exactly the "indistinguishable from an org with no users" case
+        # this guard exists to prevent.
+        #
+        # No type check on `chargeback` itself: this is our own admin
+        # endpoint, and its response being a JSON object is a contract we own
+        # rather than untrusted input.
+        missing = [k for k in ("users", "workspaces") if not chargeback.get(k)]
+        if missing:
             self._export_block_reason = (
-                "the chargeback report contains neither a 'users' nor a "
-                "'workspaces' section"
+                "the chargeback report is missing its %s section"
+                % " and ".join("'%s'" % m for m in missing)
             )
 
+        # Track whether --exclude-personal actually dropped anything, so the
+        # `scope` metric can say so. It is a second, pre-existing way the
+        # export can be a subset of the org: without this a run that dropped
+        # personal workspaces labels itself `organization`, and would
+        # overwrite a genuine org-wide Glue partition.
+        before = len((chargeback.get("workspaces") or []))
         chargeback = self._filter_personal_chargeback(chargeback)
+        excluded = before - len((chargeback.get("workspaces") or []))
         print("Building report...")
         now_ms = int(now.timestamp() * 1000)
         scope = set(workspaces) if workspaces else None
         report_data = self._assemble_report_data(
-            chargeback, window, now_ms, scope=scope
+            chargeback, window, now_ms, scope=scope, excluded_personal=excluded
         )
 
         # A scope that matched nothing is a filter that did not land: the
@@ -1229,7 +1243,9 @@ class GrowthReporter:
             )
         return "Org-wide (chargeback)"
 
-    def _assemble_report_data(self, chargeback, window, now_ms, scope=None):
+    def _assemble_report_data(
+        self, chargeback, window, now_ms, scope=None, excluded_personal=0
+    ):
         # Org totals for the header, from the FULL (unscoped) chargeback.
         org_users = org_workspaces = None
         try:
@@ -1355,6 +1371,7 @@ class GrowthReporter:
                     split,
                     active_window_days,
                     scope=scope,
+                    excluded_personal=excluded_personal,
                 ),
             )
         except Exception as exc:
