@@ -636,10 +636,10 @@ def admin(parsed_args, remaining=None):
                     sys.argv = ["streamlit", "run", admin_app_path]
                     stcli.main()
                 except Exception as e:
-                    print(f"ERROR launching Streamlit app: {e}")
+                    print("ERROR launching Streamlit app: " + _exception_text(e))
                     if parsed_args.debug:
                         raise
-                    return
+                    sys.exit(1)
             else:
                 # Generate PDF report
                 workspace_projects = parsed_args.WORKSPACE_PROJECT
@@ -648,7 +648,7 @@ def admin(parsed_args, remaining=None):
                     print(
                         "ERROR: At least one workspace/project is required when not using --app"
                     )
-                    return
+                    sys.exit(1)
 
                 try:
                     generate_usage_report(
@@ -660,8 +660,8 @@ def admin(parsed_args, remaining=None):
                         debug=parsed_args.debug,
                     )
                 except Exception as e:
-                    print("ERROR: " + str(e))
-                    return
+                    print("ERROR: " + _exception_text(e))
+                    sys.exit(1)
         elif parsed_args.ACTION == "gpu-report":
             workspace_projects = parsed_args.WORKSPACE_PROJECT or []
             start_date = parsed_args.start_date
@@ -675,7 +675,7 @@ def admin(parsed_args, remaining=None):
                     print(
                         "ERROR: At least one workspace/project is required when using --app"
                     )
-                    return
+                    sys.exit(1)
 
                 # Generate JSON first
                 json_file_path = None
@@ -695,17 +695,17 @@ def admin(parsed_args, remaining=None):
                             print(f"JSON report saved: {json_file_path}")
                         else:
                             print("ERROR: JSON file was not created")
-                            return
+                            sys.exit(1)
                     else:
                         print("ERROR: Failed to generate GPU report data")
-                        return
+                        sys.exit(1)
                 except Exception as e:
-                    print(f"ERROR: Could not generate JSON file: {e}")
+                    print("ERROR: Could not generate JSON file: " + _exception_text(e))
                     if parsed_args.debug:
                         import traceback
 
                         traceback.print_exc()
-                    return
+                    sys.exit(1)
 
                 # Launch Streamlit app
                 # Set environment variables if --api-key or --url-override were provided
@@ -738,17 +738,17 @@ def admin(parsed_args, remaining=None):
                     sys.argv = ["streamlit", "run", gpu_app_path]
                     stcli.main()
                 except Exception as e:
-                    print(f"ERROR launching Streamlit app: {e}")
+                    print("ERROR launching Streamlit app: " + _exception_text(e))
                     if parsed_args.debug:
                         raise
-                    return
+                    sys.exit(1)
             else:
                 # Generate report (JSON is always saved by gpu_report_main)
                 if not workspace_projects:
                     print(
                         "ERROR: At least one workspace/project is required when not using --app"
                     )
-                    return
+                    sys.exit(1)
                 try:
                     result = gpu_report_main(
                         workspace_projects=workspace_projects,
@@ -781,12 +781,12 @@ def admin(parsed_args, remaining=None):
 
                                 open_pdf(pdf_file, debug=parsed_args.debug)
                 except Exception as e:
-                    print("ERROR: " + str(e))
+                    print("ERROR: " + _exception_text(e))
                     if parsed_args.debug:
                         import traceback
 
                         traceback.print_exc()
-                    return
+                    sys.exit(1)
         elif parsed_args.ACTION == "optimizer-report":
             optimizer_id = parsed_args.OPTIMIZER_ID
 
@@ -817,10 +817,10 @@ def admin(parsed_args, remaining=None):
                     sys.argv = ["streamlit", "run", optimizer_app_path]
                     stcli.main()
                 except Exception as e:
-                    print(f"ERROR launching Streamlit app: {e}")
+                    print("ERROR launching Streamlit app: " + _exception_text(e))
                     if parsed_args.debug:
                         raise
-                    return
+                    sys.exit(1)
             else:
                 # Generate JSON report
                 try:
@@ -849,14 +849,14 @@ def admin(parsed_args, remaining=None):
                         print(f"\nOptimizer report generated successfully: {result}")
                     else:
                         print("ERROR: Failed to generate optimizer report")
-                        return
+                        sys.exit(1)
                 except Exception as e:
-                    print("ERROR: " + str(e))
+                    print("ERROR: " + _exception_text(e))
                     if parsed_args.debug:
                         import traceback
 
                         traceback.print_exc()
-                    return
+                    sys.exit(1)
         elif parsed_args.ACTION == "growth-report":
             try:
                 preloaded = None
@@ -939,12 +939,21 @@ def admin(parsed_args, remaining=None):
         if parsed_args.debug:
             raise
         else:
+            # 130 (128 + SIGINT) is the shell convention for an interrupted
+            # command. Exiting 0 told a scheduler the run succeeded.
             print("Canceled by CONTROL+C")
+            sys.exit(130)
     except Exception as exc:
         if parsed_args.debug:
             raise
         else:
+            # Every error path in this function must exit non-zero. `admin` is
+            # run unattended -- a monthly growth-report cron, a CI usage
+            # report -- where the exit code is the only signal anything reads.
+            # Printing "ERROR: ..." and returning 0 reported success while
+            # producing nothing.
             print("ERROR: " + _exception_text(exc))
+            sys.exit(1)
 
 
 def main(args):

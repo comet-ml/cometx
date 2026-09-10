@@ -21,6 +21,20 @@ cometx admin chargeback-report 2024-09 # for older Comet installations
 cometx admin chargeback-report         # for newer Comet installations
 ```
 
+## Exit codes
+
+Every `cometx admin` subcommand reports its outcome through the exit code, so
+it is safe to run unattended (cron, systemd, CI):
+
+| Code | Meaning |
+|---|---|
+| `0` | Success — the requested output was produced |
+| `1` | Error — the reason is printed as `ERROR: ...`, and nothing (or nothing complete) was written |
+| `130` | Interrupted with CONTROL+C |
+
+Add `--debug` to any subcommand to get the full traceback instead of the
+one-line error.
+
 ## Advanced
 
 If your installation does not support Comet Smart Keys, or your host is at an unusual location, you can also use the `--host` flag as shown:
