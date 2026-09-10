@@ -906,16 +906,16 @@ def test_a_failed_write_publishes_nothing(tmp_path):
     stale = out / mod.WORKSPACES_FILENAME
     stale.write_text("stale-from-last-run\n", encoding="utf-8")
 
-    real_write = mod._write_csv
+    real_write = mod._write_csv_rows
     calls = []
 
-    def flaky(path, header, rows):
-        calls.append(path)
+    def flaky(fp, header, rows):
+        calls.append(fp)
         if len(calls) == 3:
             raise OSError(28, "No space left on device")
-        return real_write(path, header, rows)
+        return real_write(fp, header, rows)
 
-    with patch.object(mod, "_write_csv", flaky):
+    with patch.object(mod, "_write_csv_rows", flaky):
         with pytest.raises(OSError):
             mod.write_growth_csvs([], [], [], str(out), DATE)
 
@@ -942,3 +942,93 @@ def test_write_replaces_a_previous_runs_files(tmp_path):
     (out / USERS_FILENAME).write_text("old\n", encoding="utf-8")
     write_growth_csvs([], [], [], str(out), DATE)
     assert (out / USERS_FILENAME).read_text(encoding="utf-8").startswith("report_date,")
+
+
+def test_staging_does_not_use_a_predictable_temp_name(tmp_path):
+    """`out_dir` is an operator-supplied path that may be world-writable. A
+    fixed `<name>.tmp` lets anyone pre-plant a symlink there and have the
+    export truncate whatever it points at; `mkstemp` opens O_CREAT|O_EXCL, so
+    the planted name is simply never used."""
+    from cometx.cli.admin_growth_csv import USERS_FILENAME, write_growth_csvs
+
+    out = tmp_path / "out"
+    out.mkdir()
+    victim = tmp_path / "victim.txt"
+    victim.write_text("precious\n", encoding="utf-8")
+    (out / (USERS_FILENAME + ".tmp")).symlink_to(victim)
+
+    write_growth_csvs([], [], [], str(out), DATE)
+
+    assert victim.read_text(encoding="utf-8") == "precious\n"
+    assert (out / USERS_FILENAME).read_text(encoding="utf-8").startswith("report_date,")
+
+
+def test_concurrent_runs_get_distinct_temp_names(tmp_path):
+    """Two runs staging into one directory must not write, or clean up, each
+    other's staged data under a shared fixed name."""
+    from cometx.cli.admin_growth_csv import USERS_HEADER, _stage_csv
+
+    out = tmp_path / "out"
+    out.mkdir()
+    a = _stage_csv(str(out), "growth_users.csv", USERS_HEADER, [])
+    b = _stage_csv(str(out), "growth_users.csv", USERS_HEADER, [])
+    assert a != b
+    assert os.path.exists(a) and os.path.exists(b)
+
+
+def test_a_failed_commit_rolls_back_to_the_previous_generation(tmp_path):
+    """A failure partway through the commit must leave the directory on the
+    generation it held on entry -- not a mix of old and new files."""
+    from unittest.mock import patch
+
+    import pytest
+
+    import cometx.cli.admin_growth_csv as mod
+
+    out = tmp_path / "out"
+    out.mkdir()
+    previous = {}
+    for name in (mod.USERS_FILENAME, mod.WORKSPACES_FILENAME, mod.ORG_KPIS_FILENAME):
+        previous[name] = "previous generation of %s\n" % name
+        (out / name).write_text(previous[name], encoding="utf-8")
+
+    real_replace = os.replace
+    seen = []
+
+    def flaky_replace(src, dst):
+        # Fail the workspaces table's publish -- the second of three, so one
+        # file has already been replaced and two have not. Only the publish
+        # itself lands on the final filename (moving the displaced file aside
+        # targets a .bak), so the first hit is the one to fail; the second is
+        # the rollback restoring it, which must be allowed through.
+        if str(dst).endswith(mod.WORKSPACES_FILENAME):
+            seen.append(dst)
+            if len(seen) == 1:
+                raise OSError(5, "I/O error")
+        return real_replace(src, dst)
+
+    with patch.object(mod.os, "replace", flaky_replace):
+        with pytest.raises(OSError):
+            mod.write_growth_csvs([], [], [], str(out), DATE)
+
+    for name, content in previous.items():
+        assert (out / name).read_text(encoding="utf-8") == content, name
+    assert sorted(p.name for p in out.iterdir()) == sorted(previous)
+
+
+def test_published_files_are_readable_not_mkstemp_private(tmp_path):
+    """mkstemp creates 0600. These are published data files whose upload step
+    may run as another user; narrowing the mode from what a plain open() would
+    produce would break such a pipeline silently."""
+    import stat
+
+    from cometx.cli.admin_growth_csv import USERS_FILENAME, write_growth_csvs
+
+    out = tmp_path / "out"
+    write_growth_csvs([], [], [], str(out), DATE)
+
+    reference = tmp_path / "reference.csv"
+    reference.write_text("x\n", encoding="utf-8")
+
+    published = stat.S_IMODE((out / USERS_FILENAME).stat().st_mode)
+    assert published == stat.S_IMODE(reference.stat().st_mode)

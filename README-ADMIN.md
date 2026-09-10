@@ -366,6 +366,15 @@ honestly. Passing `--csv-dir` is what turns an empty result into an error, so
 `cometx admin growth-report` on its own still produces a report in each of
 these cases.
 
-The three tables are written as one unit: they are staged and only moved into
-place once all three have been written, so a failure partway through (a full
-disk, say) never leaves one fresh file beside two stale ones.
+The three tables are written as one unit. Each is staged to a private
+temporary file first, and they are moved into place only once all three have
+been written; if a move fails partway, the ones already moved are rolled back,
+so `--csv-dir` returns to the generation it held before the run. A failure
+never leaves one fresh file beside two stale ones.
+
+POSIX has no atomic multi-file rename, so a reader walking the directory
+*during* the final moves can still catch a mix — a window of microseconds.
+Upload after the command exits and check the exit code, and it cannot arise.
+Reference the three filenames explicitly rather than globbing the directory: a
+process killed outright (SIGKILL, a lost node) can leave a `.tmp` or `.bak`
+file behind, which a glob would sweep into the upload.

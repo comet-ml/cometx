@@ -2229,7 +2229,7 @@ def test_scope_label_marks_an_unscoped_exclude_personal_run():
     The filter narrows users too, so the report is a subset, not the org."""
     from cometx.cli.admin_growth_report import GrowthReporter
 
-    label = GrowthReporter._scope_label(None, 12, 30, excluded_personal=4)
+    label = GrowthReporter._scope_label(None, 12, 30, excluded_personal_count=4)
     assert not label.startswith("Org-wide:")
     assert "excluding personal" in label
     assert "4 personal workspace(s) excluded" in label
@@ -2237,7 +2237,7 @@ def test_scope_label_marks_an_unscoped_exclude_personal_run():
 
     # Unknown org totals still name the exclusion.
     assert "excluding personal" in GrowthReporter._scope_label(
-        None, None, None, excluded_personal=4
+        None, None, None, excluded_personal_count=4
     )
 
 
@@ -2246,7 +2246,7 @@ def test_scope_label_is_org_wide_when_the_pattern_dropped_nothing():
     `collect_org_kpis` applies, so the two provenances cannot disagree."""
     from cometx.cli.admin_growth_report import GrowthReporter
 
-    assert GrowthReporter._scope_label(None, 165, 137, excluded_personal=0) == (
+    assert GrowthReporter._scope_label(None, 165, 137, excluded_personal_count=0) == (
         "Org-wide: 165 workspaces, 137 users (chargeback)"
     )
 

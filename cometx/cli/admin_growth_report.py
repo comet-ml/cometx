@@ -477,12 +477,16 @@ class GrowthReporter:
         # overwrite a genuine org-wide Glue partition.
         before = len((chargeback.get("workspaces") or []))
         chargeback = self._filter_personal_chargeback(chargeback)
-        excluded = before - len((chargeback.get("workspaces") or []))
+        excluded_personal_count = before - len((chargeback.get("workspaces") or []))
         print("Building report...")
         now_ms = int(now.timestamp() * 1000)
         scope = set(workspaces) if workspaces else None
         report_data = self._assemble_report_data(
-            chargeback, window, now_ms, scope=scope, excluded_personal=excluded
+            chargeback,
+            window,
+            now_ms,
+            scope=scope,
+            excluded_personal_count=excluded_personal_count,
         )
 
         # A filter that left nothing behind is a filter that did not land:
@@ -491,10 +495,12 @@ class GrowthReporter:
         # special-case. Checked after assembly, since only then do we know
         # which records survived scoping and --exclude-personal.
         if self._export_block_reason is None:
-            self._export_block_reason = self._empty_export_reason(scope, excluded)
+            self._export_block_reason = self._empty_export_reason(
+                scope, excluded_personal_count
+            )
         return report_data
 
-    def _empty_export_reason(self, scope, excluded_personal):
+    def _empty_export_reason(self, scope, excluded_personal_count):
         """A block reason when the filters left nothing to export, else None.
 
         Both filters are checked, not just an explicit `--workspace`: an
@@ -524,10 +530,10 @@ class GrowthReporter:
             for name, records in (("workspaces", ws_records), ("users", people))
             if not records
         )
-        if excluded_personal:
+        if excluded_personal_count:
             return (
                 "--exclude-personal left no %s to export (%d personal "
-                "workspace(s) dropped)" % (empty, excluded_personal)
+                "workspace(s) dropped)" % (empty, excluded_personal_count)
             )
         if scope:
             return (
@@ -1273,14 +1279,14 @@ class GrowthReporter:
 
     @staticmethod
     def _scope_label(
-        scope, org_workspaces, org_users, scoped_count=None, excluded_personal=0
+        scope, org_workspaces, org_users, scoped_count=None, excluded_personal_count=0
     ):
         """One-line scope descriptor for the report header. When scoped, the
         count reflects the workspaces actually present after scoping/filtering
         (`scoped_count`), not the raw requested arg list, so the badge matches
         the rendered sections.
 
-        `excluded_personal` is the number of workspaces `--exclude-personal`
+        `excluded_personal_count` is the number of workspaces `--exclude-personal`
         actually dropped. An unscoped run that dropped some is NOT org-wide:
         the filter narrows users as well as workspaces, so labelling it
         `Org-wide` would put an org-wide badge on a subset -- and contradict
@@ -1294,14 +1300,14 @@ class GrowthReporter:
                 f"Scoped to {n} selected workspace(s) "
                 "(per-user totals remain org-wide)"
             )
-        if excluded_personal:
-            excluded = f"{excluded_personal} personal workspace(s) excluded"
+        if excluded_personal_count:
+            excluded_label = f"{excluded_personal_count} personal workspace(s) excluded"
             if org_workspaces is not None:
                 return (
                     f"Org-wide excluding personal: {org_workspaces} workspaces, "
-                    f"{org_users} users ({excluded}, chargeback)"
+                    f"{org_users} users ({excluded_label}, chargeback)"
                 )
-            return f"Org-wide excluding personal ({excluded}, chargeback)"
+            return f"Org-wide excluding personal ({excluded_label}, chargeback)"
         if org_workspaces is not None:
             return (
                 f"Org-wide: {org_workspaces} workspaces, {org_users} users "
@@ -1310,7 +1316,7 @@ class GrowthReporter:
         return "Org-wide (chargeback)"
 
     def _assemble_report_data(
-        self, chargeback, window, now_ms, scope=None, excluded_personal=0
+        self, chargeback, window, now_ms, scope=None, excluded_personal_count=0
     ):
         # Org totals for the header, from the chargeback before `scope` is
         # applied. Not the raw payload: `build()` has already applied
@@ -1440,7 +1446,7 @@ class GrowthReporter:
                     split,
                     active_window_days,
                     scope=scope,
-                    excluded_personal=excluded_personal,
+                    excluded_personal_count=excluded_personal_count,
                 ),
             )
         except Exception as exc:
@@ -1465,7 +1471,7 @@ class GrowthReporter:
                     org_workspaces,
                     org_users,
                     scoped_count=len(ws_records),
-                    excluded_personal=excluded_personal,
+                    excluded_personal_count=excluded_personal_count,
                 ),
             },
             "window": self._build_window_block(window, 0),

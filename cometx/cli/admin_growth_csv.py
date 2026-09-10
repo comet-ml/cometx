@@ -17,6 +17,7 @@ import csv
 import datetime
 import decimal
 import os
+import tempfile
 
 from cometx.cli.admin_growth_users import _looks_like_service_account
 
@@ -234,7 +235,7 @@ def collect_org_kpis(
     split,
     active_window_days,
     scope=None,
-    excluded_personal=0,
+    excluded_personal_count=0,
 ):
     """Flatten the report's org-level numbers into (name, value, unit) triples.
 
@@ -303,13 +304,15 @@ def collect_org_kpis(
                 "label",
                 (
                     "organization"
-                    if not excluded_personal
+                    if not excluded_personal_count
                     else "organization_excluding_personal"
                 ),
             )
         )
-        if excluded_personal:
-            kpis.append(("excluded_personal_workspaces", excluded_personal, "count"))
+        if excluded_personal_count:
+            kpis.append(
+                ("excluded_personal_workspaces", excluded_personal_count, "count")
+            )
     else:
         effective = sorted({w.name for w in ws_records if w.name})
         kpis.append(("scope", None, "label", "workspaces:" + ",".join(effective)))
@@ -325,8 +328,10 @@ def collect_org_kpis(
             )
         # Both filters can be active at once; the explicit list already names
         # what survived, but the count says how much --exclude-personal took.
-        if excluded_personal:
-            kpis.append(("excluded_personal_workspaces", excluded_personal, "count"))
+        if excluded_personal_count:
+            kpis.append(
+                ("excluded_personal_workspaces", excluded_personal_count, "count")
+            )
     kpis.append(("total_workspaces", len(ws_records), "count"))
     kpis.append(("total_projects", sum(w.num_projects for w in ws_records), "count"))
     kpis.append(
@@ -358,11 +363,64 @@ def collect_org_kpis(
     return normalized
 
 
+def _write_csv_rows(fp, header, rows):
+    """Write `header` + `rows` to an already-open text file object."""
+    writer = csv.writer(fp, quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
+    writer.writerow(header)
+    writer.writerows(rows)
+
+
 def _write_csv(path, header, rows):
     with open(path, "w", newline="", encoding="utf-8") as fp:
-        writer = csv.writer(fp, quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
-        writer.writerow(header)
-        writer.writerows(rows)
+        _write_csv_rows(fp, header, rows)
+
+
+def _quiet_remove(path):
+    """Best-effort unlink. Cleanup failure must never mask the error that
+    brought us here, nor fail an otherwise-successful run."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _apply_default_file_mode(path):
+    """Give `path` the mode a plain `open(path, "w")` would have produced.
+
+    `mkstemp` deliberately creates 0600. These are published data files: the
+    upload step may well run as another user or group, and silently narrowing
+    permissions from what the previous implementation wrote would break such a
+    pipeline for no stated reason. Reading the umask requires temporarily
+    setting it, which is safe here -- this is a single-threaded CLI process.
+    """
+    umask = os.umask(0)
+    os.umask(umask)
+    try:
+        os.chmod(path, 0o666 & ~umask)
+    except OSError:
+        # A filesystem without POSIX modes is not a reason to fail the export.
+        pass
+
+
+def _stage_csv(out_dir, filename, header, rows):
+    """Write one table to a uniquely-named temporary inside `out_dir`.
+
+    `mkstemp`, not a predictable `<name>.tmp`: it opens with O_CREAT|O_EXCL, so
+    it neither follows a pre-planted symlink (which would truncate whatever it
+    points at, since `out_dir` is an operator-supplied path that may be
+    world-writable) nor collides with a concurrent run into the same directory
+    -- where two runs would otherwise write and clean up each other's staged
+    data under the same fixed name.
+    """
+    fd, tmp = tempfile.mkstemp(dir=out_dir, prefix=filename + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as fp:
+            _write_csv_rows(fp, header, rows)
+    except BaseException:
+        _quiet_remove(tmp)
+        raise
+    _apply_default_file_mode(tmp)
+    return tmp
 
 
 def write_growth_csvs(
@@ -398,34 +456,77 @@ def write_growth_csvs(
         (ORG_KPIS_FILENAME, ORG_KPIS_HEADER, build_org_kpi_rows(kpis, report_date)),
     ]
 
-    # Stage every table beside its destination and only move them into place
-    # once all three have been written. The three files are ONE partition: a
-    # run that died halfway through -- a full disk, a read-only file left by a
-    # previous run -- would otherwise leave this month's growth_users.csv next
-    # to last month's growth_workspaces.csv, and the upload step syncs the
-    # directory rather than the path list returned here. That mismatch is
-    # worse than the header-only export the block reasons exist to prevent,
-    # because nothing about the files says the run failed.
+    # Stage every table, then commit them together. The three files are ONE
+    # partition: a run that died halfway would otherwise leave this month's
+    # growth_users.csv beside last month's growth_workspaces.csv, and nothing
+    # about the files would say the run failed.
     #
-    # `os.replace` is atomic within a directory, so a reader of `out_dir` sees
-    # either the whole previous set or the whole new one.
+    # Two phases, so a failure in either leaves the previous generation whole:
+    #
+    #   stage  -- every table is written to its own temporary. A write failure
+    #             here (a full disk is the realistic one) has touched nothing
+    #             the reader can see.
+    #   commit -- each temporary is `os.replace`d into place, the displaced
+    #             file kept aside until all three have landed. A failure
+    #             partway rolls the earlier ones back, so the directory
+    #             returns to the generation it held before this call.
+    #
+    # What this does NOT provide is a single atomic boundary across three
+    # files: POSIX has no multi-file rename, so a reader walking `out_dir`
+    # *during* the commit can still catch a mix. Closing that would mean
+    # publishing into a versioned directory and swapping a symlink, which
+    # changes the output layout this command's consumers already read. The
+    # exposure is the microseconds between three renames, against a consumer
+    # that uploads after the process exits and checks the exit code -- and it
+    # is already far narrower than writing the files in place, which left the
+    # mix visible for the whole duration of the write.
     staged = []
+    committed = []
     written = []
     try:
         for filename, header, rows in targets:
+            staged.append((_stage_csv(out_dir, filename, header, rows), filename))
+
+        for tmp, filename in staged:
             path = os.path.join(out_dir, filename)
-            tmp = path + ".tmp"
-            _write_csv(tmp, header, rows)
-            staged.append((tmp, path))
-        for tmp, path in staged:
-            os.replace(tmp, path)
-            written.append(os.path.abspath(path))
-    finally:
-        # Only the temporaries that were never renamed still exist. Cleanup
-        # failure must not mask the write error that brought us here.
-        for tmp, _path in staged:
+            backup = None
+            if os.path.exists(path):
+                # Hold the previous generation under a name of our own until
+                # every replace has succeeded.
+                fd, backup = tempfile.mkstemp(
+                    dir=out_dir, prefix=filename + ".", suffix=".bak"
+                )
+                os.close(fd)
+                os.replace(path, backup)
             try:
-                os.remove(tmp)
+                os.replace(tmp, path)
+            except BaseException:
+                if backup is not None:
+                    os.replace(backup, path)
+                raise
+            committed.append((path, backup))
+            written.append(os.path.abspath(path))
+    except BaseException:
+        # Roll the partition back to the generation it held on entry.
+        for path, backup in reversed(committed):
+            try:
+                if backup is None:
+                    os.remove(path)
+                else:
+                    os.replace(backup, path)
             except OSError:
                 pass
+        written = []
+        raise
+    finally:
+        # Whatever survived: unreplaced temporaries after a failure, and the
+        # displaced originals after a success. A leftover .tmp/.bak means the
+        # process was killed outright -- reference the three filenames
+        # explicitly when uploading rather than globbing the directory.
+        for tmp, _filename in staged:
+            if os.path.exists(tmp):
+                _quiet_remove(tmp)
+        for _path, backup in committed:
+            if backup is not None and os.path.exists(backup):
+                _quiet_remove(backup)
     return written
