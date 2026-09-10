@@ -1035,3 +1035,40 @@ def test_published_files_are_readable_not_mkstemp_private(tmp_path):
 
     published = stat.S_IMODE((out / USERS_FILENAME).stat().st_mode)
     assert published == stat.S_IMODE(reference.stat().st_mode)
+
+
+def test_staged_files_stay_private_while_being_written(tmp_path):
+    """The staged file holds real chargeback data. It keeps mkstemp's 0600
+    until the table is complete, so another local user cannot read a
+    half-written table, and a `.tmp` left behind by a killed run stays
+    private rather than world-readable."""
+    import stat
+    from unittest.mock import patch
+
+    import cometx.cli.admin_growth_csv as mod
+
+    out = tmp_path / "out"
+    out.mkdir()
+    modes_during_write = []
+    real_write = mod._write_csv_rows
+
+    def observing_write(fp, header, rows):
+        # The descriptor being written right now -- not a directory scan,
+        # which would also pick up earlier tables whose staging is already
+        # complete and which are legitimately widened by then.
+        modes_during_write.append(stat.S_IMODE(os.fstat(fp.fileno()).st_mode))
+        return real_write(fp, header, rows)
+
+    with patch.object(mod, "_write_csv_rows", observing_write):
+        mod.write_growth_csvs([], [], [], str(out), DATE)
+
+    assert modes_during_write, "no staged file was observed mid-write"
+    assert set(modes_during_write) == {0o600}, modes_during_write
+
+    # ...and the published files still carry the normal mode, so an uploader
+    # running as another user can read them.
+    reference = tmp_path / "reference.csv"
+    reference.write_text("x\n", encoding="utf-8")
+    expected = stat.S_IMODE(reference.stat().st_mode)
+    for name in (mod.USERS_FILENAME, mod.WORKSPACES_FILENAME, mod.ORG_KPIS_FILENAME):
+        assert stat.S_IMODE((out / name).stat().st_mode) == expected, name

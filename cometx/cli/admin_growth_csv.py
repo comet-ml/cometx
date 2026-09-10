@@ -430,8 +430,20 @@ def _stage_csv(out_dir, filename, header, rows):
         # `fdopen` takes ownership of the descriptor, so the file is closed on
         # the way out whether or not the write succeeds.
         with os.fdopen(fd, "w", newline="", encoding="utf-8") as fp:
-            _apply_default_file_mode(fp.fileno(), tmp)
             _write_csv_rows(fp, header, rows)
+            # Widen only once the file holds a complete table, and flush first
+            # so nothing is still sitting in Python's buffer at that moment.
+            # Until here the staged file keeps mkstemp's 0600, so no other
+            # local user can read a half-written table -- and a `.tmp` left by
+            # a killed run stays private rather than readable.
+            #
+            # Still on the DESCRIPTOR rather than the published path: chmod by
+            # name after `os.replace` would reintroduce exactly the window
+            # this file removed a commit ago, where the name can be pointed
+            # somewhere else between publishing and setting the mode. The
+            # mode survives the rename, so applying it here is equivalent.
+            fp.flush()
+            _apply_default_file_mode(fp.fileno(), tmp)
     except BaseException:
         _quiet_remove(tmp)
         raise
