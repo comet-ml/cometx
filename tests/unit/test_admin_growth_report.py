@@ -1975,3 +1975,101 @@ def test_plain_org_wide_run_is_still_labelled_organization(tmp_path):
     }
     assert kpis["scope"] == "organization"
     assert "excluded_personal_workspaces" not in kpis
+
+
+def _two_workspace_payload():
+    """team-a (member 'a') plus a personal workspace user-bob (member 'b'),
+    each user carrying 10 experiments."""
+    now = 1_720_000_000_000
+
+    def _user(name):
+        return {
+            "username": name,
+            "email": name + "@x.com",
+            "createdAt": now,
+            "lastUsedAt": now,
+            "experimentCount": 10,
+            "dataLoggedMb": 1.0,
+            "opikSpanCount": 1,
+            "suspended": False,
+            "deletedAt": None,
+        }
+
+    return {
+        "workspaces": [
+            {
+                "name": "team-a",
+                "numberOfExperiments": 5,
+                "totalSizeInMb": 1.0,
+                "projects": ["p"],
+                "members": [{"userName": "a"}],
+            },
+            {
+                "name": "user-bob",
+                "numberOfExperiments": 9,
+                "totalSizeInMb": 2.0,
+                "projects": ["q"],
+                "members": [{"userName": "b"}],
+            },
+        ],
+        "users": {"report": [_user("a"), _user("b")]},
+    }
+
+
+def _export(tmp_path, name, workspaces=(), **kwargs):
+    import csv as _csv
+
+    import cometx.cli.admin_growth_report as mod
+
+    out = tmp_path / name
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        mod.generate_growth_report(
+            MagicMock(),
+            list(workspaces),
+            chargeback=_two_workspace_payload(),
+            csv_dir=str(out),
+            no_html=True,
+            no_open=True,
+            report_date="2026-09-10",
+            **kwargs,
+        )
+    read = lambda f: list(_csv.DictReader(open(out / f)))  # noqa: E731
+    return (
+        [r["workspace"] for r in read("growth_workspaces.csv")],
+        [r["username"] for r in read("growth_users.csv")],
+        {r["metric_name"]: r["metric_value"] for r in read("growth_org_kpis.csv")},
+    )
+
+
+def test_exclude_personal_narrows_users_not_just_workspaces(tmp_path):
+    """Regression: --exclude-personal trimmed only the workspace list, so the
+    user table and every user-derived KPI stayed org-wide while the workspace
+    metrics were filtered. One `scope` label then covered two different
+    populations -- the workspace table reporting 5 experiments while the user
+    metrics reported 20."""
+    ws, users, kpis = _export(
+        tmp_path, "excl", exclude_personal=True, personal_pattern="^user-"
+    )
+    assert ws == ["team-a"]
+    assert users == ["a"]  # 'b' only belonged to the excluded workspace
+    assert kpis["total_users"] == "1"
+    assert kpis["personal_experiments"] == "10"  # not 20
+
+
+def test_exclude_personal_matches_an_equivalent_workspace_scope(tmp_path):
+    """Both filters narrow the same way, so selecting the surviving workspace
+    explicitly must produce the same population."""
+    excluded = _export(tmp_path, "a", exclude_personal=True, personal_pattern="^user-")
+    scoped = _export(tmp_path, "b", workspaces=["team-a"])
+    assert excluded[0] == scoped[0]
+    assert excluded[1] == scoped[1]
+    assert excluded[2]["total_users"] == scoped[2]["total_users"]
+    assert excluded[2]["personal_experiments"] == scoped[2]["personal_experiments"]
+
+
+def test_unfiltered_run_keeps_the_whole_roster(tmp_path):
+    """The narrowing must not fire when no filter is active."""
+    ws, users, kpis = _export(tmp_path, "all")
+    assert ws == ["team-a", "user-bob"]
+    assert users == ["a", "b"]
+    assert kpis["total_users"] == "2"

@@ -557,16 +557,26 @@ class GrowthReporter:
 
     def _filter_personal_chargeback(self, chargeback):
         """Drop personal workspaces (name matches --personal-pattern) from the
-        chargeback workspace list when --exclude-personal is set. The user
-        roster (users.report / licensedUsers) is left whole; only the
-        workspace list and its memberships are trimmed. Returns a shallow copy;
-        never mutates the input."""
+        chargeback report when --exclude-personal is set.
+
+        The user roster is narrowed to members of the surviving workspaces,
+        the same rule `_scope_chargeback` applies for an explicit
+        `--workspace` selection. Trimming only the workspace list would leave
+        the user table and every user-derived KPI (total_users,
+        active_users_*, personal_*/service_*) org-wide while the workspace
+        metrics were filtered -- one `scope` label over two different
+        populations, so a dashboard would read 5 experiments from the
+        workspace table and 20 from the user table for the same run.
+
+        Returns a shallow copy; never mutates the input."""
         pattern = self._personal_pattern_compiled()
         if pattern is None:
             return chargeback
         workspaces = chargeback.get("workspaces") or []
         kept = [w for w in workspaces if not pattern.search(w.get("name") or "")]
-        return {**chargeback, "workspaces": kept}
+        # Reuse the existing scoping helper so both filters narrow users the
+        # same way, rather than growing a second implementation.
+        return _scope_chargeback(chargeback, [w.get("name") for w in kept])
 
     def _window_label(self, window):
         return (
