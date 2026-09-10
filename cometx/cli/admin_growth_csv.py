@@ -1,0 +1,523 @@
+# -*- coding: utf-8 -*-
+"""Glue-ready CSV fact tables derived from the admin chargeback report.
+
+Three flat tables -- users, workspaces, org KPIs -- intended for
+S3 -> AWS Glue -> Athena -> QuickSight. Deliberately built from the parsed
+`UserRecord`/`WorkspaceRecord` objects rather than from the HTML report's
+`report_data`: that payload carries display-formatted strings (thousands
+separators via `_num()`, `%`-suffixed rates) which would make a Glue crawler
+type the columns as `string` and silently break aggregation.
+
+This module must not import from `admin_growth_report.py` -- that module
+imports FROM `admin_growth_users.py`, so importing back would be circular.
+Callers pass already-parsed records in.
+"""
+
+import csv
+import datetime
+import decimal
+import os
+import tempfile
+
+from cometx.cli.admin_growth_users import _looks_like_service_account
+
+USERS_HEADER = [
+    "report_date",
+    "username",
+    "email",
+    "created_at",
+    "last_used_at",
+    "em_last_used_at",
+    "opik_last_used_at",
+    "is_suspended",
+    "is_service_account",
+    "experiment_count",
+    "data_logged_mb",
+    "opik_span_count",
+    # Always empty on emitted rows -- deleted users are filtered out (see
+    # `build_users_rows`). Present so the column is typed for Glue and so the
+    # schema need not change if that policy is ever revisited. Appended last,
+    # per the stable-column-order rule.
+    "deleted_at",
+]
+
+WORKSPACES_HEADER = [
+    "report_date",
+    "workspace",
+    "member_count",
+    "num_projects",
+    "num_experiments",
+    "data_mb",
+]
+
+ORG_KPIS_HEADER = [
+    "report_date",
+    "metric_name",
+    # Strictly numeric (or empty). Non-numeric metrics carry their payload in
+    # `metric_text` instead -- a single string here would make a Glue crawler
+    # type the whole column as `string`, forcing a cast on every aggregation.
+    "metric_value",
+    "metric_unit",
+    # Populated only for `label`-unit metrics (e.g. service_account_source);
+    # empty on every numeric metric.
+    "metric_text",
+]
+
+
+def _ms_to_date(ms) -> str:
+    """Epoch-ms -> `YYYY-MM-DD` (UTC). Empty string when absent or unparseable
+    -- an empty CSV field is what Glue reads as NULL."""
+    if ms is None:
+        return ""
+    try:
+        return datetime.datetime.fromtimestamp(
+            ms / 1000, tz=datetime.timezone.utc
+        ).strftime("%Y-%m-%d")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return ""
+
+
+def _num_or_empty(value):
+    """Render a number in plain decimal; `None` becomes an empty field.
+
+    `None` is preserved as empty rather than coerced to 0 because the two mean
+    different things: chargeback omits `opikSpanCount` for deployments without
+    Opik, which is not the same as a user with zero spans.
+
+    Booleans are converted to empty fields. `bool` subclasses `int`, so a
+    malformed payload carrying `true` in a numeric field would otherwise
+    write the literal `True` into the column and make a Glue crawler type it
+    as `string` -- the same failure mode as an unguarded float or a stray
+    label. Coercing to 1/0 would be worse: it invents a count the source
+    never reported.
+
+    Floats need explicit handling because Python's default repr switches to
+    scientific notation outside roughly 1e-5 .. 1e16 (`0.00001` -> `1e-05`),
+    and Athena's CSV SerDe does not parse that form as a double -- the value
+    silently becomes NULL in the dashboard. The low bound is reachable here: a
+    near-empty workspace can report a tiny `data_mb`.
+
+    `repr` is used whenever it does NOT produce an exponent, because it is the
+    shortest string that round-trips to the identical float -- a fixed
+    precision like `%.6f` would quantize ordinary values (0.1234567 ->
+    0.123457), trading one silent corruption for another. Only when repr goes
+    exponential do we expand to positional decimal, via `Decimal`, which is
+    exact rather than rounded. Ints pass through untouched: arbitrary
+    precision, never exponential.
+    """
+    if value is None or isinstance(value, bool):
+        return ""
+    if isinstance(value, float):
+        # NaN/inf have no honest CSV representation, and emitting the literal
+        # text would force Glue to type the whole column as `string`.
+        if value != value or value in (float("inf"), float("-inf")):
+            return ""
+        text = repr(value)
+        if "e" in text or "E" in text:
+            # Exact positional expansion -- `Decimal(float)` is lossless, and
+            # normalize()/format 'f' avoids reintroducing an exponent.
+            text = format(decimal.Decimal(value).normalize(), "f")
+        return "0.0" if text == "-0.0" else text
+    return value
+
+
+def _str_or_empty(value):
+    """Render a text payload, mapping `None` to an empty field."""
+    return "" if value is None else str(value)
+
+
+def build_users_rows(users, report_date, service_account_names=None):
+    """One row per non-deleted licensed user.
+
+    No workspace column by design: chargeback reports these metrics per-user,
+    so emitting a row per (user, workspace) would repeat each user's totals and
+    make `SUM(experiment_count)` over-count. Per-workspace totals live in the
+    workspaces table, where they are exact.
+
+    `service_account_names`, when a set, is the authoritative list from the
+    admin `/admin/service-accounts` endpoint (matched on username OR email);
+    when `None`, falls back to the same labeled regex heuristic the HTML report
+    uses.
+    """
+    if service_account_names is not None:
+
+        def is_service(user):
+            return (
+                user.username in service_account_names
+                or user.email in service_account_names
+            )
+
+    else:
+        is_service = _looks_like_service_account
+
+    rows = []
+    for user in users:
+        if user.deleted_at is not None:
+            continue
+        rows.append(
+            [
+                report_date,
+                user.username,
+                user.email,
+                _ms_to_date(user.created_at),
+                _ms_to_date(user.last_used_at),
+                _ms_to_date(user.em_last_used_at),
+                _ms_to_date(user.opik_last_used_at),
+                1 if user.suspended else 0,
+                1 if is_service(user) else 0,
+                _num_or_empty(user.experiment_count),
+                _num_or_empty(user.data_logged_mb),
+                _num_or_empty(user.opik_span_count),
+                _ms_to_date(user.deleted_at),
+            ]
+        )
+    return rows
+
+
+def build_workspaces_rows(ws_records, report_date):
+    """One row per workspace. Exact per-workspace totals, no double-counting.
+
+    Numerics go through `_num_or_empty` for the same reason the users table
+    does: a workspace reporting a tiny `totalSizeInMb` would otherwise render
+    as `4e-06`, which Athena's CSV SerDe reads as NULL, and a NaN/inf from the
+    API would be written as literal text and force Glue to type the column as
+    `string`.
+    """
+    return [
+        [
+            report_date,
+            w.name,
+            len(w.members),
+            _num_or_empty(w.num_projects),
+            _num_or_empty(w.num_experiments),
+            _num_or_empty(w.data_mb),
+        ]
+        for w in ws_records
+    ]
+
+
+def build_org_kpi_rows(kpis, report_date):
+    """One row per org-level metric, long format.
+
+    Long rather than wide so new metrics arrive as new ROWS: the Glue schema
+    never changes and existing partitions stay readable.
+
+    Accepts `(name, value, unit)` or `(name, value, unit, text)`; the text
+    field defaults to empty so callers holding 3-tuples keep working.
+
+    `metric_value` goes through `_num_or_empty` here, as the users and
+    workspaces builders do for their numeric columns. `collect_org_kpis`
+    already normalizes what it returns, so this is a no-op on the report's own
+    path (the guard is idempotent -- an already-rendered string passes
+    straight through). It sits here because this is the single writer of the
+    column, so a caller assembling KPI tuples by hand cannot put a `4e-06`
+    that Athena reads as NULL, or a bare `True`, into an otherwise-numeric
+    column that Glue would then type as `string`.
+    """
+    rows = []
+    for entry in kpis:
+        name, value, unit = entry[0], entry[1], entry[2]
+        text = entry[3] if len(entry) > 3 else ""
+        rows.append([report_date, name, _num_or_empty(value), unit, text])
+    return rows
+
+
+USERS_FILENAME = "growth_users.csv"
+WORKSPACES_FILENAME = "growth_workspaces.csv"
+ORG_KPIS_FILENAME = "growth_org_kpis.csv"
+
+
+def collect_org_kpis(
+    users,
+    ws_records,
+    stats,
+    growth,
+    split,
+    active_window_days,
+    scope=None,
+    excluded_personal_count=0,
+):
+    """Flatten the report's org-level numbers into (name, value, unit) triples.
+
+    Each input block is optional: the HTML report degrades section-by-section
+    when the chargeback payload is partial, and the CSV export follows suit --
+    a missing block drops its metrics rather than failing the whole run.
+    """
+    kpis = []
+
+    if stats is not None:
+        kpis.append(("total_users", stats.get("total"), "count"))
+        kpis.append(
+            ("active_users_%dd" % active_window_days, stats.get("active"), "count")
+        )
+        kpis.append(("active_users_pct", stats.get("adoption_pct"), "percent"))
+
+    # Emitted unconditionally (not gated on `stats`) so the users table always
+    # has something to reconcile against. `total_users` excludes SUSPENDED
+    # users while the users table excludes DELETED ones, so the two disagree
+    # for any org with either.
+    #
+    # `users_in_table` is emitted as its own metric rather than left to be
+    # derived: an arithmetic identity over the other counts is wrong whenever a
+    # user is BOTH deleted and suspended, because such a user is absent from
+    # `total_users` (suspended) AND counted in `deleted_users` (deleted), so
+    # subtracting one from the other removes them twice. Publishing the row
+    # count directly means a dashboard never has to reconstruct it.
+    kpis.append(
+        ("deleted_users", sum(1 for u in users if u.deleted_at is not None), "count")
+    )
+    kpis.append(
+        (
+            "users_in_table",
+            sum(1 for u in users if u.deleted_at is None),
+            "count",
+        )
+    )
+
+    if growth is not None:
+        kpis.append(("new_users_in_window", growth.get("new_in"), "count"))
+        kpis.append(("new_users_in_window_pct", growth.get("pct"), "percent"))
+
+    # Scope provenance. Without it a workspace-filtered export is byte-shaped
+    # exactly like an org-wide one: same filenames, same headers, and
+    # `total_workspaces` simply reads lower. Loaded into the same Glue
+    # partition that would look like an org that shrank overnight, and a
+    # scoped run would silently replace an org-wide snapshot.
+    #
+    # `scope` describes what the export ACTUALLY contains, derived from the
+    # surviving records -- not the raw request. The two differ whenever a
+    # requested workspace does not exist, or was dropped by
+    # `--exclude-personal`: naming a workspace that contributes no rows would
+    # send a dashboard filtering on it to an empty result. The request is
+    # preserved separately as `scope_requested` when it differs, so an
+    # operator can still see that a filter was asked for and did not land.
+    #
+    # `--exclude-personal` is the OTHER way the export can be a subset of the
+    # org, and it is independent of `--workspace`: a run that dropped personal
+    # workspaces but named none explicitly would otherwise label itself
+    # `organization` and overwrite a genuine org-wide partition.
+    if not scope:
+        kpis.append(
+            (
+                "scope",
+                None,
+                "label",
+                (
+                    "organization"
+                    if not excluded_personal_count
+                    else "organization_excluding_personal"
+                ),
+            )
+        )
+        if excluded_personal_count:
+            kpis.append(
+                ("excluded_personal_workspaces", excluded_personal_count, "count")
+            )
+    else:
+        effective = sorted({w.name for w in ws_records if w.name})
+        kpis.append(("scope", None, "label", "workspaces:" + ",".join(effective)))
+        requested = sorted(scope)
+        if requested != effective:
+            kpis.append(
+                (
+                    "scope_requested",
+                    None,
+                    "label",
+                    "workspaces:" + ",".join(requested),
+                )
+            )
+        # Both filters can be active at once; the explicit list already names
+        # what survived, but the count says how much --exclude-personal took.
+        if excluded_personal_count:
+            kpis.append(
+                ("excluded_personal_workspaces", excluded_personal_count, "count")
+            )
+    kpis.append(("total_workspaces", len(ws_records), "count"))
+    kpis.append(("total_projects", sum(w.num_projects for w in ws_records), "count"))
+    kpis.append(
+        ("total_experiments", sum(w.num_experiments for w in ws_records), "count")
+    )
+    kpis.append(("total_data_mb", sum(w.data_mb for w in ws_records), "megabytes"))
+
+    if split is not None:
+        for bucket in ("personal", "service"):
+            totals = split.get(bucket) or {}
+            kpis.append(("%s_experiments" % bucket, totals.get("experiments"), "count"))
+            kpis.append(("%s_data_mb" % bucket, totals.get("data"), "megabytes"))
+            kpis.append(("%s_spans" % bucket, totals.get("spans"), "count"))
+        # Surface HOW the split was derived: the admin endpoint is optional and
+        # silently falls back to a regex heuristic, which the dashboard should
+        # be able to distinguish. Carried in `metric_text`, NOT `metric_value`
+        # -- a single string in an otherwise-numeric column makes a Glue
+        # crawler type the whole column as `string`, and every SUM/AVG in
+        # QuickSight then needs a cast.
+        kpis.append(("service_account_source", None, "label", split.get("source")))
+
+    # Normalize to 4-tuples: most metrics carry no text, so they are appended
+    # above as 3-tuples and padded here.
+    normalized = []
+    for entry in kpis:
+        name, value, unit = entry[0], entry[1], entry[2]
+        text = entry[3] if len(entry) > 3 else None
+        normalized.append((name, _num_or_empty(value), unit, _str_or_empty(text)))
+    return normalized
+
+
+def _write_csv_rows(fp, header, rows):
+    """Write `header` + `rows` to an already-open text file object."""
+    writer = csv.writer(fp, quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
+    writer.writerow(header)
+    writer.writerows(rows)
+
+
+def _write_csv(path, header, rows):
+    with open(path, "w", newline="", encoding="utf-8") as fp:
+        _write_csv_rows(fp, header, rows)
+
+
+def _quiet_remove(path):
+    """Best-effort unlink. Cleanup failure must never mask the error that
+    brought us here, nor fail an otherwise-successful run."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _apply_default_file_mode(fd, path):
+    """Give the file behind `fd` the mode a plain `open(path, "w")` would have.
+
+    `mkstemp` deliberately creates 0600. These are published data files: the
+    upload step may run as another user or group, and silently narrowing them
+    from what the previous implementation wrote would break such a pipeline
+    with no error anywhere. Reading the umask requires temporarily setting it,
+    which is safe here -- this is a single-threaded CLI process.
+
+    Applied to the DESCRIPTOR rather than the pathname: the open file is ours
+    by construction, so there is no window in which the name could be pointed
+    at something else between creating the file and setting its mode.
+    """
+    fchmod = getattr(os, "fchmod", None)
+    if fchmod is None:  # Windows: no POSIX modes to restore.
+        return
+    umask = os.umask(0)
+    os.umask(umask)
+    try:
+        fchmod(fd, 0o666 & ~umask)
+    except OSError as exc:
+        # Not fatal: a filesystem without POSIX modes is no reason to fail an
+        # otherwise-good export. Not silent either -- the file stays at 0600,
+        # and an uploader running as another user would fail to read it with
+        # nothing on the console to explain why.
+        print(
+            "Warning: could not set permissions on %s (%s); it will be "
+            "readable only by the current user" % (path, exc)
+        )
+
+
+def _stage_csv(out_dir, filename, header, rows):
+    """Write one table to a uniquely-named temporary inside `out_dir`.
+
+    `mkstemp`, not a predictable `<name>.tmp`: it opens with O_CREAT|O_EXCL, so
+    it neither follows a pre-planted symlink (which would truncate whatever it
+    points at, since `out_dir` is an operator-supplied path that may be
+    world-writable) nor collides with a concurrent run into the same directory
+    -- where two runs would otherwise write and clean up each other's staged
+    data under the same fixed name.
+    """
+    fd, tmp = tempfile.mkstemp(dir=out_dir, prefix=filename + ".", suffix=".tmp")
+    try:
+        # `fdopen` takes ownership of the descriptor, so the file is closed on
+        # the way out whether or not the write succeeds.
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as fp:
+            _write_csv_rows(fp, header, rows)
+            # Widen only once the file holds a complete table, and flush first
+            # so nothing is still sitting in Python's buffer at that moment.
+            # Until here the staged file keeps mkstemp's 0600, so no other
+            # local user can read a half-written table -- and a `.tmp` left by
+            # a killed run stays private rather than readable.
+            #
+            # Still on the DESCRIPTOR rather than the published path: chmod by
+            # name after `os.replace` would reintroduce exactly the window
+            # this file removed a commit ago, where the name can be pointed
+            # somewhere else between publishing and setting the mode. The
+            # mode survives the rename, so applying it here is equivalent.
+            fp.flush()
+            _apply_default_file_mode(fp.fileno(), tmp)
+    except BaseException:
+        _quiet_remove(tmp)
+        raise
+    return tmp
+
+
+def write_growth_csvs(
+    users,
+    ws_records,
+    kpis,
+    out_dir,
+    report_date,
+    service_account_names=None,
+):
+    """Write the three fact tables into `out_dir`, returning the paths written.
+
+    Files are flat (no Hive partition directories): `report_date` is a column
+    on every row, and the caller's upload step chooses the S3 prefix.
+    """
+    if os.path.exists(out_dir) and not os.path.isdir(out_dir):
+        raise NotADirectoryError(
+            "--csv-dir %r exists but is not a directory." % out_dir
+        )
+    os.makedirs(out_dir, exist_ok=True)
+
+    targets = [
+        (
+            USERS_FILENAME,
+            USERS_HEADER,
+            build_users_rows(users, report_date, service_account_names),
+        ),
+        (
+            WORKSPACES_FILENAME,
+            WORKSPACES_HEADER,
+            build_workspaces_rows(ws_records, report_date),
+        ),
+        (ORG_KPIS_FILENAME, ORG_KPIS_HEADER, build_org_kpi_rows(kpis, report_date)),
+    ]
+
+    # Stage every table to its own temporary, then move them all into place.
+    # The three files are ONE partition: writing them directly, one after
+    # another, left this month's growth_users.csv beside last month's
+    # growth_workspaces.csv for the whole duration of a run that failed
+    # halfway -- with nothing about the files to say the run failed.
+    #
+    # Staging shrinks that to the microseconds between three renames, because
+    # the realistic failure (a full disk) happens during the write, when
+    # nothing a reader can see has been touched yet.
+    #
+    # It is deliberately NOT a transaction. There is no rollback of files
+    # already replaced, and POSIX has no multi-file atomic rename, so a commit
+    # that fails partway -- or a reader walking `out_dir` mid-commit -- can
+    # still see a mixed set. Guarding that needs either a versioned directory
+    # and a symlink swap (which changes the output layout consumers read) or
+    # backup-and-restore bookkeeping, and the bookkeeping costs more in
+    # complexity and bugs than the failure it covers: `os.replace` within one
+    # directory fails only on the kind of I/O error that has already made the
+    # export untrustworthy. The exit code is the signal that matters, and it
+    # is non-zero in every one of these cases.
+    staged = []
+    written = []
+    try:
+        for filename, header, rows in targets:
+            staged.append((_stage_csv(out_dir, filename, header, rows), filename))
+
+        for tmp, filename in staged:
+            path = os.path.join(out_dir, filename)
+            os.replace(tmp, path)
+            written.append(os.path.abspath(path))
+    finally:
+        # Only temporaries that were never renamed still exist. A leftover
+        # .tmp means the process was killed outright -- reference the three
+        # filenames explicitly when uploading rather than globbing.
+        for tmp, _filename in staged:
+            if os.path.exists(tmp):
+                _quiet_remove(tmp)
+    return written

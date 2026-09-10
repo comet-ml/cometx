@@ -402,6 +402,34 @@ _SCHEME_USERINFO_RE = re.compile(
 _BARE_USERINFO_RE = re.compile(r"^[^/?#@\s]+@")
 
 
+def exception_text(exc):
+    """Render `exc` as a printable string, tolerating a broken `__str__`.
+
+    `comet_ml.exceptions.NotFound.__str__` returns `None` when the 404 body is
+    not JSON (an HTML error page from a proxy/ingress, say), and
+    `CometRestApiException` siblings can do the same. A bare `str(exc)` then
+    raises `TypeError: __str__ returned non-string`.
+
+    That is dangerous inside an `except` block: the new exception aborts the
+    handler, so any `sys.exit(1)` after the print never runs and the real
+    error is replaced by a traceback from the error handling itself. Every
+    caller that renders an exception for the operator must go through here.
+
+    Falls back to the exception's class name, plus its response status code
+    when there is one, so the operator still learns what happened.
+    """
+    try:
+        text = str(exc)
+    except Exception:
+        text = None
+    if text:
+        return text
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is not None:
+        return "%s (HTTP %s)" % (type(exc).__name__, status)
+    return type(exc).__name__
+
+
 def redact_url_userinfo(value):
     """Replace any `user:password@` userinfo in `value` with `***@`.
 

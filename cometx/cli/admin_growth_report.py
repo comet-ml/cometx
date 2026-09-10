@@ -27,6 +27,7 @@ import datetime
 import os
 import re
 
+from cometx.cli.admin_growth_csv import collect_org_kpis, write_growth_csvs
 from cometx.cli.admin_growth_render import build_html, write_html
 from cometx.cli.admin_growth_users import (
     _extract_licensed_users,
@@ -51,6 +52,7 @@ from cometx.cli.admin_growth_users import (
 from cometx.utils import (
     InvalidServerURLError,
     admin_api_url,
+    exception_text,
     fetch_chargeback_report,
     format_time_key,
     redact_url_userinfo,
@@ -211,7 +213,12 @@ def _short_api_error(exc):
     headers, cookies, and CSP) into a single short line: "status: message"
     when parseable, else a truncated one-liner. Keeps per-workspace warnings
     readable instead of pasting a wall of response headers per failure."""
-    text = " ".join(str(exc).split())
+    # `exception_text`, not `str(exc)`: this runs inside `except` blocks, and
+    # `NotFound.__str__` returns None for a non-JSON 404 body (an ingress HTML
+    # page). A bare str() would raise TypeError from inside the handler and
+    # replace the real HTTP error with a traceback -- the exact scenario the
+    # chargeback fetch in `build()` is trying to report on.
+    text = " ".join(exception_text(exc).split())
     status = re.search(r"status_code:\s*(\d+)", text)
     message = re.search(r"'message':\s*'([^']*)'", text)
     if status or message:
@@ -323,6 +330,10 @@ def generate_growth_report(
     leaderboard_top_n=5,
     exclude_personal=False,
     personal_pattern=None,
+    csv_dir=None,
+    no_html=False,
+    chargeback=None,
+    report_date=None,
 ):
     reporter = GrowthReporter(
         api,
@@ -333,7 +344,43 @@ def generate_growth_report(
         exclude_personal=exclude_personal,
         personal_pattern=personal_pattern,
     )
-    report_data = reporter.build(workspaces)
+    report_data = reporter.build(workspaces, chargeback=chargeback)
+
+    written = []
+    if csv_dir is not None:
+        # Refuse to publish an export that degraded to nothing. The HTML
+        # report can honestly show an empty section, but a header-only CSV is
+        # indistinguishable in Glue from "this org genuinely has no users",
+        # and exiting 0 would tell a monthly scheduler the run succeeded.
+        block_reason = reporter.export_block_reason()
+        if block_reason:
+            raise GrowthReportError(
+                "refusing to write CSVs: %s. The HTML report degrades to an "
+                "empty section, but an empty CSV would be ingested as real "
+                "data. Re-run once the source data is available, or omit "
+                "--csv-dir to generate the HTML only." % block_reason
+            )
+        users, ws_records, kpis = reporter.last_parsed()
+        # `report_date` is injectable so tests need not freeze the clock; the
+        # CLI never passes it and always gets the UTC run date.
+        if report_date is None:
+            report_date = datetime.datetime.now(tz=datetime.timezone.utc).strftime(
+                "%Y-%m-%d"
+            )
+        written = write_growth_csvs(
+            users,
+            ws_records,
+            kpis,
+            csv_dir,
+            report_date,
+            service_account_names=reporter.last_service_account_names(),
+        )
+        for path in written:
+            print("Wrote %s" % path)
+
+    if no_html:
+        return written[0] if written else None
+
     path = write_growth_html(report_data, output)
     if not no_open:
         _open(path)
@@ -360,37 +407,157 @@ class GrowthReporter:
         self.exclude_personal = exclude_personal
         self.personal_pattern = personal_pattern
         self._warned_no_personal_pattern = False
+        self._last_parsed = ([], [], [])
+        # Set to a reason string when a section failed in a way that would
+        # make the CSV export silently empty; `generate_growth_report` raises
+        # rather than publishing it. See `_assemble_report_data`.
+        self._export_block_reason = None
+        self._last_service_account_names = None
 
-    def build(self, workspaces):
+    def build(self, workspaces, chargeback=None):
         """Fetch the org-wide chargeback report (admin API key required) and
         assemble chargeback-only report_data. Raises GrowthReportError when the
-        chargeback endpoint is unavailable -- there is no SDK fallback."""
+        chargeback endpoint is unavailable -- there is no SDK fallback.
+
+        `chargeback`, when given, is a pre-loaded payload (from
+        `--chargeback-report FILE`) and no API call is made."""
         now = self._now()
         window = parse_window(self.window, now, self.units)
-        print("Fetching chargeback report (admin API)...")
-        try:
-            chargeback = fetch_chargeback_report(self.api)
-        except InvalidServerURLError as exc:
-            # A malformed --host / url_override is a configuration problem, not
-            # an auth failure. Surface it as-is rather than asserting the API
-            # key isn't admin. Caught by its own type, not `ValueError`: a
-            # non-JSON 200 (SSO/proxy login page) raises `json.JSONDecodeError`
-            # -- also a `ValueError` -- and belongs in the handler below, which
-            # reports an unusable endpoint rather than a bad URL.
-            raise GrowthReportError(
-                f"growth-report could not reach the chargeback endpoint: {exc}"
-            ) from exc
-        except Exception as exc:
-            raise GrowthReportError(
-                "growth-report requires an admin API key: the chargeback "
-                f"endpoint is unavailable ({_short_api_error(exc)}). This "
-                "report is built entirely from the admin chargeback report."
-            ) from exc
+        # Reset per build: a reused reporter whose first build failed would
+        # otherwise block every later export. The CLI builds once, so this is
+        # an invariant rather than a live fix.
+        self._export_block_reason = None
+        if chargeback is None:
+            print("Fetching chargeback report (admin API)...")
+            try:
+                chargeback = fetch_chargeback_report(self.api)
+            except InvalidServerURLError as exc:
+                # A malformed --host / url_override is a configuration problem,
+                # not an auth failure. Surface it as-is rather than asserting
+                # the API key isn't admin. Caught by its own type, not
+                # `ValueError`: a non-JSON 200 (SSO/proxy login page) raises
+                # `json.JSONDecodeError` -- also a `ValueError` -- and belongs
+                # in the handler below, which reports an unusable endpoint
+                # rather than a bad URL.
+                raise GrowthReportError(
+                    "growth-report could not reach the chargeback endpoint: "
+                    "%s" % exception_text(exc)
+                ) from exc
+            except Exception as exc:
+                raise GrowthReportError(
+                    "growth-report requires an admin API key: the chargeback "
+                    f"endpoint is unavailable ({_short_api_error(exc)}). This "
+                    "report is built entirely from the admin chargeback report."
+                ) from exc
+        # Structural check AFTER the fetch, so it covers both sources with one
+        # implementation. The chargeback parsers are deliberately permissive,
+        # returning empty lists rather than raising, so without this a report
+        # missing a section publishes a header-only table and exits 0.
+        #
+        # EITHER section missing is a block, not both: a payload carrying only
+        # `workspaces` still yields a header-only growth_users.csv and drops
+        # the total_users / active_users_* / new_users_* KPIs entirely, which
+        # is exactly the "indistinguishable from an org with no users" case
+        # this guard exists to prevent.
+        #
+        # No type check on `chargeback` itself: this is our own admin
+        # endpoint, and its response being a JSON object is a contract we own
+        # rather than untrusted input.
+        missing = [k for k in ("users", "workspaces") if not chargeback.get(k)]
+        if missing:
+            self._export_block_reason = (
+                "the chargeback report is missing its %s section"
+                % " and ".join("'%s'" % m for m in missing)
+            )
+
+        # Track whether --exclude-personal actually dropped anything, so the
+        # `scope` metric can say so. It is a second, pre-existing way the
+        # export can be a subset of the org: without this a run that dropped
+        # personal workspaces labels itself `organization`, and would
+        # overwrite a genuine org-wide Glue partition.
+        before = len((chargeback.get("workspaces") or []))
         chargeback = self._filter_personal_chargeback(chargeback)
+        excluded_personal_count = before - len((chargeback.get("workspaces") or []))
         print("Building report...")
         now_ms = int(now.timestamp() * 1000)
         scope = set(workspaces) if workspaces else None
-        return self._assemble_report_data(chargeback, window, now_ms, scope=scope)
+        report_data = self._assemble_report_data(
+            chargeback,
+            window,
+            now_ms,
+            scope=scope,
+            excluded_personal_count=excluded_personal_count,
+        )
+
+        # A filter that left nothing behind is a filter that did not land:
+        # the export would be empty, and `scope` would serialize as the bare
+        # string "workspaces:" that every dashboard filter then has to
+        # special-case. Checked after assembly, since only then do we know
+        # which records survived scoping and --exclude-personal.
+        if self._export_block_reason is None:
+            self._export_block_reason = self._empty_export_reason(
+                scope, excluded_personal_count
+            )
+        return report_data
+
+    def _empty_export_reason(self, scope, excluded_personal_count):
+        """A block reason when the filters left nothing to export, else None.
+
+        Both filters are checked, not just an explicit `--workspace`: an
+        `--exclude-personal` pattern that matches every workspace empties the
+        export exactly the same way, and on an org whose workspaces are all
+        personal that is the likely outcome rather than a corner case. Without
+        this, such a run writes header-only CSVs and exits 0 -- the "an org
+        with no users" partition the structural guard above exists to prevent.
+
+        Users are checked alongside workspaces for the same reason that guard
+        blocks on EITHER missing section: both filters narrow the roster to
+        members of the surviving workspaces, so a survivor set with no members
+        still ships a header-only growth_users.csv and drops the total_users /
+        active_users_* / new_users_* KPIs.
+
+        Blocks the CSV export only; the HTML report still renders its empty
+        sections honestly."""
+        people, ws_records, _kpis = self._last_parsed
+        if ws_records and people:
+            return None
+        if scope and not ws_records:
+            return "no workspaces matched %s (nothing to export)" % ", ".join(
+                sorted(scope)
+            )
+        empty = " or ".join(
+            name
+            for name, records in (("workspaces", ws_records), ("users", people))
+            if not records
+        )
+        if excluded_personal_count:
+            return (
+                "--exclude-personal left no %s to export (%d personal "
+                "workspace(s) dropped)" % (empty, excluded_personal_count)
+            )
+        if scope:
+            return (
+                "no users belong to the workspaces matching %s (nothing to "
+                "export)" % ", ".join(sorted(scope))
+            )
+        return "the chargeback report parsed to no %s" % empty
+
+    def last_parsed(self):
+        """The (users, ws_records, org_kpis) captured by the most recent
+        `build()`. Exposed for the CSV exporter so it can reuse the records
+        `_assemble_report_data` already parsed, rather than re-deriving them
+        from the display-formatted `report_data`."""
+        return self._last_parsed
+
+    def export_block_reason(self):
+        """A reason string when the most recent `build()` degraded badly
+        enough that a CSV export would be misleadingly empty, else `None`."""
+        return self._export_block_reason
+
+    def last_service_account_names(self):
+        """The service-account name set from the most recent `build()`
+        (`None` when the admin endpoint was unavailable)."""
+        return self._last_service_account_names
 
     def _now(self):
         return datetime.datetime.now(datetime.timezone.utc)
@@ -433,16 +600,26 @@ class GrowthReporter:
 
     def _filter_personal_chargeback(self, chargeback):
         """Drop personal workspaces (name matches --personal-pattern) from the
-        chargeback workspace list when --exclude-personal is set. The user
-        roster (users.report / licensedUsers) is left whole; only the
-        workspace list and its memberships are trimmed. Returns a shallow copy;
-        never mutates the input."""
+        chargeback report when --exclude-personal is set.
+
+        The user roster is narrowed to members of the surviving workspaces,
+        the same rule `_scope_chargeback` applies for an explicit
+        `--workspace` selection. Trimming only the workspace list would leave
+        the user table and every user-derived KPI (total_users,
+        active_users_*, personal_*/service_*) org-wide while the workspace
+        metrics were filtered -- one `scope` label over two different
+        populations, so a dashboard would read 5 experiments from the
+        workspace table and 20 from the user table for the same run.
+
+        Returns a shallow copy; never mutates the input."""
         pattern = self._personal_pattern_compiled()
         if pattern is None:
             return chargeback
         workspaces = chargeback.get("workspaces") or []
         kept = [w for w in workspaces if not pattern.search(w.get("name") or "")]
-        return {**chargeback, "workspaces": kept}
+        # Reuse the existing scoping helper so both filters narrow users the
+        # same way, rather than growing a second implementation.
+        return _scope_chargeback(chargeback, [w.get("name") for w in kept])
 
     def _window_label(self, window):
         return (
@@ -1101,17 +1278,36 @@ class GrowthReporter:
         }
 
     @staticmethod
-    def _scope_label(scope, org_workspaces, org_users, scoped_count=None):
+    def _scope_label(
+        scope, org_workspaces, org_users, scoped_count=None, excluded_personal_count=0
+    ):
         """One-line scope descriptor for the report header. When scoped, the
         count reflects the workspaces actually present after scoping/filtering
         (`scoped_count`), not the raw requested arg list, so the badge matches
-        the rendered sections."""
+        the rendered sections.
+
+        `excluded_personal_count` is the number of workspaces `--exclude-personal`
+        actually dropped. An unscoped run that dropped some is NOT org-wide:
+        the filter narrows users as well as workspaces, so labelling it
+        `Org-wide` would put an org-wide badge on a subset -- and contradict
+        the CSV's own `organization_excluding_personal` provenance for the
+        same run. Driven by the count actually dropped, not by the flag, so a
+        pattern that matched nothing still reads org-wide, matching how
+        `collect_org_kpis` decides the same thing."""
         if scope is not None:
             n = scoped_count if scoped_count is not None else len(scope)
             return (
                 f"Scoped to {n} selected workspace(s) "
                 "(per-user totals remain org-wide)"
             )
+        if excluded_personal_count:
+            excluded_label = f"{excluded_personal_count} personal workspace(s) excluded"
+            if org_workspaces is not None:
+                return (
+                    f"Org-wide excluding personal: {org_workspaces} workspaces, "
+                    f"{org_users} users ({excluded_label}, chargeback)"
+                )
+            return f"Org-wide excluding personal ({excluded_label}, chargeback)"
         if org_workspaces is not None:
             return (
                 f"Org-wide: {org_workspaces} workspaces, {org_users} users "
@@ -1119,8 +1315,13 @@ class GrowthReporter:
             )
         return "Org-wide (chargeback)"
 
-    def _assemble_report_data(self, chargeback, window, now_ms, scope=None):
-        # Org totals for the header, from the FULL (unscoped) chargeback.
+    def _assemble_report_data(
+        self, chargeback, window, now_ms, scope=None, excluded_personal_count=0
+    ):
+        # Org totals for the header, from the chargeback before `scope` is
+        # applied. Not the raw payload: `build()` has already applied
+        # --exclude-personal, so on such a run these are the org excluding
+        # personal workspaces -- which is what `_scope_label` says they are.
         org_users = org_workspaces = None
         try:
             org_users = sum(1 for u in parse_users(chargeback) if not u.suspended)
@@ -1143,6 +1344,17 @@ class GrowthReporter:
             )
             people_users = []
             ws_records = []
+            # The HTML report degrades to an empty section, but an empty CSV
+            # export is indistinguishable from "this org has no users" once it
+            # lands in Glue. Record the failure so the CSV writer refuses
+            # rather than publishing a header-only partition and exiting 0.
+            self._export_block_reason = (
+                "chargeback report could not be parsed (%s)" % _short_api_error(exc)
+            )
+
+        # Capture the parsed records for the CSV exporter before they are
+        # folded into display-formatted sections.
+        self._last_parsed = (people_users, ws_records, [])
 
         sections = {
             "unified": self._build_unified_section(
@@ -1173,7 +1385,10 @@ class GrowthReporter:
                 people_users, ws_records
             )
         except Exception as exc:
-            print(f"Warning: failed to build leaderboards section; skipping: {exc}")
+            print(
+                "Warning: failed to build leaderboards section; skipping: %s"
+                % _short_api_error(exc)
+            )
             leaderboards_section = None
         if leaderboards_section:
             sections["leaderboards"] = leaderboards_section
@@ -1182,6 +1397,7 @@ class GrowthReporter:
             personal_vs_service_section = None
             if people_users:
                 service_account_names = _fetch_service_accounts(self.api)
+                self._last_service_account_names = service_account_names
                 # `_fetch_service_accounts` already returns None on any failure
                 # (endpoint unavailable / unrecognized shape) and a set on
                 # success. An empty set is the authoritative "admin API returned
@@ -1194,11 +1410,56 @@ class GrowthReporter:
                 )
         except Exception as exc:
             print(
-                f"Warning: failed to build personal-vs-service section; skipping: {exc}"
+                "Warning: failed to build personal-vs-service section; "
+                "skipping: %s" % _short_api_error(exc)
             )
             personal_vs_service_section = None
         if personal_vs_service_section:
             sections["personal_vs_service"] = personal_vs_service_section
+
+        # Org KPIs for the CSV export, from the same parsed records the
+        # sections above used.
+        try:
+            stats = (
+                adoption_stats(people_users, now_ms, active_window_days)
+                if people_users
+                else None
+            )
+            growth = (
+                _window_growth((u.created_at for u in people_users), window)
+                if people_users
+                else None
+            )
+            split = (
+                classify_accounts(people_users, self._last_service_account_names)
+                if people_users
+                else None
+            )
+            self._last_parsed = (
+                people_users,
+                ws_records,
+                collect_org_kpis(
+                    people_users,
+                    ws_records,
+                    stats,
+                    growth,
+                    split,
+                    active_window_days,
+                    scope=scope,
+                    excluded_personal_count=excluded_personal_count,
+                ),
+            )
+        except Exception as exc:
+            print(
+                "Warning: failed to collect org KPIs for CSV: %s"
+                % _short_api_error(exc)
+            )
+            # Same reasoning as the parse failure above: a header-only
+            # growth_org_kpis.csv would be ingested as a real, empty monthly
+            # partition. Block the export instead of shipping it.
+            self._export_block_reason = (
+                "org KPIs could not be collected (%s)" % _short_api_error(exc)
+            )
 
         return {
             "meta": {
@@ -1206,7 +1467,11 @@ class GrowthReporter:
                 "generated": window.end.isoformat(),
                 "source": "Comet Admin API (chargeback)",
                 "scope": self._scope_label(
-                    scope, org_workspaces, org_users, scoped_count=len(ws_records)
+                    scope,
+                    org_workspaces,
+                    org_users,
+                    scoped_count=len(ws_records),
+                    excluded_personal_count=excluded_personal_count,
                 ),
             },
             "window": self._build_window_block(window, 0),

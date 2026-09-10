@@ -127,3 +127,21 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Local working artifacts — not product code, never commit (public repo).
+# Scoped to the specific directories rather than all of `docs/`, so a future
+# real documentation directory is not silently swallowed.
+docs/superpowers/
+docs/csv-samples/
+
+# Report output from running the CLI locally. These contain real usernames,
+# emails and usage figures from whatever deployment they were generated
+# against, so they must never reach this public repo.
+# Matched by filename rather than by directory, so they are caught wherever
+# --csv-dir happens to point. The committed samples live in docs/csv-samples/,
+# which is already ignored above.
+growth_report.html
+comet-chargeback-report*.json
+growth_users.csv
+growth_workspaces.csv
+growth_org_kpis.csv

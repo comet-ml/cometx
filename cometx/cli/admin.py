@@ -152,7 +152,7 @@ import sys
 
 from comet_ml import API
 
-from cometx.utils import fetch_chargeback_report
+from cometx.utils import exception_text, fetch_chargeback_report
 
 from .admin_gpu_report import main as gpu_report_main
 from .admin_growth_report import GrowthReportError, generate_growth_report
@@ -160,6 +160,12 @@ from .admin_optimizer_report import generate_json_report
 from .admin_usage_report import generate_usage_report
 
 ADDITIONAL_ARGS = False
+
+
+# Local alias for the shared renderer. Lives in `cometx.utils` so
+# `admin_growth_report._short_api_error` can use the same tolerant rendering
+# without importing this module (admin.py imports FROM that module).
+_exception_text = exception_text
 
 
 def add_global_arguments(parser):
@@ -487,6 +493,9 @@ Examples:
     cometx admin growth-report workspace1 workspace2 --units week
     cometx admin growth-report my-workspace --window 30d
     cometx admin growth-report my-workspace --output report.html --no-open
+    cometx admin growth-report --csv-dir ./out
+    cometx admin growth-report --csv-dir ./out --no-html
+    cometx admin growth-report --chargeback-report report.json --csv-dir ./out
 """
     growth_parser = subparsers.add_parser(
         "growth-report",
@@ -559,6 +568,31 @@ Examples:
         default=False,
         action="store_true",
     )
+    growth_parser.add_argument(
+        "--csv-dir",
+        default=None,
+        help=(
+            "Also write Glue-ready CSV fact tables (growth_users.csv, "
+            "growth_workspaces.csv, growth_org_kpis.csv) into this directory"
+        ),
+        type=str,
+    )
+    growth_parser.add_argument(
+        "--no-html",
+        help="Skip the HTML report (use with --csv-dir for CSV-only output)",
+        default=False,
+        action="store_true",
+    )
+    growth_parser.add_argument(
+        "--chargeback-report",
+        default=None,
+        help=(
+            "Read the chargeback report from a local JSON file instead of "
+            "calling the admin API (as saved by `cometx admin "
+            "chargeback-report`)"
+        ),
+        type=str,
+    )
 
 
 def admin(parsed_args, remaining=None):
@@ -602,10 +636,10 @@ def admin(parsed_args, remaining=None):
                     sys.argv = ["streamlit", "run", admin_app_path]
                     stcli.main()
                 except Exception as e:
-                    print(f"ERROR launching Streamlit app: {e}")
+                    print("ERROR launching Streamlit app: " + _exception_text(e))
                     if parsed_args.debug:
                         raise
-                    return
+                    sys.exit(1)
             else:
                 # Generate PDF report
                 workspace_projects = parsed_args.WORKSPACE_PROJECT
@@ -614,7 +648,7 @@ def admin(parsed_args, remaining=None):
                     print(
                         "ERROR: At least one workspace/project is required when not using --app"
                     )
-                    return
+                    sys.exit(1)
 
                 try:
                     generate_usage_report(
@@ -626,8 +660,8 @@ def admin(parsed_args, remaining=None):
                         debug=parsed_args.debug,
                     )
                 except Exception as e:
-                    print("ERROR: " + str(e))
-                    return
+                    print("ERROR: " + _exception_text(e))
+                    sys.exit(1)
         elif parsed_args.ACTION == "gpu-report":
             workspace_projects = parsed_args.WORKSPACE_PROJECT or []
             start_date = parsed_args.start_date
@@ -641,7 +675,7 @@ def admin(parsed_args, remaining=None):
                     print(
                         "ERROR: At least one workspace/project is required when using --app"
                     )
-                    return
+                    sys.exit(1)
 
                 # Generate JSON first
                 json_file_path = None
@@ -661,17 +695,17 @@ def admin(parsed_args, remaining=None):
                             print(f"JSON report saved: {json_file_path}")
                         else:
                             print("ERROR: JSON file was not created")
-                            return
+                            sys.exit(1)
                     else:
                         print("ERROR: Failed to generate GPU report data")
-                        return
+                        sys.exit(1)
                 except Exception as e:
-                    print(f"ERROR: Could not generate JSON file: {e}")
+                    print("ERROR: Could not generate JSON file: " + _exception_text(e))
                     if parsed_args.debug:
                         import traceback
 
                         traceback.print_exc()
-                    return
+                    sys.exit(1)
 
                 # Launch Streamlit app
                 # Set environment variables if --api-key or --url-override were provided
@@ -704,17 +738,17 @@ def admin(parsed_args, remaining=None):
                     sys.argv = ["streamlit", "run", gpu_app_path]
                     stcli.main()
                 except Exception as e:
-                    print(f"ERROR launching Streamlit app: {e}")
+                    print("ERROR launching Streamlit app: " + _exception_text(e))
                     if parsed_args.debug:
                         raise
-                    return
+                    sys.exit(1)
             else:
                 # Generate report (JSON is always saved by gpu_report_main)
                 if not workspace_projects:
                     print(
                         "ERROR: At least one workspace/project is required when not using --app"
                     )
-                    return
+                    sys.exit(1)
                 try:
                     result = gpu_report_main(
                         workspace_projects=workspace_projects,
@@ -747,12 +781,12 @@ def admin(parsed_args, remaining=None):
 
                                 open_pdf(pdf_file, debug=parsed_args.debug)
                 except Exception as e:
-                    print("ERROR: " + str(e))
+                    print("ERROR: " + _exception_text(e))
                     if parsed_args.debug:
                         import traceback
 
                         traceback.print_exc()
-                    return
+                    sys.exit(1)
         elif parsed_args.ACTION == "optimizer-report":
             optimizer_id = parsed_args.OPTIMIZER_ID
 
@@ -783,10 +817,10 @@ def admin(parsed_args, remaining=None):
                     sys.argv = ["streamlit", "run", optimizer_app_path]
                     stcli.main()
                 except Exception as e:
-                    print(f"ERROR launching Streamlit app: {e}")
+                    print("ERROR launching Streamlit app: " + _exception_text(e))
                     if parsed_args.debug:
                         raise
-                    return
+                    sys.exit(1)
             else:
                 # Generate JSON report
                 try:
@@ -815,16 +849,59 @@ def admin(parsed_args, remaining=None):
                         print(f"\nOptimizer report generated successfully: {result}")
                     else:
                         print("ERROR: Failed to generate optimizer report")
-                        return
+                        sys.exit(1)
                 except Exception as e:
-                    print("ERROR: " + str(e))
+                    print("ERROR: " + _exception_text(e))
                     if parsed_args.debug:
                         import traceback
 
                         traceback.print_exc()
-                    return
+                    sys.exit(1)
         elif parsed_args.ACTION == "growth-report":
             try:
+                preloaded = None
+                if parsed_args.chargeback_report:
+                    try:
+                        # Explicit utf-8, matching what the CSV export writes:
+                        # a snapshot with non-ASCII usernames or workspace
+                        # names would otherwise fail to load under a non-UTF-8
+                        # locale (LANG=C on a cron/systemd box).
+                        with open(
+                            parsed_args.chargeback_report, encoding="utf-8"
+                        ) as fp:
+                            preloaded = json.load(fp)
+                    except (OSError, ValueError) as exc:
+                        # Distinct from the "needs an admin key" message: this
+                        # is a bad local file, not an auth or endpoint problem.
+                        print(
+                            "ERROR: could not read --chargeback-report %r: %s"
+                            % (parsed_args.chargeback_report, exc)
+                        )
+                        sys.exit(1)
+                    if not isinstance(preloaded, dict):
+                        # `build()` treats `chargeback is None` as "fetch it
+                        # live", so a file containing JSON `null` would
+                        # silently fall back to the API -- and then blame the
+                        # admin endpoint for what is actually a bad local
+                        # file. Any non-object payload is a bad snapshot.
+                        print(
+                            "ERROR: --chargeback-report %r does not contain a "
+                            "chargeback report (expected a JSON object, got "
+                            "%s)."
+                            % (
+                                parsed_args.chargeback_report,
+                                type(preloaded).__name__,
+                            )
+                        )
+                        sys.exit(1)
+                    # Section presence is NOT checked here: `build()` applies
+                    # the same rule to both the snapshot and the live fetch,
+                    # so duplicating it meant two implementations that could
+                    # (and did) disagree about whether one missing section
+                    # was enough to block.
+                if parsed_args.no_html and not parsed_args.csv_dir:
+                    print("ERROR: --no-html requires --csv-dir (nothing to write).")
+                    sys.exit(1)
                 generate_growth_report(
                     api,
                     parsed_args.WORKSPACE,
@@ -836,28 +913,47 @@ def admin(parsed_args, remaining=None):
                     leaderboard_top_n=parsed_args.leaderboard_top_n,
                     exclude_personal=parsed_args.exclude_personal,
                     personal_pattern=parsed_args.personal_pattern,
+                    csv_dir=parsed_args.csv_dir,
+                    no_html=parsed_args.no_html,
+                    chargeback=preloaded,
                 )
             except GrowthReportError as e:
-                print("ERROR: " + str(e))
+                # `_exception_text`, not `str(e)`: a broken `__str__` would
+                # raise here and skip the `sys.exit(1)` below entirely.
+                print("ERROR: " + _exception_text(e))
                 sys.exit(1)
             except Exception as e:
-                print("ERROR: " + str(e))
+                # Must exit non-zero: a CSV write failure (unwritable
+                # --csv-dir, or one pointing at a file) that exited 0 would
+                # report success to a scheduler while shipping nothing.
+                # Rendering must not itself raise, or the exit is skipped and
+                # the outer handler returns 0 -- defeating the guarantee.
+                print("ERROR: " + _exception_text(e))
                 if parsed_args.debug:
                     import traceback
 
                     traceback.print_exc()
-                return
+                sys.exit(1)
 
     except KeyboardInterrupt:
         if parsed_args.debug:
             raise
         else:
+            # 130 (128 + SIGINT) is the shell convention for an interrupted
+            # command. Exiting 0 told a scheduler the run succeeded.
             print("Canceled by CONTROL+C")
+            sys.exit(130)
     except Exception as exc:
         if parsed_args.debug:
             raise
         else:
-            print("ERROR: " + str(exc))
+            # Every error path in this function must exit non-zero. `admin` is
+            # run unattended -- a monthly growth-report cron, a CI usage
+            # report -- where the exit code is the only signal anything reads.
+            # Printing "ERROR: ..." and returning 0 reported success while
+            # producing nothing.
+            print("ERROR: " + _exception_text(exc))
+            sys.exit(1)
 
 
 def main(args):

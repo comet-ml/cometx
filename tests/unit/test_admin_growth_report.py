@@ -1,6 +1,6 @@
 import datetime
 import importlib
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1340,3 +1340,963 @@ def test_lb_value_rounds_fractional_metric_and_passes_none():
     assert _lb_value(4.0) == 4
     assert _lb_value(None) is None
     assert _lb_value(9) == 9
+
+
+def _chargeback_fixture():
+    NOW = 1_720_000_000_000
+    return {
+        "workspaces": [
+            {
+                "name": "team-a",
+                "numberOfExperiments": 40,
+                "totalSizeInMb": 100.0,
+                "projects": ["p1", "p2"],
+                "members": [{"userName": "alice"}],
+            }
+        ],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "alice",
+                    "email": "a@x.com",
+                    "createdAt": NOW - 100,
+                    "lastUsedAt": NOW,
+                    "experimentCount": 40,
+                    "dataLoggedMb": 100.0,
+                    "opikSpanCount": 5,
+                    "suspended": False,
+                    "deletedAt": None,
+                }
+            ]
+        },
+    }
+
+
+def test_generate_growth_report_writes_csvs(tmp_path, monkeypatch):
+    import cometx.cli.admin_growth_report as mod
+
+    monkeypatch.setattr(
+        mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    out = tmp_path / "csv"
+    mod.generate_growth_report(
+        MagicMock(),
+        [],
+        csv_dir=str(out),
+        no_html=True,
+        no_open=True,
+        report_date="2026-09-03",
+    )
+    names = sorted(p.name for p in out.iterdir())
+    assert names == [
+        "growth_org_kpis.csv",
+        "growth_users.csv",
+        "growth_workspaces.csv",
+    ]
+
+
+def test_no_html_suppresses_html_output(tmp_path, monkeypatch):
+    import cometx.cli.admin_growth_report as mod
+
+    monkeypatch.setattr(
+        mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    html = tmp_path / "report.html"
+    mod.generate_growth_report(
+        MagicMock(),
+        [],
+        output=str(html),
+        csv_dir=str(tmp_path / "csv"),
+        no_html=True,
+        no_open=True,
+        report_date="2026-09-03",
+    )
+    assert not html.exists()
+
+
+def test_preloaded_chargeback_skips_the_api_call(tmp_path, monkeypatch):
+    import cometx.cli.admin_growth_report as mod
+
+    def _boom(api):
+        raise AssertionError("fetch_chargeback_report must not be called")
+
+    monkeypatch.setattr(mod, "fetch_chargeback_report", _boom)
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    mod.generate_growth_report(
+        MagicMock(),
+        [],
+        chargeback=_chargeback_fixture(),
+        csv_dir=str(tmp_path / "csv"),
+        no_html=True,
+        no_open=True,
+        report_date="2026-09-03",
+    )
+    assert (tmp_path / "csv" / "growth_users.csv").exists()
+
+
+def test_html_still_written_when_csv_dir_absent(tmp_path, monkeypatch):
+    """Existing behavior must be untouched when --csv-dir is not passed.
+
+    The binding constraint is stronger than "the file exists": HTML output
+    must be byte-identical whether or not --csv-dir is passed, since CSV
+    writing is purely additional output. Freeze the clock (GrowthReporter
+    uses it to compute the KPI window) so the two runs can't differ merely
+    by timestamp, and compare SHA-256 hashes.
+    """
+    import hashlib
+
+    import cometx.cli.admin_growth_report as mod
+
+    monkeypatch.setattr(
+        mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    frozen_now = datetime.datetime(2026, 9, 3, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    monkeypatch.setattr(mod.GrowthReporter, "_now", lambda self: frozen_now)
+
+    html_without_csv = tmp_path / "without_csv" / "report.html"
+    html_without_csv.parent.mkdir(parents=True, exist_ok=True)
+    mod.generate_growth_report(
+        MagicMock(), [], output=str(html_without_csv), no_open=True
+    )
+    assert html_without_csv.exists()
+
+    html_with_csv = tmp_path / "with_csv" / "report.html"
+    html_with_csv.parent.mkdir(parents=True, exist_ok=True)
+    mod.generate_growth_report(
+        MagicMock(),
+        [],
+        output=str(html_with_csv),
+        no_open=True,
+        csv_dir=str(tmp_path / "csv"),
+        report_date="2026-09-03",
+    )
+    assert html_with_csv.exists()
+
+    def _sha256(path):
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    assert _sha256(html_without_csv) == _sha256(html_with_csv)
+
+
+def test_growth_parser_accepts_new_flags():
+    import argparse
+
+    from cometx.cli.admin import get_parser_arguments
+
+    parser = argparse.ArgumentParser()
+    get_parser_arguments(parser)
+    args = parser.parse_args(
+        [
+            "growth-report",
+            "--csv-dir",
+            "/tmp/out",
+            "--no-html",
+            "--chargeback-report",
+            "/tmp/cb.json",
+        ]
+    )
+    assert args.csv_dir == "/tmp/out"
+    assert args.no_html is True
+    assert args.chargeback_report == "/tmp/cb.json"
+
+
+def test_growth_report_flags_default_to_current_behavior():
+    import argparse
+
+    from cometx.cli.admin import get_parser_arguments
+
+    parser = argparse.ArgumentParser()
+    get_parser_arguments(parser)
+    args = parser.parse_args(["growth-report"])
+    assert args.csv_dir is None
+    assert args.no_html is False
+    assert args.chargeback_report is None
+
+
+def test_csv_write_failure_exits_nonzero(tmp_path, monkeypatch, capsys):
+    """A CSV write failure must exit non-zero.
+
+    Regression: the generic `except Exception` handler in the growth-report
+    dispatch printed the error and `return`ed, so the process exited 0. Under
+    a monthly scheduler that reports success while shipping nothing -- the
+    worst possible failure shape. `--csv-dir` pointing at an existing FILE is
+    the realistic trigger.
+    """
+    import argparse
+
+    import cometx.cli.admin as admin_mod
+    import cometx.cli.admin_growth_report as report_mod
+
+    monkeypatch.setattr(admin_mod, "API", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(
+        report_mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(report_mod, "_fetch_service_accounts", lambda api: None)
+
+    clash = tmp_path / "not-a-dir"
+    clash.write_text("x")
+
+    parser = argparse.ArgumentParser()
+    admin_mod.get_parser_arguments(parser)
+    args = parser.parse_args(
+        ["growth-report", "--csv-dir", str(clash), "--no-html", "--no-open"]
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        admin_mod.admin(args)
+    assert exc.value.code != 0
+    assert "ERROR" in capsys.readouterr().out
+
+
+def test_exception_text_survives_a_broken_dunder_str():
+    """`comet_ml`'s NotFound.__str__ returns None when the 404 body is not
+    JSON, so `str(exc)` raises TypeError and buries the real HTTP error under
+    a traceback from the error handler itself."""
+    from cometx.cli.admin import _exception_text
+
+    class _Resp:
+        status_code = 404
+
+        def json(self):
+            raise ValueError("not json")
+
+    class _Broken(Exception):
+        response = _Resp()
+
+        def __str__(self):
+            return None
+
+    exc = _Broken()
+    with pytest.raises(TypeError):
+        str(exc)  # the underlying breakage this helper exists to absorb
+    assert _exception_text(exc) == "_Broken (HTTP 404)"
+
+
+def test_exception_text_passes_through_a_normal_message():
+    from cometx.cli.admin import _exception_text
+
+    assert _exception_text(ValueError("boom")) == "boom"
+
+
+def test_broken_dunder_str_does_not_defeat_the_nonzero_exit():
+    """Regression: the growth-report handlers used bare `str(e)`. A broken
+    `__str__` raised inside the `except`, so `sys.exit(1)` never ran, the
+    TypeError fell through to the outer handler, and the process exited 0 --
+    defeating the very guarantee the non-zero exit exists to provide."""
+    import cometx.cli.admin as admin_mod
+
+    class _Broken(Exception):
+        def __str__(self):
+            return None
+
+    with patch.object(admin_mod, "API", MagicMock()), patch.object(
+        admin_mod, "generate_growth_report", side_effect=_Broken()
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            admin_mod.main(["growth-report", "--csv-dir", "/tmp/does-not-matter"])
+    assert excinfo.value.code == 1
+
+
+def test_parse_failure_refuses_to_write_empty_csvs(tmp_path, monkeypatch):
+    """A header-only CSV set is indistinguishable in Glue from 'this org has
+    no users'. Exiting 0 after a parse failure would tell a monthly scheduler
+    the run succeeded while shipping nothing."""
+    import cometx.cli.admin_growth_report as mod
+
+    monkeypatch.setattr(
+        mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    def _boom(_payload):
+        raise ValueError("unexpected chargeback shape")
+
+    monkeypatch.setattr(mod, "parse_users", _boom)
+
+    out = tmp_path / "csv"
+    with pytest.raises(mod.GrowthReportError) as excinfo:
+        mod.generate_growth_report(
+            MagicMock(),
+            [],
+            csv_dir=str(out),
+            no_html=True,
+            no_open=True,
+            report_date="2026-09-08",
+        )
+    assert "refusing to write CSVs" in str(excinfo.value)
+    assert not out.exists() or not list(out.iterdir())
+
+
+def test_kpi_collection_failure_refuses_to_write_empty_csvs(tmp_path, monkeypatch):
+    """Same shape for the org KPIs: a header-only growth_org_kpis.csv would be
+    ingested as a real, empty monthly partition."""
+    import cometx.cli.admin_growth_report as mod
+
+    monkeypatch.setattr(
+        mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("kpi collection exploded")
+
+    monkeypatch.setattr(mod, "collect_org_kpis", _boom)
+
+    out = tmp_path / "csv"
+    with pytest.raises(mod.GrowthReportError) as excinfo:
+        mod.generate_growth_report(
+            MagicMock(),
+            [],
+            csv_dir=str(out),
+            no_html=True,
+            no_open=True,
+            report_date="2026-09-08",
+        )
+    assert "refusing to write CSVs" in str(excinfo.value)
+
+
+def test_degraded_run_still_produces_html_without_csv_dir(tmp_path, monkeypatch):
+    """The block applies only to the CSV export -- the HTML report keeps its
+    existing degrade-and-continue behaviour."""
+    import cometx.cli.admin_growth_report as mod
+
+    monkeypatch.setattr(
+        mod, "fetch_chargeback_report", lambda api: _chargeback_fixture()
+    )
+    monkeypatch.setattr(mod, "_fetch_service_accounts", lambda api: None)
+
+    def _boom(_payload):
+        raise ValueError("unexpected chargeback shape")
+
+    monkeypatch.setattr(mod, "parse_users", _boom)
+
+    html = tmp_path / "report.html"
+    mod.generate_growth_report(MagicMock(), [], output=str(html), no_open=True)
+    assert html.exists()
+
+
+def test_null_snapshot_file_is_rejected_not_silently_fetched(tmp_path):
+    """`build()` treats `chargeback is None` as the live-fetch sentinel, so a
+    file containing JSON `null` fell through to the API -- and then blamed the
+    admin endpoint for what is actually a bad local file."""
+    import cometx.cli.admin as admin_mod
+    import cometx.cli.admin_growth_report as mod
+
+    snapshot = tmp_path / "null.json"
+    snapshot.write_text("null")
+
+    # Record rather than raise: the CLI's broad `except Exception` would
+    # swallow an AssertionError and still exit 1, so the test could not tell
+    # a rejected snapshot from a live fetch that merely failed.
+    fetches = []
+
+    def _record_fetch(*args, **kwargs):
+        fetches.append(1)
+        raise RuntimeError("endpoint unreachable")
+
+    with patch.object(admin_mod, "API", MagicMock()), patch.object(
+        mod, "fetch_chargeback_report", _record_fetch
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            admin_mod.main(
+                [
+                    "growth-report",
+                    "--chargeback-report",
+                    str(snapshot),
+                    "--csv-dir",
+                    str(tmp_path / "out"),
+                    "--no-html",
+                ]
+            )
+    assert excinfo.value.code == 1
+    assert fetches == [], "a null snapshot silently fell back to a live fetch"
+
+
+def test_non_object_snapshot_file_is_rejected(tmp_path):
+    """A JSON list/string is equally not a chargeback report."""
+    import cometx.cli.admin as admin_mod
+    import cometx.cli.admin_growth_report as mod
+
+    snapshot = tmp_path / "list.json"
+    snapshot.write_text("[]")
+
+    with patch.object(admin_mod, "API", MagicMock()), patch.object(
+        mod, "fetch_chargeback_report", MagicMock()
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            admin_mod.main(
+                [
+                    "growth-report",
+                    "--chargeback-report",
+                    str(snapshot),
+                    "--csv-dir",
+                    str(tmp_path / "out"),
+                    "--no-html",
+                ]
+            )
+    assert excinfo.value.code == 1
+
+
+def test_structurally_empty_snapshot_is_rejected(tmp_path):
+    """`{}` passes the JSON-object check, and the parsers are deliberately
+    permissive -- they return empty lists rather than raising, so the
+    export-blocked guard never fires. Without this check we would publish a
+    'successful' zero-row export indistinguishable from a genuinely empty
+    organization."""
+    import cometx.cli.admin as admin_mod
+    import cometx.cli.admin_growth_report as mod
+
+    snapshot = tmp_path / "empty.json"
+    snapshot.write_text("{}")
+    out = tmp_path / "out"
+
+    with patch.object(admin_mod, "API", MagicMock()), patch.object(
+        mod, "fetch_chargeback_report", MagicMock()
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            admin_mod.main(
+                [
+                    "growth-report",
+                    "--chargeback-report",
+                    str(snapshot),
+                    "--csv-dir",
+                    str(out),
+                    "--no-html",
+                ]
+            )
+    assert excinfo.value.code == 1
+    assert not out.exists() or not list(out.iterdir())
+
+
+def test_snapshot_missing_either_section_is_blocked(tmp_path):
+    """EITHER section missing blocks, not just both. A workspaces-only payload
+    still yields a header-only growth_users.csv and drops the total_users /
+    active_users_* / new_users_* KPIs entirely -- the exact
+    "indistinguishable from an org with no users" case this guard exists to
+    prevent."""
+    import cometx.cli.admin_growth_report as mod
+
+    payload = {
+        "workspaces": [
+            {
+                "name": "team-a",
+                "numberOfExperiments": 3,
+                "totalSizeInMb": 1.0,
+                "projects": ["p"],
+                "members": [],
+            }
+        ]
+    }
+    out = tmp_path / "out"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        with pytest.raises(mod.GrowthReportError) as excinfo:
+            mod.generate_growth_report(
+                MagicMock(),
+                [],
+                chargeback=payload,
+                csv_dir=str(out),
+                no_html=True,
+                no_open=True,
+                report_date="2026-09-08",
+            )
+    assert "missing its 'users' section" in str(excinfo.value)
+    assert not out.exists() or not list(out.iterdir())
+
+
+def test_live_fetch_returning_empty_report_is_blocked(tmp_path):
+    """The structural guard must cover the LIVE path, not just
+    `--chargeback-report`. The live path is the one that runs monthly in
+    production, and the chargeback parsers are permissive -- a `{}` response
+    would otherwise publish a zero-row export and exit 0."""
+    import cometx.cli.admin_growth_report as mod
+
+    out = tmp_path / "out"
+    with patch.object(mod, "fetch_chargeback_report", lambda api: {}), patch.object(
+        mod, "_fetch_service_accounts", lambda api: None
+    ):
+        with pytest.raises(mod.GrowthReportError) as excinfo:
+            mod.generate_growth_report(
+                MagicMock(),
+                [],
+                csv_dir=str(out),
+                no_html=True,
+                no_open=True,
+                report_date="2026-09-09",
+            )
+    assert "refusing to write CSVs" in str(excinfo.value)
+    assert not out.exists() or not list(out.iterdir())
+
+
+def test_scope_matching_no_workspaces_is_blocked(tmp_path):
+    """A filter that matched nothing would publish an empty partition and
+    serialize `scope` as the bare string `workspaces:`, which every dashboard
+    filter would then have to special-case."""
+    import cometx.cli.admin_growth_report as mod
+
+    out = tmp_path / "out"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        with pytest.raises(mod.GrowthReportError) as excinfo:
+            mod.generate_growth_report(
+                MagicMock(),
+                ["ghost"],
+                chargeback=_chargeback_fixture(),
+                csv_dir=str(out),
+                no_html=True,
+                no_open=True,
+                report_date="2026-09-09",
+            )
+    assert "no workspaces matched" in str(excinfo.value)
+    assert not out.exists() or not list(out.iterdir())
+
+
+def test_a_scope_that_matches_still_exports(tmp_path):
+    """The block must not fire for a filter that legitimately matches."""
+    import cometx.cli.admin_growth_report as mod
+
+    out = tmp_path / "out"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        mod.generate_growth_report(
+            MagicMock(),
+            ["team-a"],
+            chargeback=_chargeback_fixture(),
+            csv_dir=str(out),
+            no_html=True,
+            no_open=True,
+            report_date="2026-09-09",
+        )
+    assert (out / "growth_users.csv").exists()
+
+
+def test_export_block_reason_resets_between_builds():
+    """A reused reporter whose first build failed must not block every later
+    export. The CLI builds once, so this guards the invariant rather than a
+    live path."""
+    import cometx.cli.admin_growth_report as mod
+
+    reporter = mod.GrowthReporter(MagicMock(), window="7d", units="month")
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        reporter.build([], chargeback={})
+        assert reporter.export_block_reason() is not None
+        reporter.build([], chargeback=_chargeback_fixture())
+        assert reporter.export_block_reason() is None
+
+
+def test_exclude_personal_run_is_not_labelled_organization(tmp_path):
+    """Regression: the scope metric only branched on --workspace, so a run
+    that dropped personal workspaces labelled itself `organization` --
+    provenance byte-identical to a genuine org-wide run, which would
+    overwrite the org-wide Glue partition."""
+    import csv as _csv
+
+    import cometx.cli.admin_growth_report as mod
+
+    now = 1_720_000_000_000
+
+    def _user(name):
+        return {
+            "username": name,
+            "email": name + "@x.com",
+            "createdAt": now,
+            "lastUsedAt": now,
+            "experimentCount": 1,
+            "dataLoggedMb": 1.0,
+            "opikSpanCount": 1,
+            "suspended": False,
+            "deletedAt": None,
+        }
+
+    payload = {
+        "workspaces": [
+            {
+                "name": "team-a",
+                "numberOfExperiments": 5,
+                "totalSizeInMb": 1.0,
+                "projects": ["p"],
+                "members": [{"userName": "a"}],
+            },
+            {
+                "name": "user-bob",
+                "numberOfExperiments": 9,
+                "totalSizeInMb": 2.0,
+                "projects": ["q"],
+                "members": [{"userName": "b"}],
+            },
+        ],
+        "users": {"report": [_user("a"), _user("b")]},
+    }
+    out = tmp_path / "out"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        mod.generate_growth_report(
+            MagicMock(),
+            [],
+            chargeback=payload,
+            csv_dir=str(out),
+            no_html=True,
+            no_open=True,
+            report_date="2026-09-10",
+            exclude_personal=True,
+            personal_pattern="^user-",
+        )
+    kpis = {
+        r["metric_name"]: (r["metric_value"], r["metric_text"])
+        for r in _csv.DictReader(open(out / "growth_org_kpis.csv"))
+    }
+    assert kpis["scope"][1] == "organization_excluding_personal"
+    assert kpis["excluded_personal_workspaces"][0] == "1"
+
+
+def test_plain_org_wide_run_is_still_labelled_organization(tmp_path):
+    """The new branch must not fire when nothing was excluded."""
+    import csv as _csv
+
+    import cometx.cli.admin_growth_report as mod
+
+    out = tmp_path / "out"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        mod.generate_growth_report(
+            MagicMock(),
+            [],
+            chargeback=_chargeback_fixture(),
+            csv_dir=str(out),
+            no_html=True,
+            no_open=True,
+            report_date="2026-09-10",
+        )
+    kpis = {
+        r["metric_name"]: r["metric_text"]
+        for r in _csv.DictReader(open(out / "growth_org_kpis.csv"))
+    }
+    assert kpis["scope"] == "organization"
+    assert "excluded_personal_workspaces" not in kpis
+
+
+def _two_workspace_payload():
+    """team-a (member 'a') plus a personal workspace user-bob (member 'b'),
+    each user carrying 10 experiments."""
+    now = 1_720_000_000_000
+
+    def _user(name):
+        return {
+            "username": name,
+            "email": name + "@x.com",
+            "createdAt": now,
+            "lastUsedAt": now,
+            "experimentCount": 10,
+            "dataLoggedMb": 1.0,
+            "opikSpanCount": 1,
+            "suspended": False,
+            "deletedAt": None,
+        }
+
+    return {
+        "workspaces": [
+            {
+                "name": "team-a",
+                "numberOfExperiments": 5,
+                "totalSizeInMb": 1.0,
+                "projects": ["p"],
+                "members": [{"userName": "a"}],
+            },
+            {
+                "name": "user-bob",
+                "numberOfExperiments": 9,
+                "totalSizeInMb": 2.0,
+                "projects": ["q"],
+                "members": [{"userName": "b"}],
+            },
+        ],
+        "users": {"report": [_user("a"), _user("b")]},
+    }
+
+
+def _export(tmp_path, name, workspaces=(), **kwargs):
+    import csv as _csv
+
+    import cometx.cli.admin_growth_report as mod
+
+    out = tmp_path / name
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        mod.generate_growth_report(
+            MagicMock(),
+            list(workspaces),
+            chargeback=_two_workspace_payload(),
+            csv_dir=str(out),
+            no_html=True,
+            no_open=True,
+            report_date="2026-09-10",
+            **kwargs,
+        )
+    read = lambda f: list(_csv.DictReader(open(out / f)))  # noqa: E731
+    return (
+        [r["workspace"] for r in read("growth_workspaces.csv")],
+        [r["username"] for r in read("growth_users.csv")],
+        {r["metric_name"]: r["metric_value"] for r in read("growth_org_kpis.csv")},
+    )
+
+
+def test_exclude_personal_narrows_users_not_just_workspaces(tmp_path):
+    """Regression: --exclude-personal trimmed only the workspace list, so the
+    user table and every user-derived KPI stayed org-wide while the workspace
+    metrics were filtered. One `scope` label then covered two different
+    populations -- the workspace table reporting 5 experiments while the user
+    metrics reported 20."""
+    ws, users, kpis = _export(
+        tmp_path, "excl", exclude_personal=True, personal_pattern="^user-"
+    )
+    assert ws == ["team-a"]
+    assert users == ["a"]  # 'b' only belonged to the excluded workspace
+    assert kpis["total_users"] == "1"
+    assert kpis["personal_experiments"] == "10"  # not 20
+
+
+def test_exclude_personal_matches_an_equivalent_workspace_scope(tmp_path):
+    """Both filters narrow the same way, so selecting the surviving workspace
+    explicitly must produce the same population."""
+    excluded = _export(tmp_path, "a", exclude_personal=True, personal_pattern="^user-")
+    scoped = _export(tmp_path, "b", workspaces=["team-a"])
+    assert excluded[0] == scoped[0]
+    assert excluded[1] == scoped[1]
+    assert excluded[2]["total_users"] == scoped[2]["total_users"]
+    assert excluded[2]["personal_experiments"] == scoped[2]["personal_experiments"]
+
+
+def test_unfiltered_run_keeps_the_whole_roster(tmp_path):
+    """The narrowing must not fire when no filter is active."""
+    ws, users, kpis = _export(tmp_path, "all")
+    assert ws == ["team-a", "user-bob"]
+    assert users == ["a", "b"]
+    assert kpis["total_users"] == "2"
+
+
+def _personal_only_chargeback():
+    """A payload whose every workspace matches `^user-`, so `--exclude-personal`
+    removes all of them."""
+    now = 1_720_000_000_000
+    return {
+        "workspaces": [
+            {
+                "name": "user-bob",
+                "numberOfExperiments": 9,
+                "totalSizeInMb": 2.0,
+                "projects": ["q"],
+                "members": [{"userName": "bob"}],
+            }
+        ],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "bob",
+                    "email": "bob@x.com",
+                    "createdAt": now - 100,
+                    "lastUsedAt": now,
+                    "experimentCount": 9,
+                    "dataLoggedMb": 2.0,
+                    "opikSpanCount": 1,
+                    "suspended": False,
+                    "deletedAt": None,
+                }
+            ]
+        },
+    }
+
+
+def test_exclude_personal_removing_everything_blocks_the_export(tmp_path):
+    """Regression: the emptiness guard only ran when an explicit --workspace
+    scope was given, so an --exclude-personal pattern that matched every
+    workspace wrote header-only CSVs and exited 0 -- the "org with no users"
+    partition the guard exists to prevent."""
+    import cometx.cli.admin_growth_report as mod
+
+    out = tmp_path / "out"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        with pytest.raises(mod.GrowthReportError) as excinfo:
+            mod.generate_growth_report(
+                MagicMock(),
+                [],
+                chargeback=_personal_only_chargeback(),
+                csv_dir=str(out),
+                no_html=True,
+                no_open=True,
+                report_date="2026-09-10",
+                exclude_personal=True,
+                personal_pattern="^user-",
+            )
+    message = str(excinfo.value)
+    assert "refusing to write CSVs" in message
+    assert "--exclude-personal" in message
+    assert not out.exists() or not list(out.iterdir())
+
+
+def test_exclude_personal_removing_everything_still_renders_html(tmp_path):
+    """The HTML-only degradation path is preserved: an empty section is honest
+    in HTML, it is only the CSV partition that must not ship."""
+    import cometx.cli.admin_growth_report as mod
+
+    html = tmp_path / "growth_report.html"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        path = mod.generate_growth_report(
+            MagicMock(),
+            [],
+            chargeback=_personal_only_chargeback(),
+            output=str(html),
+            no_open=True,
+            report_date="2026-09-10",
+            exclude_personal=True,
+            personal_pattern="^user-",
+        )
+    assert html.exists()
+    assert path == str(html)
+
+
+def test_exclude_personal_that_keeps_workspaces_still_exports(tmp_path):
+    """The widened guard must not fire for an exclusion that leaves survivors."""
+    import cometx.cli.admin_growth_report as mod
+
+    payload = _personal_only_chargeback()
+    payload["workspaces"].append(
+        {
+            "name": "team-a",
+            "numberOfExperiments": 40,
+            "totalSizeInMb": 100.0,
+            "projects": ["p1"],
+            "members": [{"userName": "alice"}],
+        }
+    )
+    payload["users"]["licensedUsers"].append(
+        {
+            "username": "alice",
+            "email": "a@x.com",
+            "createdAt": 1_720_000_000_000 - 100,
+            "lastUsedAt": 1_720_000_000_000,
+            "experimentCount": 40,
+            "dataLoggedMb": 100.0,
+            "opikSpanCount": 5,
+            "suspended": False,
+            "deletedAt": None,
+        }
+    )
+    out = tmp_path / "out"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        mod.generate_growth_report(
+            MagicMock(),
+            [],
+            chargeback=payload,
+            csv_dir=str(out),
+            no_html=True,
+            no_open=True,
+            report_date="2026-09-10",
+            exclude_personal=True,
+            personal_pattern="^user-",
+        )
+    assert (out / "growth_users.csv").exists()
+
+
+def test_workspaces_without_members_block_the_export(tmp_path):
+    """Both filters narrow the roster to members of the surviving workspaces,
+    so surviving workspaces with no members ship a header-only users table and
+    drop every user-derived KPI. Blocked for the same reason a missing 'users'
+    section is."""
+    import cometx.cli.admin_growth_report as mod
+
+    payload = _chargeback_fixture()
+    payload["workspaces"][0]["members"] = []
+    out = tmp_path / "out"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        with pytest.raises(mod.GrowthReportError) as excinfo:
+            mod.generate_growth_report(
+                MagicMock(),
+                ["team-a"],
+                chargeback=payload,
+                csv_dir=str(out),
+                no_html=True,
+                no_open=True,
+                report_date="2026-09-10",
+            )
+    assert "no users belong to the workspaces matching" in str(excinfo.value)
+
+
+def test_scope_label_marks_an_unscoped_exclude_personal_run():
+    """Regression: HTML metadata labelled an --exclude-personal run `Org-wide`
+    because _scope_label only considered an explicit scope, contradicting the
+    CSV KPI's `organization_excluding_personal` provenance for the same run.
+    The filter narrows users too, so the report is a subset, not the org."""
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    label = GrowthReporter._scope_label(None, 12, 30, excluded_personal_count=4)
+    assert not label.startswith("Org-wide:")
+    assert "excluding personal" in label
+    assert "4 personal workspace(s) excluded" in label
+    assert "12 workspaces, 30 users" in label
+
+    # Unknown org totals still name the exclusion.
+    assert "excluding personal" in GrowthReporter._scope_label(
+        None, None, None, excluded_personal_count=4
+    )
+
+
+def test_scope_label_is_org_wide_when_the_pattern_dropped_nothing():
+    """Driven by the count actually dropped, not by the flag -- the same rule
+    `collect_org_kpis` applies, so the two provenances cannot disagree."""
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    assert GrowthReporter._scope_label(None, 165, 137, excluded_personal_count=0) == (
+        "Org-wide: 165 workspaces, 137 users (chargeback)"
+    )
+
+
+def test_html_scope_label_and_csv_scope_kpi_agree_on_exclude_personal(tmp_path):
+    """The two provenances are written by different code paths; this pins them
+    to the same run so they cannot drift apart again."""
+    import csv as _csv
+
+    import cometx.cli.admin_growth_report as mod
+
+    payload = _personal_only_chargeback()
+    payload["workspaces"].append(
+        {
+            "name": "team-a",
+            "numberOfExperiments": 40,
+            "totalSizeInMb": 100.0,
+            "projects": ["p1"],
+            "members": [{"userName": "alice"}],
+        }
+    )
+    payload["users"]["licensedUsers"].append(
+        {
+            "username": "alice",
+            "email": "a@x.com",
+            "createdAt": 1_720_000_000_000 - 100,
+            "lastUsedAt": 1_720_000_000_000,
+            "experimentCount": 40,
+            "dataLoggedMb": 100.0,
+            "opikSpanCount": 5,
+            "suspended": False,
+            "deletedAt": None,
+        }
+    )
+    out = tmp_path / "out"
+    reporter = mod.GrowthReporter(
+        MagicMock(),
+        window="7d",
+        units="month",
+        exclude_personal=True,
+        personal_pattern="^user-",
+    )
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        report_data = reporter.build([], chargeback=payload)
+        users, ws_records, kpis = reporter.last_parsed()
+        mod.write_growth_csvs(users, ws_records, kpis, str(out), "2026-09-10")
+
+    rows = {
+        r["metric_name"]: (r["metric_value"], r["metric_text"])
+        for r in _csv.DictReader(open(out / "growth_org_kpis.csv"))
+    }
+    assert rows["scope"][1] == "organization_excluding_personal"
+    assert "excluding personal" in report_data["meta"]["scope"]
