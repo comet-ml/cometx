@@ -485,19 +485,56 @@ class GrowthReporter:
             chargeback, window, now_ms, scope=scope, excluded_personal=excluded
         )
 
-        # A scope that matched nothing is a filter that did not land: the
-        # export would be empty, and `scope` would serialize as the bare
+        # A filter that left nothing behind is a filter that did not land:
+        # the export would be empty, and `scope` would serialize as the bare
         # string "workspaces:" that every dashboard filter then has to
         # special-case. Checked after assembly, since only then do we know
-        # which workspaces survived scoping and --exclude-personal.
-        if scope and self._export_block_reason is None:
-            _users, ws_records, _kpis = self._last_parsed
-            if not ws_records:
-                self._export_block_reason = (
-                    "no workspaces matched %s (nothing to export)"
-                    % ", ".join(sorted(scope))
-                )
+        # which records survived scoping and --exclude-personal.
+        if self._export_block_reason is None:
+            self._export_block_reason = self._empty_export_reason(scope, excluded)
         return report_data
+
+    def _empty_export_reason(self, scope, excluded_personal):
+        """A block reason when the filters left nothing to export, else None.
+
+        Both filters are checked, not just an explicit `--workspace`: an
+        `--exclude-personal` pattern that matches every workspace empties the
+        export exactly the same way, and on an org whose workspaces are all
+        personal that is the likely outcome rather than a corner case. Without
+        this, such a run writes header-only CSVs and exits 0 -- the "an org
+        with no users" partition the structural guard above exists to prevent.
+
+        Users are checked alongside workspaces for the same reason that guard
+        blocks on EITHER missing section: both filters narrow the roster to
+        members of the surviving workspaces, so a survivor set with no members
+        still ships a header-only growth_users.csv and drops the total_users /
+        active_users_* / new_users_* KPIs.
+
+        Blocks the CSV export only; the HTML report still renders its empty
+        sections honestly."""
+        people, ws_records, _kpis = self._last_parsed
+        if ws_records and people:
+            return None
+        if scope and not ws_records:
+            return "no workspaces matched %s (nothing to export)" % ", ".join(
+                sorted(scope)
+            )
+        empty = " or ".join(
+            name
+            for name, records in (("workspaces", ws_records), ("users", people))
+            if not records
+        )
+        if excluded_personal:
+            return (
+                "--exclude-personal left no %s to export (%d personal "
+                "workspace(s) dropped)" % (empty, excluded_personal)
+            )
+        if scope:
+            return (
+                "no users belong to the workspaces matching %s (nothing to "
+                "export)" % ", ".join(sorted(scope))
+            )
+        return "the chargeback report parsed to no %s" % empty
 
     def last_parsed(self):
         """The (users, ws_records, org_kpis) captured by the most recent
@@ -1235,17 +1272,36 @@ class GrowthReporter:
         }
 
     @staticmethod
-    def _scope_label(scope, org_workspaces, org_users, scoped_count=None):
+    def _scope_label(
+        scope, org_workspaces, org_users, scoped_count=None, excluded_personal=0
+    ):
         """One-line scope descriptor for the report header. When scoped, the
         count reflects the workspaces actually present after scoping/filtering
         (`scoped_count`), not the raw requested arg list, so the badge matches
-        the rendered sections."""
+        the rendered sections.
+
+        `excluded_personal` is the number of workspaces `--exclude-personal`
+        actually dropped. An unscoped run that dropped some is NOT org-wide:
+        the filter narrows users as well as workspaces, so labelling it
+        `Org-wide` would put an org-wide badge on a subset -- and contradict
+        the CSV's own `organization_excluding_personal` provenance for the
+        same run. Driven by the count actually dropped, not by the flag, so a
+        pattern that matched nothing still reads org-wide, matching how
+        `collect_org_kpis` decides the same thing."""
         if scope is not None:
             n = scoped_count if scoped_count is not None else len(scope)
             return (
                 f"Scoped to {n} selected workspace(s) "
                 "(per-user totals remain org-wide)"
             )
+        if excluded_personal:
+            excluded = f"{excluded_personal} personal workspace(s) excluded"
+            if org_workspaces is not None:
+                return (
+                    f"Org-wide excluding personal: {org_workspaces} workspaces, "
+                    f"{org_users} users ({excluded}, chargeback)"
+                )
+            return f"Org-wide excluding personal ({excluded}, chargeback)"
         if org_workspaces is not None:
             return (
                 f"Org-wide: {org_workspaces} workspaces, {org_users} users "
@@ -1256,7 +1312,10 @@ class GrowthReporter:
     def _assemble_report_data(
         self, chargeback, window, now_ms, scope=None, excluded_personal=0
     ):
-        # Org totals for the header, from the FULL (unscoped) chargeback.
+        # Org totals for the header, from the chargeback before `scope` is
+        # applied. Not the raw payload: `build()` has already applied
+        # --exclude-personal, so on such a run these are the org excluding
+        # personal workspaces -- which is what `_scope_label` says they are.
         org_users = org_workspaces = None
         try:
             org_users = sum(1 for u in parse_users(chargeback) if not u.suspended)
@@ -1402,7 +1461,11 @@ class GrowthReporter:
                 "generated": window.end.isoformat(),
                 "source": "Comet Admin API (chargeback)",
                 "scope": self._scope_label(
-                    scope, org_workspaces, org_users, scoped_count=len(ws_records)
+                    scope,
+                    org_workspaces,
+                    org_users,
+                    scoped_count=len(ws_records),
+                    excluded_personal=excluded_personal,
                 ),
             },
             "window": self._build_window_block(window, 0),

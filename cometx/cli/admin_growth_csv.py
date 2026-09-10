@@ -203,12 +203,21 @@ def build_org_kpi_rows(kpis, report_date):
 
     Accepts `(name, value, unit)` or `(name, value, unit, text)`; the text
     field defaults to empty so callers holding 3-tuples keep working.
+
+    `metric_value` goes through `_num_or_empty` here, as the users and
+    workspaces builders do for their numeric columns. `collect_org_kpis`
+    already normalizes what it returns, so this is a no-op on the report's own
+    path (the guard is idempotent -- an already-rendered string passes
+    straight through). It sits here because this is the single writer of the
+    column, so a caller assembling KPI tuples by hand cannot put a `4e-06`
+    that Athena reads as NULL, or a bare `True`, into an otherwise-numeric
+    column that Glue would then type as `string`.
     """
     rows = []
     for entry in kpis:
         name, value, unit = entry[0], entry[1], entry[2]
         text = entry[3] if len(entry) > 3 else ""
-        rows.append([report_date, name, value, unit, text])
+        rows.append([report_date, name, _num_or_empty(value), unit, text])
     return rows
 
 
@@ -389,9 +398,34 @@ def write_growth_csvs(
         (ORG_KPIS_FILENAME, ORG_KPIS_HEADER, build_org_kpi_rows(kpis, report_date)),
     ]
 
+    # Stage every table beside its destination and only move them into place
+    # once all three have been written. The three files are ONE partition: a
+    # run that died halfway through -- a full disk, a read-only file left by a
+    # previous run -- would otherwise leave this month's growth_users.csv next
+    # to last month's growth_workspaces.csv, and the upload step syncs the
+    # directory rather than the path list returned here. That mismatch is
+    # worse than the header-only export the block reasons exist to prevent,
+    # because nothing about the files says the run failed.
+    #
+    # `os.replace` is atomic within a directory, so a reader of `out_dir` sees
+    # either the whole previous set or the whole new one.
+    staged = []
     written = []
-    for filename, header, rows in targets:
-        path = os.path.join(out_dir, filename)
-        _write_csv(path, header, rows)
-        written.append(os.path.abspath(path))
+    try:
+        for filename, header, rows in targets:
+            path = os.path.join(out_dir, filename)
+            tmp = path + ".tmp"
+            _write_csv(tmp, header, rows)
+            staged.append((tmp, path))
+        for tmp, path in staged:
+            os.replace(tmp, path)
+            written.append(os.path.abspath(path))
+    finally:
+        # Only the temporaries that were never renamed still exist. Cleanup
+        # failure must not mask the write error that brought us here.
+        for tmp, _path in staged:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
     return written

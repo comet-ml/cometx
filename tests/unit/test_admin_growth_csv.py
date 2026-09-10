@@ -846,3 +846,99 @@ def test_booleans_in_numeric_fields_become_empty_not_true_false():
     # the genuine boolean columns still emit 0/1 -- they never go through
     # `_num_or_empty`, and this guards against a fix that breaks them
     assert row["is_suspended"] == 1
+
+
+def test_build_org_kpi_rows_guards_metric_value():
+    """The single writer of `metric_value` applies the same numeric guard the
+    users and workspaces builders apply, so a hand-assembled KPI tuple cannot
+    put a `4e-06` (NULL to Athena's CSV SerDe) or a bare `True` (which makes a
+    Glue crawler type the column `string`) into an otherwise-numeric column."""
+    from cometx.cli.admin_growth_csv import build_org_kpi_rows
+
+    rows = build_org_kpi_rows(
+        [
+            ("total_data_mb", 4e-06, "megabytes"),
+            ("some_flag", True, "count"),
+            ("total_users", 6, "count"),
+        ],
+        DATE,
+    )
+    values = [r[2] for r in rows]
+    assert "e" not in str(values[0]) and float(values[0]) == 4e-06
+    assert values[1] == ""  # a bool is not a count the source ever reported
+    assert values[2] == 6  # ordinary ints pass through untouched
+
+
+def test_build_org_kpi_rows_guard_is_idempotent():
+    """`collect_org_kpis` already normalizes; running the guard again on its
+    output must not change anything, or the two would disagree."""
+    from cometx.cli.admin_growth_csv import build_org_kpi_rows, collect_org_kpis
+
+    kpis = collect_org_kpis(
+        users=[],
+        ws_records=[],
+        stats={"total": 4, "active": 2, "adoption_pct": 50.0},
+        growth=None,
+        split=None,
+        active_window_days=60,
+    )
+    once = build_org_kpi_rows(kpis, DATE)
+    twice = build_org_kpi_rows(
+        [(r[1], r[2], r[3], r[4]) for r in once],
+        DATE,
+    )
+    assert once == twice
+
+
+def test_a_failed_write_publishes_nothing(tmp_path):
+    """The three tables are one partition. A run that died halfway would
+    otherwise leave this month's users table beside last month's workspaces
+    table, and the upload step syncs the directory -- a mismatch nothing about
+    the files announces."""
+    from unittest.mock import patch
+
+    import pytest
+
+    import cometx.cli.admin_growth_csv as mod
+
+    out = tmp_path / "out"
+    out.mkdir()
+    stale = out / mod.WORKSPACES_FILENAME
+    stale.write_text("stale-from-last-run\n", encoding="utf-8")
+
+    real_write = mod._write_csv
+    calls = []
+
+    def flaky(path, header, rows):
+        calls.append(path)
+        if len(calls) == 3:
+            raise OSError(28, "No space left on device")
+        return real_write(path, header, rows)
+
+    with patch.object(mod, "_write_csv", flaky):
+        with pytest.raises(OSError):
+            mod.write_growth_csvs([], [], [], str(out), DATE)
+
+    # Nothing new published, the previous partition untouched, no temporaries
+    # left behind for the uploader to find.
+    assert sorted(p.name for p in out.iterdir()) == [mod.WORKSPACES_FILENAME]
+    assert stale.read_text(encoding="utf-8") == "stale-from-last-run\n"
+
+
+def test_a_successful_write_leaves_no_temporaries(tmp_path):
+    from cometx.cli.admin_growth_csv import write_growth_csvs
+
+    out = tmp_path / "out"
+    write_growth_csvs([], [], [], str(out), DATE)
+    assert not [p.name for p in out.iterdir() if p.name.endswith(".tmp")]
+
+
+def test_write_replaces_a_previous_runs_files(tmp_path):
+    """os.replace over an existing file, not an append or a failure."""
+    from cometx.cli.admin_growth_csv import USERS_FILENAME, write_growth_csvs
+
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / USERS_FILENAME).write_text("old\n", encoding="utf-8")
+    write_growth_csvs([], [], [], str(out), DATE)
+    assert (out / USERS_FILENAME).read_text(encoding="utf-8").startswith("report_date,")

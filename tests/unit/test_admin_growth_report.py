@@ -2073,3 +2073,230 @@ def test_unfiltered_run_keeps_the_whole_roster(tmp_path):
     assert ws == ["team-a", "user-bob"]
     assert users == ["a", "b"]
     assert kpis["total_users"] == "2"
+
+
+def _personal_only_chargeback():
+    """A payload whose every workspace matches `^user-`, so `--exclude-personal`
+    removes all of them."""
+    now = 1_720_000_000_000
+    return {
+        "workspaces": [
+            {
+                "name": "user-bob",
+                "numberOfExperiments": 9,
+                "totalSizeInMb": 2.0,
+                "projects": ["q"],
+                "members": [{"userName": "bob"}],
+            }
+        ],
+        "users": {
+            "licensedUsers": [
+                {
+                    "username": "bob",
+                    "email": "bob@x.com",
+                    "createdAt": now - 100,
+                    "lastUsedAt": now,
+                    "experimentCount": 9,
+                    "dataLoggedMb": 2.0,
+                    "opikSpanCount": 1,
+                    "suspended": False,
+                    "deletedAt": None,
+                }
+            ]
+        },
+    }
+
+
+def test_exclude_personal_removing_everything_blocks_the_export(tmp_path):
+    """Regression: the emptiness guard only ran when an explicit --workspace
+    scope was given, so an --exclude-personal pattern that matched every
+    workspace wrote header-only CSVs and exited 0 -- the "org with no users"
+    partition the guard exists to prevent."""
+    import cometx.cli.admin_growth_report as mod
+
+    out = tmp_path / "out"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        with pytest.raises(mod.GrowthReportError) as excinfo:
+            mod.generate_growth_report(
+                MagicMock(),
+                [],
+                chargeback=_personal_only_chargeback(),
+                csv_dir=str(out),
+                no_html=True,
+                no_open=True,
+                report_date="2026-09-10",
+                exclude_personal=True,
+                personal_pattern="^user-",
+            )
+    message = str(excinfo.value)
+    assert "refusing to write CSVs" in message
+    assert "--exclude-personal" in message
+    assert not out.exists() or not list(out.iterdir())
+
+
+def test_exclude_personal_removing_everything_still_renders_html(tmp_path):
+    """The HTML-only degradation path is preserved: an empty section is honest
+    in HTML, it is only the CSV partition that must not ship."""
+    import cometx.cli.admin_growth_report as mod
+
+    html = tmp_path / "growth_report.html"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        path = mod.generate_growth_report(
+            MagicMock(),
+            [],
+            chargeback=_personal_only_chargeback(),
+            output=str(html),
+            no_open=True,
+            report_date="2026-09-10",
+            exclude_personal=True,
+            personal_pattern="^user-",
+        )
+    assert html.exists()
+    assert path == str(html)
+
+
+def test_exclude_personal_that_keeps_workspaces_still_exports(tmp_path):
+    """The widened guard must not fire for an exclusion that leaves survivors."""
+    import cometx.cli.admin_growth_report as mod
+
+    payload = _personal_only_chargeback()
+    payload["workspaces"].append(
+        {
+            "name": "team-a",
+            "numberOfExperiments": 40,
+            "totalSizeInMb": 100.0,
+            "projects": ["p1"],
+            "members": [{"userName": "alice"}],
+        }
+    )
+    payload["users"]["licensedUsers"].append(
+        {
+            "username": "alice",
+            "email": "a@x.com",
+            "createdAt": 1_720_000_000_000 - 100,
+            "lastUsedAt": 1_720_000_000_000,
+            "experimentCount": 40,
+            "dataLoggedMb": 100.0,
+            "opikSpanCount": 5,
+            "suspended": False,
+            "deletedAt": None,
+        }
+    )
+    out = tmp_path / "out"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        mod.generate_growth_report(
+            MagicMock(),
+            [],
+            chargeback=payload,
+            csv_dir=str(out),
+            no_html=True,
+            no_open=True,
+            report_date="2026-09-10",
+            exclude_personal=True,
+            personal_pattern="^user-",
+        )
+    assert (out / "growth_users.csv").exists()
+
+
+def test_workspaces_without_members_block_the_export(tmp_path):
+    """Both filters narrow the roster to members of the surviving workspaces,
+    so surviving workspaces with no members ship a header-only users table and
+    drop every user-derived KPI. Blocked for the same reason a missing 'users'
+    section is."""
+    import cometx.cli.admin_growth_report as mod
+
+    payload = _chargeback_fixture()
+    payload["workspaces"][0]["members"] = []
+    out = tmp_path / "out"
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        with pytest.raises(mod.GrowthReportError) as excinfo:
+            mod.generate_growth_report(
+                MagicMock(),
+                ["team-a"],
+                chargeback=payload,
+                csv_dir=str(out),
+                no_html=True,
+                no_open=True,
+                report_date="2026-09-10",
+            )
+    assert "no users belong to the workspaces matching" in str(excinfo.value)
+
+
+def test_scope_label_marks_an_unscoped_exclude_personal_run():
+    """Regression: HTML metadata labelled an --exclude-personal run `Org-wide`
+    because _scope_label only considered an explicit scope, contradicting the
+    CSV KPI's `organization_excluding_personal` provenance for the same run.
+    The filter narrows users too, so the report is a subset, not the org."""
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    label = GrowthReporter._scope_label(None, 12, 30, excluded_personal=4)
+    assert not label.startswith("Org-wide:")
+    assert "excluding personal" in label
+    assert "4 personal workspace(s) excluded" in label
+    assert "12 workspaces, 30 users" in label
+
+    # Unknown org totals still name the exclusion.
+    assert "excluding personal" in GrowthReporter._scope_label(
+        None, None, None, excluded_personal=4
+    )
+
+
+def test_scope_label_is_org_wide_when_the_pattern_dropped_nothing():
+    """Driven by the count actually dropped, not by the flag -- the same rule
+    `collect_org_kpis` applies, so the two provenances cannot disagree."""
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    assert GrowthReporter._scope_label(None, 165, 137, excluded_personal=0) == (
+        "Org-wide: 165 workspaces, 137 users (chargeback)"
+    )
+
+
+def test_html_scope_label_and_csv_scope_kpi_agree_on_exclude_personal(tmp_path):
+    """The two provenances are written by different code paths; this pins them
+    to the same run so they cannot drift apart again."""
+    import csv as _csv
+
+    import cometx.cli.admin_growth_report as mod
+
+    payload = _personal_only_chargeback()
+    payload["workspaces"].append(
+        {
+            "name": "team-a",
+            "numberOfExperiments": 40,
+            "totalSizeInMb": 100.0,
+            "projects": ["p1"],
+            "members": [{"userName": "alice"}],
+        }
+    )
+    payload["users"]["licensedUsers"].append(
+        {
+            "username": "alice",
+            "email": "a@x.com",
+            "createdAt": 1_720_000_000_000 - 100,
+            "lastUsedAt": 1_720_000_000_000,
+            "experimentCount": 40,
+            "dataLoggedMb": 100.0,
+            "opikSpanCount": 5,
+            "suspended": False,
+            "deletedAt": None,
+        }
+    )
+    out = tmp_path / "out"
+    reporter = mod.GrowthReporter(
+        MagicMock(),
+        window="7d",
+        units="month",
+        exclude_personal=True,
+        personal_pattern="^user-",
+    )
+    with patch.object(mod, "_fetch_service_accounts", lambda api: None):
+        report_data = reporter.build([], chargeback=payload)
+        users, ws_records, kpis = reporter.last_parsed()
+        mod.write_growth_csvs(users, ws_records, kpis, str(out), "2026-09-10")
+
+    rows = {
+        r["metric_name"]: (r["metric_value"], r["metric_text"])
+        for r in _csv.DictReader(open(out / "growth_org_kpis.csv"))
+    }
+    assert rows["scope"][1] == "organization_excluding_personal"
+    assert "excluding personal" in report_data["meta"]["scope"]

@@ -241,7 +241,17 @@ Use the `deleted_users` KPI to see how many were excluded.
 
 `metric_value` is strictly numeric (or empty), so Glue types it as a number and QuickSight can aggregate it without casts. Metrics whose payload is text carry unit `label`, leave `metric_value` empty, and put their value in `metric_text` (empty for every numeric metric).
 
-The `label` metrics describe how the run was produced: `service_account_source` (`admin_api` or `heuristic`) and `scope` (`organization`, or `workspaces:a,b` listing the workspaces actually present in the export). When a `--workspace` filter names something that produced no rows — misspelled, non-existent, or dropped by `--exclude-personal` — a `scope_requested` metric records what was asked for, so the discrepancy is visible rather than silent.
+The `label` metrics describe how the run was produced: `service_account_source` (`admin_api` or `heuristic`) and `scope`, which is one of:
+
+| `scope` | Meaning |
+|---|---|
+| `organization` | Org-wide: no `--workspace` filter, and `--exclude-personal` dropped nothing |
+| `organization_excluding_personal` | No `--workspace` filter, but `--exclude-personal` dropped at least one workspace |
+| `workspaces:a,b` | The workspaces actually present in the export |
+
+`scope` describes what the export *contains*, not what was requested. When a `--workspace` filter names something that produced no rows — misspelled, non-existent, or dropped by `--exclude-personal` — a `scope_requested` metric records what was asked for, so the discrepancy is visible rather than silent. Whenever `--exclude-personal` dropped workspaces, an `excluded_personal_workspaces` count says how many, alongside either scope form.
+
+This matters because a filtered export is otherwise byte-shaped exactly like an org-wide one — same filenames, same headers, the totals simply read lower — so without the label it would silently overwrite a genuine org-wide partition. The HTML report's header carries the same provenance in words (`Org-wide excluding personal: …`), so the two outputs of one run cannot disagree.
 
 #### `report_date` convention
 
@@ -321,6 +331,27 @@ cometx admin growth-report --chargeback-report report.json --csv-dir ./out
 ```
 
 To see the exact shape of the output before wiring up a pipeline, run the
-command against any workspace with `--csv-dir` — the three files above are
-written with their full headers even when a section has no rows, so a Glue
-crawler can infer the schema from an empty run.
+command against any workspace with `--csv-dir`. Every file is written with its
+full header, so a Glue crawler can infer the schema even from a run whose
+optional sections are empty.
+
+#### When the export is refused
+
+An export that would degrade to *nothing* is refused rather than written: the
+command prints why and exits non-zero, leaving `--csv-dir` untouched. A
+header-only file is indistinguishable in Glue from an org that genuinely has
+no users, and a monthly scheduler would record the run as a success. This
+happens when:
+
+- the chargeback report is missing its `users` or `workspaces` section, or could not be parsed
+- a `--workspace` filter matched no workspaces, or matched only workspaces with no members
+- `--exclude-personal` removed every workspace
+
+The HTML report has no such restriction — it renders its empty sections
+honestly. Passing `--csv-dir` is what turns an empty result into an error, so
+`cometx admin growth-report` on its own still produces a report in each of
+these cases.
+
+The three tables are written as one unit: they are staged and only moved into
+place once all three have been written, so a failure partway through (a full
+disk, say) never leaves one fresh file beside two stale ones.
