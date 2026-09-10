@@ -140,7 +140,7 @@ docs/csv-samples/
 # Matched by filename rather than by directory, so they are caught wherever
 # --csv-dir happens to point. The committed samples live in docs/csv-samples/,
 # which is already ignored above.
-/growth_report.html
+growth_report.html
 comet-chargeback-report*.json
 growth_users.csv
 growth_workspaces.csv
