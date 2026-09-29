@@ -1112,7 +1112,7 @@ def test_build_raises_when_chargeback_unavailable(monkeypatch):
         r.build([])
         assert False, "expected GrowthReportError"
     except GrowthReportError as exc:
-        assert "admin API key" in str(exc)
+        assert "admin user's API key" in str(exc)
 
 
 def test_build_reports_malformed_url_as_a_url_problem(monkeypatch):
@@ -1128,7 +1128,7 @@ def test_build_reports_malformed_url_as_a_url_problem(monkeypatch):
     with pytest.raises(GrowthReportError) as exc_info:
         r.build([])
     assert "could not reach the chargeback endpoint" in str(exc_info.value)
-    assert "admin API key" not in str(exc_info.value)
+    assert "requires an admin" not in str(exc_info.value)
 
 
 def test_build_reports_non_json_response_as_unavailable_not_bad_url(monkeypatch):
@@ -1147,8 +1147,64 @@ def test_build_reports_non_json_response_as_unavailable_not_bad_url(monkeypatch)
     r = GrowthReporter(MagicMock(), window="7d", units="month")
     with pytest.raises(GrowthReportError) as exc_info:
         r.build([])
-    assert "admin API key" in str(exc_info.value)
+    assert "non-JSON response" in str(exc_info.value)
     assert "could not reach the chargeback endpoint" not in str(exc_info.value)
+
+
+def _http_error(status, url="https://c.example.com/api/admin/chargeback/report"):
+    exc = RuntimeError("GET failed with status code %d" % status)
+    exc.response = MagicMock(status_code=status, url=url)
+    return exc
+
+
+def _build_error(monkeypatch, exc):
+    import cometx.cli.admin_growth_report as agr
+    from cometx.cli.admin_growth_report import GrowthReporter, GrowthReportError
+
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(agr, "fetch_chargeback_report", boom)
+    r = GrowthReporter(MagicMock(), window="7d", units="month")
+    with pytest.raises(GrowthReportError) as exc_info:
+        r.build([])
+    return str(exc_info.value)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_chargeback_auth_failure_says_admin_key(monkeypatch, status):
+    exc = _http_error(status)
+    exc.response.json.return_value = {"msg": "You don't have permission"}
+    msg = _build_error(monkeypatch, exc)
+    assert "requires an admin user's API key" in msg
+    assert "refused this key (HTTP %d: You don't have permission)" % status in msg
+    assert "workspace roles such as Manage do not count" in msg
+
+
+def test_chargeback_404_is_a_url_problem_not_a_key_problem(monkeypatch):
+    msg = _build_error(
+        monkeypatch,
+        _http_error(404, "https://u:p@c.example.com/clientlib/api/admin/x"),
+    )
+    assert "could not find the chargeback endpoint" in msg
+    assert "requires an admin" not in msg
+    assert "COMET_URL_OVERRIDE" in msg
+    # the URL is shown, with credentials redacted
+    assert "c.example.com/clientlib/api/admin/x" in msg
+    assert "u:p@" not in msg
+
+
+def test_chargeback_server_error_does_not_blame_the_key(monkeypatch):
+    msg = _build_error(monkeypatch, _http_error(502))
+    assert "could not fetch the chargeback report" in msg
+    assert "requires an admin" not in msg
+
+
+def test_chargeback_status_parsed_from_text_when_no_response():
+    from cometx.cli.admin_growth_report import _chargeback_error_message
+
+    exc = RuntimeError("status_code: 403, body: {'message': 'Forbidden'}")
+    assert "requires an admin user's API key" in _chargeback_error_message(exc)
 
 
 def test_generate_growth_report_signature_has_no_sdk_kwargs():

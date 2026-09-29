@@ -585,8 +585,10 @@ page, built entirely from the **admin chargeback report**. Distinct from
 `usage-report` (experiment-count PDF): `growth-report` gives an org-wide view of
 workspaces, users, and platform adoption, per workspace/department.
 
-**Requires an admin API key** — the report is derived entirely from the admin
-chargeback endpoint, and with a non-admin key the command errors out (non-zero
+**Requires an admin user's API key** — the report is derived entirely from the
+admin chargeback endpoint, which accepts only server admins (the server's admin
+user list) and, on self-hosted installs, organization admins. Workspace roles
+such as Manage don't count. With any other key the command errors out (non-zero
 exit).
 
 ```

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import json
 import os
 import re
 
@@ -208,6 +209,61 @@ def _fetch_service_accounts(api) -> "set[str] | None":
         return _extract_service_account_names(payload)
     except Exception:
         return None
+
+
+def _error_status(exc) -> "int | None":
+    """HTTP status of a failed request: from the SDK exception's `response`
+    when it has one, else parsed from its text (`status_code: NNN`)."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int):
+        return status
+    match = re.search(r"status_code:\s*(\d+)", exception_text(exc))
+    return int(match.group(1)) if match else None
+
+
+def _chargeback_error_message(exc) -> str:
+    """Say what actually went wrong fetching the chargeback report, rather
+    than attributing every failure to a non-admin key: a 404 (wrong URL or
+    path prefix) or a 5xx says nothing about the key."""
+    status = _error_status(exc)
+    response = getattr(exc, "response", None)
+    url = getattr(response, "url", None)
+    # Prefer "HTTP 401: <server message>" over the SDK exception's text, which
+    # carries a partly-masked API key and a truncated URL.
+    detail = _short_api_error(exc)
+    if isinstance(status, int) and response is not None:
+        try:
+            server_msg = response.json().get("msg")
+        except Exception:
+            server_msg = None
+        detail = "HTTP %d" % status + (
+            ": %s" % server_msg if isinstance(server_msg, str) and server_msg else ""
+        )
+    at = " at %s" % redact_url_userinfo(url) if isinstance(url, str) else ""
+    if status in (401, 403):
+        return (
+            "growth-report requires an admin user's API key: the chargeback "
+            "endpoint refused this key (%s). The key's user must be a server "
+            "admin, or an organization admin on self-hosted installs; "
+            "workspace roles such as Manage do not count. This report is "
+            "built entirely from the admin chargeback report." % detail
+        )
+    if status == 404:
+        return (
+            "growth-report could not find the chargeback endpoint%s (%s). "
+            "Check the server URL (COMET_URL_OVERRIDE / comet.url_override); "
+            "this is not an API-key problem." % (at, detail)
+        )
+    if isinstance(exc, json.JSONDecodeError):
+        return (
+            "growth-report got a non-JSON response from the chargeback "
+            "endpoint%s -- often an SSO or proxy login page. Check the server "
+            "URL, and that the API key belongs to an admin." % at
+        )
+    return "growth-report could not fetch the chargeback report%s (%s)." % (
+        at,
+        detail,
+    )
 
 
 def _short_api_error(exc):
@@ -453,11 +509,7 @@ class GrowthReporter:
                     "%s" % exception_text(exc)
                 ) from exc
             except Exception as exc:
-                raise GrowthReportError(
-                    "growth-report requires an admin API key: the chargeback "
-                    f"endpoint is unavailable ({_short_api_error(exc)}). This "
-                    "report is built entirely from the admin chargeback report."
-                ) from exc
+                raise GrowthReportError(_chargeback_error_message(exc)) from exc
         # Structural check AFTER the fetch, so it covers both sources with one
         # implementation. The chargeback parsers are deliberately permissive,
         # returning empty lists rather than raising, so without this a report
