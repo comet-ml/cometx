@@ -29,6 +29,12 @@ Both sources below apply exactly that predicate server-side:
    for its monitored flag. Org admins may read any workspace this way,
    private models included. One request per model, so it runs in a pool.
 
+   Access caveat: for a non-member workspace, a user who is NOT an org admin
+   gets only its public models, with no error -- so private monitored models
+   are missed and the workspace still reads as checked. This is a different
+   rule from chargeback's (server admin list, or org admin on-prem), so a key
+   that passes chargeback is not necessarily complete here.
+
 A workspace whose lookup fails is reported as unknown (`None`), never as
 "no MPM": a false zero would read as a workspace that stopped using MPM.
 `nb_models_registered` (the monthly usage report) is deliberately NOT used --

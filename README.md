@@ -605,7 +605,7 @@ cometx admin growth-report [WORKSPACE ...]
 * `--exclude-personal` - Drop workspaces whose name matches `--personal-pattern` from the chargeback data (default: off; no effect without `--personal-pattern`).
 * `--personal-pattern REGEX` - Regex used with `--exclude-personal` to identify personal-workspace names to drop, e.g. `'^user-'` (default: none).
 * `--no-open` - Don't automatically open the generated HTML file after generation.
-* `--mpm` - Include MPM presence (monitored models per workspace), collected from the MPM and model-registry APIs. Use an org-admin API key; off by default because it makes one request per registry model in workspaces the key's user isn't a member of.
+* `--mpm` - Include MPM presence (monitored models per workspace), collected from the MPM and model-registry APIs. The key's user must be an organization admin (a separate check from chargeback's server-admin one) or private models in workspaces they aren't a member of are silently missed; off by default because it makes one request per registry model in workspaces the key's user isn't a member of.
 
 **Two time concepts:**
 * `--units` controls chart *granularity* — every chart shows the full all-time history bucketed at this resolution.

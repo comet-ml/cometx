@@ -590,9 +590,10 @@ Examples:
         action="store_true",
         help=(
             "Include MPM presence (monitored models per workspace), collected "
-            "from the MPM and model-registry APIs. Needs an org-admin API key "
-            "to see every workspace; makes one request per registry model in "
-            "workspaces the key's user is not a member of"
+            "from the MPM and model-registry APIs. The key's user must be an "
+            "organization admin (or a member of every workspace); otherwise "
+            "private models in other workspaces are silently missed. Makes one "
+            "request per registry model in workspaces the user is not a member of"
         ),
     )
     growth_parser.add_argument(
