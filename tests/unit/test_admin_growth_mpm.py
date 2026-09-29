@@ -200,3 +200,28 @@ def test_build_with_mpm_only_checks_scoped_workspaces():
     r.build(["credit"], chargeback=_chargeback())
     called = [c.args[0] for c in api._client.get_registry_models.call_args_list]
     assert called == ["credit"]
+
+
+@pytest.mark.parametrize(
+    "override, expected",
+    [
+        (
+            "https://comet.example.com/clientlib/",
+            "https://comet.example.com/api/mpm/v3/workspaces",
+        ),
+        (
+            "https://comet.example.com/comet/clientlib",
+            "https://comet.example.com/comet/api/mpm/v3/workspaces",
+        ),
+        (
+            "https://comet.example.com",
+            "https://comet.example.com/api/mpm/v3/workspaces",
+        ),
+    ],
+)
+def test_mpm_url_drops_sdk_clientlib_segment(override, expected):
+    from cometx.cli.admin_growth_mpm import _mpm_url
+
+    api = MagicMock()
+    api.config = {"comet.url_override": override}
+    assert _mpm_url(api) == expected

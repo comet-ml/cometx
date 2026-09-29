@@ -45,13 +45,24 @@ MPM_WORKSPACES_PATH = "/api/mpm/v3/workspaces"
 DEFAULT_MAX_WORKERS = 8
 
 
+def _mpm_url(api) -> str:
+    """URL of `mpm/v3/workspaces`. The SDK's `comet.url_override` normally
+    ends in `/clientlib/` (the SDK's own API root); MPM is served beside it,
+    not under it, so that last segment is dropped. Any deployment prefix in
+    front of it (e.g. `/comet/clientlib/`) is kept."""
+    base = api.config["comet.url_override"].rstrip("/")
+    if base.endswith("/clientlib"):
+        base = base[: -len("/clientlib")]
+    return admin_api_url(base, MPM_WORKSPACES_PATH)
+
+
 def _fetch_member_workspaces(api) -> "dict[str, list[dict]] | None":
     """`mpm/v3/workspaces` -> {workspace_name: [{"id", "name"}, ...]} for the
     workspaces the caller belongs to. `None` on any failure (MPM disabled on
     the deployment, network error, unexpected shape): the registry path then
     covers every workspace instead."""
     try:
-        url = admin_api_url(api.config["comet.url_override"], MPM_WORKSPACES_PATH)
+        url = _mpm_url(api)
         response = api._client.get(
             url, headers={"Authorization": api.api_key}, params={}
         )
