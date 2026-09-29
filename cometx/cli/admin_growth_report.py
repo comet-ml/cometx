@@ -28,6 +28,7 @@ import os
 import re
 
 from cometx.cli.admin_growth_csv import collect_org_kpis, write_growth_csvs
+from cometx.cli.admin_growth_mpm import apply_mpm_presence, fetch_mpm_presence
 from cometx.cli.admin_growth_render import build_html, write_html
 from cometx.cli.admin_growth_users import (
     _extract_licensed_users,
@@ -39,6 +40,7 @@ from cometx.cli.admin_growth_users import (
     churn_series,
     classify_accounts,
     em_user_breakdown_series,
+    mpm_reported,
     opik_user_breakdown_series,
     parse_users,
     parse_workspaces,
@@ -334,6 +336,7 @@ def generate_growth_report(
     no_html=False,
     chargeback=None,
     report_date=None,
+    mpm=False,
 ):
     reporter = GrowthReporter(
         api,
@@ -343,6 +346,7 @@ def generate_growth_report(
         leaderboard_top_n=leaderboard_top_n,
         exclude_personal=exclude_personal,
         personal_pattern=personal_pattern,
+        mpm=mpm,
     )
     report_data = reporter.build(workspaces, chargeback=chargeback)
 
@@ -398,8 +402,13 @@ class GrowthReporter:
         leaderboard_top_n=5,
         exclude_personal=False,
         personal_pattern=None,
+        mpm=False,
     ):
         self.api = api
+        # --mpm: collect MPM presence client-side (see admin_growth_mpm).
+        self.mpm = mpm
+        # {"checked": n, "total": m} after an --mpm build, else None.
+        self._mpm_status = None
         self.window = window
         self.units = units
         self.active_window = active_window
@@ -478,9 +487,12 @@ class GrowthReporter:
         before = len((chargeback.get("workspaces") or []))
         chargeback = self._filter_personal_chargeback(chargeback)
         excluded_personal_count = before - len((chargeback.get("workspaces") or []))
+        scope = set(workspaces) if workspaces else None
+        self._mpm_status = None
+        if self.mpm:
+            chargeback = self._add_mpm_presence(chargeback, scope)
         print("Building report...")
         now_ms = int(now.timestamp() * 1000)
-        scope = set(workspaces) if workspaces else None
         report_data = self._assemble_report_data(
             chargeback,
             window,
@@ -499,6 +511,43 @@ class GrowthReporter:
                 scope, excluded_personal_count
             )
         return report_data
+
+    def _add_mpm_presence(self, chargeback, scope):
+        """Merge client-side MPM presence into the chargeback workspaces (only
+        those in `scope`, when given, to avoid needless per-model calls), and
+        record how many could actually be checked."""
+        names = [
+            w.get("name")
+            for w in (chargeback.get("workspaces") or [])
+            if w.get("name") and (scope is None or w.get("name") in scope)
+        ]
+        print("Collecting MPM presence for %d workspace(s)..." % len(names))
+        presence = fetch_mpm_presence(self.api, names)
+        checked = sum(1 for n in names if presence.get(n) is not None)
+        self._mpm_status = {"checked": checked, "total": len(names)}
+        if checked < len(names):
+            print(
+                "Warning: could not determine MPM presence for %d of %d "
+                "workspace(s); they are reported as unknown, not as no MPM."
+                % (len(names) - checked, len(names))
+            )
+        return apply_mpm_presence(chargeback, presence)
+
+    def _mpm_note(self, ws_records):
+        """Short provenance text for MPM figures in hints/KPI subs."""
+        if not mpm_reported(ws_records):
+            return (
+                "MPM not collected (run with --mpm)"
+                if not self.mpm
+                else "MPM could not be determined"
+            )
+        status = self._mpm_status
+        if status and status["checked"] < status["total"]:
+            return "MPM checked in %d/%d workspaces" % (
+                status["checked"],
+                status["total"],
+            )
+        return "MPM shown separately"
 
     def _empty_export_reason(self, scope, excluded_personal_count):
         """A block reason when the filters left nothing to export, else None.
@@ -640,21 +689,31 @@ class GrowthReporter:
 
     def _workspace_chargeback_table(self, ws_records):
         """Org-wide by-workspace table from chargeback (top 20 by experiments):
-        projects, experiments and data logged per workspace."""
+        projects, experiments and data logged per workspace, plus monitored
+        MPM models when MPM presence was collected (--mpm)."""
         rows = sorted(ws_records, key=lambda w: -w.num_experiments)[:20]
+        with_mpm = mpm_reported(ws_records)
+        headers = ["Workspace", "Members", "Projects", "Experiments", "Data (MB)"]
+        if with_mpm:
+            headers.append("MPM models")
+        out_rows = []
+        for w in rows:
+            row = [
+                w.name,
+                len(w.members),
+                w.num_projects,
+                _num(w.num_experiments),
+                _num(round(w.data_mb)),
+            ]
+            if with_mpm:
+                row.append(
+                    "" if w.num_monitored_models is None else w.num_monitored_models
+                )
+            out_rows.append(row)
         return {
             "title": "By workspace (org-wide, chargeback)",
-            "headers": ["Workspace", "Members", "Projects", "Experiments", "Data (MB)"],
-            "rows": [
-                [
-                    w.name,
-                    len(w.members),
-                    w.num_projects,
-                    _num(w.num_experiments),
-                    _num(round(w.data_mb)),
-                ]
-                for w in rows
-            ],
+            "headers": headers,
+            "rows": out_rows,
         }
 
     @staticmethod
@@ -777,9 +836,9 @@ class GrowthReporter:
                 )
 
         # Org-wide platform mix (chargeback): EM-only / Opik-only / both /
-        # neither. MPM is not in chargeback, so it's excluded; Opik is a
-        # per-user proxy (a member's Opik usage is attributed to all their
-        # workspaces).
+        # neither. MPM has its own KPIs rather than being folded in here; Opik
+        # is a per-user proxy (a member's Opik usage is attributed to all
+        # their workspaces).
         if ws_records:
             mix = platform_mix(ws_records, people_users or [])
             mix_rows = [
@@ -795,7 +854,7 @@ class GrowthReporter:
                     "title": "Workspace platform mix",
                     "hint": (
                         "org-wide (chargeback); Opik is a per-user proxy; "
-                        "MPM not represented in chargeback"
+                        + self._mpm_note(ws_records)
                     ),
                     "data": {"rows": mix_rows},
                 }
@@ -831,6 +890,31 @@ class GrowthReporter:
                 "sub": f"{wa['active']}/{wa['total']} active",
             },
         ]
+        # MPM presence (OPIK-8411, --mpm): registry models flagged
+        # `is_monitored`. Only shown when collected -- rendering 0 otherwise
+        # would read as "no MPM adoption".
+        if org["mpm_workspaces"] is not None:
+            total_ws = org["workspaces"]
+            pct = round(100 * org["mpm_workspaces"] / total_ws) if total_ws else 0
+            kpis.append(
+                {
+                    "label": "MPM workspaces",
+                    "value": org["mpm_workspaces"],
+                    "sub": f"{pct}% of workspaces",
+                }
+            )
+            kpis.append(
+                {
+                    "label": "Monitored models",
+                    "value": org["monitored_models"],
+                    "sub": (
+                        self._mpm_note(ws_records)
+                        if self._mpm_status
+                        and self._mpm_status["checked"] < self._mpm_status["total"]
+                        else "MPM (is_monitored)"
+                    ),
+                }
+            )
         return {
             "title": "Organization overview (chargeback)",
             "window_chip": self._window_label(window),
@@ -1114,8 +1198,8 @@ class GrowthReporter:
 
     def _build_leaderboards_section(self, users, ws_records):
         """Top-N / bottom-N workspace and user leaderboards, all org-wide from
-        chargeback. Experiments and projects are ranked EXACTLY from the
-        chargeback per-workspace numbers; Opik spans from the chargeback
+        chargeback. Experiments, projects and MPM models are ranked EXACTLY
+        from the chargeback per-workspace numbers; Opik spans from the chargeback
         per-user rollup (a proxy: a member's spans are attributed to each of
         their workspaces). Bottom-N is active-aware (strictly-positive,
         ascending). Empty metrics are omitted; returns `None` when there is
@@ -1169,6 +1253,20 @@ class GrowthReporter:
                 "ws-projects",
                 "projects",
                 {w.name: w.num_projects for w in ws_records if w.num_projects},
+                org_exact_hint,
+            )
+
+        # MPM monitored models: exact, per-workspace from chargeback (only when
+        # MPM presence was collected; emit_ws skips an empty dict).
+        if ws_records and mpm_reported(ws_records):
+            emit_ws(
+                "ws-mpm-models",
+                "MPM monitored models",
+                {
+                    w.name: w.num_monitored_models
+                    for w in ws_records
+                    if w.num_monitored_models
+                },
                 org_exact_hint,
             )
 
@@ -1447,6 +1545,7 @@ class GrowthReporter:
                     active_window_days,
                     scope=scope,
                     excluded_personal_count=excluded_personal_count,
+                    mpm_status=self._mpm_status,
                 ),
             )
         except Exception as exc:

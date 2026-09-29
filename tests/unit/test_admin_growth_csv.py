@@ -171,10 +171,7 @@ def test_service_accounts_fall_back_to_heuristic():
 
 
 def test_workspaces_header_and_rows():
-    from cometx.cli.admin_growth_csv import (
-        WORKSPACES_HEADER,
-        build_workspaces_rows,
-    )
+    from cometx.cli.admin_growth_csv import WORKSPACES_HEADER, build_workspaces_rows
     from cometx.cli.admin_growth_users import WorkspaceRecord
 
     assert WORKSPACES_HEADER == [
@@ -184,6 +181,8 @@ def test_workspaces_header_and_rows():
         "num_projects",
         "num_experiments",
         "data_mb",
+        "mpm_enabled",
+        "num_monitored_models",
     ]
     ws = [
         WorkspaceRecord(
@@ -198,6 +197,53 @@ def test_workspaces_header_and_rows():
     # data_mb renders as a plain decimal string (never scientific notation)
     assert rows[0][:5] == [DATE, "research", 2, 24, 2130]
     assert float(rows[0][5]) == 12422.75
+    # MPM not reported by the server -> empty cells (NULL in Glue), not 0
+    assert rows[0][6:] == ["", ""]
+
+
+def test_workspaces_rows_mpm_columns():
+    from cometx.cli.admin_growth_csv import build_workspaces_rows
+    from cometx.cli.admin_growth_users import WorkspaceRecord
+
+    base = dict(num_experiments=0, data_mb=0.0, num_projects=0, members=())
+    ws = [
+        WorkspaceRecord(name="fraud", mpm_enabled=True, num_monitored_models=3, **base),
+        WorkspaceRecord(
+            name="research", mpm_enabled=False, num_monitored_models=0, **base
+        ),
+        WorkspaceRecord(
+            name="ops", mpm_enabled=True, num_monitored_models=None, **base
+        ),
+    ]
+    rows = build_workspaces_rows(ws, DATE)
+    # 1/0 so SUM(mpm_enabled) counts MPM workspaces
+    assert [r[6:] for r in rows] == [[1, 3], [0, 0], [1, ""]]
+
+
+def test_collect_org_kpis_mpm_metrics():
+    from cometx.cli.admin_growth_csv import collect_org_kpis
+    from cometx.cli.admin_growth_users import WorkspaceRecord
+
+    base = dict(num_experiments=0, data_mb=0.0, num_projects=0, members=())
+    common = dict(users=[], stats=None, growth=None, split=None, active_window_days=60)
+
+    legacy = [WorkspaceRecord(name="w", **base)]
+    names = {k[0] for k in collect_org_kpis(ws_records=legacy, **common)}
+    assert "mpm_workspaces" not in names
+    assert "total_monitored_models" not in names
+
+    ws = [
+        WorkspaceRecord(name="fraud", mpm_enabled=True, num_monitored_models=3, **base),
+        WorkspaceRecord(
+            name="research", mpm_enabled=False, num_monitored_models=0, **base
+        ),
+    ]
+    by_name = {
+        name: (value, unit)
+        for name, value, unit, _t in collect_org_kpis(ws_records=ws, **common)
+    }
+    assert by_name["mpm_workspaces"] == (1, "count")
+    assert by_name["total_monitored_models"] == (3, "count")
 
 
 def test_org_kpi_rows_are_long_format():

@@ -608,6 +608,9 @@ def test_parse_workspaces_org_totals_and_platform_mix():
         "projects": 3,
         "experiments": 13,
         "data_mb": 5.0,
+        # no MPM fields in the payload -> not reported, not zero
+        "mpm_workspaces": None,
+        "monitored_models": None,
     }
     # em-ws=EM only; opik-ws=Opik only (b has spans); both-ws=both; empty-ws=neither
     assert platform_mix(ws, parse_users(cb)) == {
@@ -747,3 +750,63 @@ def test_adoption_rate_series_omits_capability_without_signal():
     keys = pts[0]["values"].keys()
     assert "overall" in keys and "em" in keys
     assert "opik" not in keys  # no opik signal -> omitted, not a flat 0%
+
+
+def test_parse_workspaces_mpm_absent_is_none_not_zero():
+    from cometx.cli.admin_growth_users import mpm_reported, parse_workspaces
+
+    ws = parse_workspaces({"workspaces": [{"name": "w", "members": []}]})
+    assert ws[0].mpm_enabled is None
+    assert ws[0].num_monitored_models is None
+    assert ws[0].monitored_models == ()
+    assert not mpm_reported(ws)
+
+
+def test_parse_workspaces_mpm_fields():
+    from cometx.cli.admin_growth_users import (
+        mpm_reported,
+        parse_workspaces,
+        workspace_org_totals,
+    )
+
+    cb = {
+        "workspaces": [
+            # explicit flag + list of model dicts
+            {
+                "name": "fraud",
+                "mpmEnabled": True,
+                "monitoredModels": [
+                    {"id": "m1", "name": "scorer"},
+                    {"id": "m2", "modelName": "ranker"},
+                    {"id": "m3"},
+                ],
+            },
+            # count only, flag inferred from it
+            {"name": "credit", "monitoredModels": 2},
+            # list of plain names, flag inferred
+            {"name": "risk", "monitoredModels": ["a"]},
+            # reported as not enabled, no models
+            {"name": "research", "mpmEnabled": False, "monitoredModels": []},
+            # flag without a model list: enabled, count unknown
+            {"name": "ops", "mpmEnabled": True},
+            # malformed values are ignored rather than trusted
+            {"name": "bad", "mpmEnabled": "yes", "monitoredModels": True},
+        ]
+    }
+    ws = {w.name: w for w in parse_workspaces(cb)}
+    assert ws["fraud"].mpm_enabled is True
+    assert ws["fraud"].num_monitored_models == 3
+    assert ws["fraud"].monitored_models == ("scorer", "ranker", "m3")
+    assert (ws["credit"].mpm_enabled, ws["credit"].num_monitored_models) == (True, 2)
+    assert ws["risk"].monitored_models == ("a",)
+    assert (ws["research"].mpm_enabled, ws["research"].num_monitored_models) == (
+        False,
+        0,
+    )
+    assert (ws["ops"].mpm_enabled, ws["ops"].num_monitored_models) == (True, None)
+    assert (ws["bad"].mpm_enabled, ws["bad"].num_monitored_models) == (None, None)
+    assert mpm_reported(list(ws.values()))
+
+    totals = workspace_org_totals(list(ws.values()))
+    assert totals["mpm_workspaces"] == 4  # fraud, credit, risk, ops
+    assert totals["monitored_models"] == 6  # 3 + 2 + 1 (+ ops unknown)

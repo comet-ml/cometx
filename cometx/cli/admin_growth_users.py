@@ -719,13 +719,60 @@ class WorkspaceRecord:
     data_mb: float
     num_projects: int
     members: "tuple"  # member usernames (immutable, matching frozen=True)
+    # MPM presence (OPIK-8411, merged in by admin_growth_mpm under --mpm).
+    # `None` means not collected or not determinable -- distinct from
+    # "checked, and zero". Defaults keep
+    # the record constructible without MPM data.
+    mpm_enabled: "bool | None" = None
+    num_monitored_models: "int | None" = None
+    monitored_models: "tuple" = ()  # monitored model names, when listed
+
+
+def _parse_mpm(w: dict) -> "tuple[bool | None, int | None, tuple]":
+    """Read a chargeback workspace's MPM presence fields.
+
+    `monitoredModels` may be a list (of model dicts or names; its length is
+    the count) or already a number. `mpmEnabled` is taken as given when it is
+    a real bool, otherwise inferred from the count. Returns
+    (mpm_enabled, num_monitored_models, monitored_model_names); all-`None`
+    when the server reports neither field."""
+    raw = w.get("monitoredModels")
+    names: tuple = ()
+    count: "int | None" = None
+    if isinstance(raw, list):
+        count = len(raw)
+        names = tuple(
+            str(n)
+            for n in (
+                (
+                    (m.get("name") or m.get("modelName") or m.get("id"))
+                    if isinstance(m, dict)
+                    else m
+                )
+                for m in raw
+            )
+            if n
+        )
+    elif isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        count = int(raw)
+    enabled = w.get("mpmEnabled")
+    if not isinstance(enabled, bool):
+        enabled = None if count is None else count > 0
+    return enabled, count, names
+
+
+def mpm_reported(workspaces: "list[WorkspaceRecord]") -> bool:
+    """True when MPM presence is known for any workspace. False means it was
+    not collected: callers should say so rather than show zero."""
+    return any(w.mpm_enabled is not None for w in workspaces)
 
 
 def parse_workspaces(chargeback: dict) -> "list[WorkspaceRecord]":
     """Parse `chargeback["workspaces"]` into `WorkspaceRecord`s. `projects` may
     be a list (its length is the project count) or already a number; both are
     tolerated. These are EM/experiment projects -- chargeback does not carry
-    Opik projects or MPM models."""
+    Opik projects. MPM presence (`mpmEnabled` / `monitoredModels`) is parsed
+    when present (merged in by `admin_growth_mpm`); see `_parse_mpm`."""
     out = []
     for w in (chargeback or {}).get("workspaces") or []:
         projects = w.get("projects")
@@ -738,6 +785,7 @@ def parse_workspaces(chargeback: dict) -> "list[WorkspaceRecord]":
         members = tuple(
             m.get("userName") for m in (w.get("members") or []) if m.get("userName")
         )
+        mpm_enabled, num_monitored, monitored = _parse_mpm(w)
         out.append(
             WorkspaceRecord(
                 name=w.get("name"),
@@ -745,18 +793,33 @@ def parse_workspaces(chargeback: dict) -> "list[WorkspaceRecord]":
                 data_mb=w.get("totalSizeInMb") or 0.0,
                 num_projects=num_projects,
                 members=members,
+                mpm_enabled=mpm_enabled,
+                num_monitored_models=num_monitored,
+                monitored_models=monitored,
             )
         )
     return out
 
 
 def workspace_org_totals(workspaces: "list[WorkspaceRecord]") -> dict:
-    """Org-wide totals across all workspaces (from chargeback)."""
+    """Org-wide totals across all workspaces (from chargeback).
+
+    `mpm_workspaces` / `monitored_models` are `None` when MPM presence was not
+    collected, so a run without --mpm never reads as zero adoption.
+    Monitored models come from the registry `is_monitored` flag, NOT
+    `nb_models_registered` (which counts every registry model)."""
+    reported = mpm_reported(workspaces)
     return {
         "workspaces": len(workspaces),
         "projects": sum(w.num_projects for w in workspaces),
         "experiments": sum(w.num_experiments for w in workspaces),
         "data_mb": sum(w.data_mb for w in workspaces),
+        "mpm_workspaces": (
+            sum(1 for w in workspaces if w.mpm_enabled) if reported else None
+        ),
+        "monitored_models": (
+            sum(w.num_monitored_models or 0 for w in workspaces) if reported else None
+        ),
     }
 
 
@@ -770,7 +833,8 @@ def platform_mix(
     Opik = a member has `opik_span_count > 0`. This is a PROXY: chargeback
     carries Opik usage only per-user, so a user active in several workspaces
     has their Opik usage attributed to all of them (possible false positives).
-    MPM is absent from chargeback and is NOT classified here."""
+    MPM is deliberately NOT folded in (it would make 8 buckets and break
+    comparability with earlier reports); it has its own KPIs instead."""
     opik_ws = set()
     for u in users:
         if (u.opik_span_count or 0) > 0:

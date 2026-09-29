@@ -19,7 +19,10 @@ import decimal
 import os
 import tempfile
 
-from cometx.cli.admin_growth_users import _looks_like_service_account
+from cometx.cli.admin_growth_users import (
+    _looks_like_service_account,
+    workspace_org_totals,
+)
 
 USERS_HEADER = [
     "report_date",
@@ -48,6 +51,12 @@ WORKSPACES_HEADER = [
     "num_projects",
     "num_experiments",
     "data_mb",
+    # MPM presence (OPIK-8411), appended per the stable-column-order rule.
+    # `mpm_enabled` is 1/0 (not true/false) so SUM(mpm_enabled) counts MPM
+    # workspaces directly; both are empty when MPM was not collected
+    # (no --mpm) or could not be determined for that workspace.
+    "mpm_enabled",
+    "num_monitored_models",
 ]
 
 ORG_KPIS_HEADER = [
@@ -191,6 +200,8 @@ def build_workspaces_rows(ws_records, report_date):
             _num_or_empty(w.num_projects),
             _num_or_empty(w.num_experiments),
             _num_or_empty(w.data_mb),
+            "" if w.mpm_enabled is None else int(w.mpm_enabled),
+            _num_or_empty(w.num_monitored_models),
         ]
         for w in ws_records
     ]
@@ -236,6 +247,7 @@ def collect_org_kpis(
     active_window_days,
     scope=None,
     excluded_personal_count=0,
+    mpm_status=None,
 ):
     """Flatten the report's org-level numbers into (name, value, unit) triples.
 
@@ -338,6 +350,21 @@ def collect_org_kpis(
         ("total_experiments", sum(w.num_experiments for w in ws_records), "count")
     )
     kpis.append(("total_data_mb", sum(w.data_mb for w in ws_records), "megabytes"))
+    # MPM presence (--mpm). Omitted (not zero) when not collected.
+    # `mpm_workspaces_unchecked` says how many workspaces the totals could not
+    # cover, so a partial run is never mistaken for a complete one.
+    org = workspace_org_totals(ws_records)
+    if org["mpm_workspaces"] is not None:
+        kpis.append(("mpm_workspaces", org["mpm_workspaces"], "count"))
+        kpis.append(("total_monitored_models", org["monitored_models"], "count"))
+    if mpm_status is not None:
+        kpis.append(
+            (
+                "mpm_workspaces_unchecked",
+                mpm_status["total"] - mpm_status["checked"],
+                "count",
+            )
+        )
 
     if split is not None:
         for bucket in ("personal", "service"):

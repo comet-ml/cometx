@@ -496,6 +496,7 @@ Examples:
     cometx admin growth-report --csv-dir ./out
     cometx admin growth-report --csv-dir ./out --no-html
     cometx admin growth-report --chargeback-report report.json --csv-dir ./out
+    cometx admin growth-report --mpm --csv-dir ./out
 """
     growth_parser = subparsers.add_parser(
         "growth-report",
@@ -582,6 +583,17 @@ Examples:
         help="Skip the HTML report (use with --csv-dir for CSV-only output)",
         default=False,
         action="store_true",
+    )
+    growth_parser.add_argument(
+        "--mpm",
+        default=False,
+        action="store_true",
+        help=(
+            "Include MPM presence (monitored models per workspace), collected "
+            "from the MPM and model-registry APIs. Needs an org-admin API key "
+            "to see every workspace; makes one request per registry model in "
+            "workspaces the key's user is not a member of"
+        ),
     )
     growth_parser.add_argument(
         "--chargeback-report",
@@ -916,6 +928,7 @@ def admin(parsed_args, remaining=None):
                     csv_dir=parsed_args.csv_dir,
                     no_html=parsed_args.no_html,
                     chargeback=preloaded,
+                    mpm=parsed_args.mpm,
                 )
             except GrowthReportError as e:
                 # `_exception_text`, not `str(e)`: a broken `__str__` would
