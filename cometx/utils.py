@@ -430,6 +430,17 @@ def exception_text(exc):
     return type(exc).__name__
 
 
+def http_error_status(exc):
+    """HTTP status of a failed request, or `None`: from the SDK exception's
+    `response` when it has one, else parsed from its text
+    (`status_code: NNN`)."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int) and not isinstance(status, bool):
+        return status
+    match = re.search(r"status_code:\s*(\d+)", exception_text(exc))
+    return int(match.group(1)) if match else None
+
+
 def redact_url_userinfo(value):
     """Replace any `user:password@` userinfo in `value` with `***@`.
 

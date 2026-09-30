@@ -247,7 +247,7 @@ def collect_org_kpis(
     active_window_days,
     scope=None,
     excluded_personal_count=0,
-    mpm_requested=False,
+    mpm_member_lookup=None,
 ):
     """Flatten the report's org-level numbers into (name, value, unit) triples.
 
@@ -356,12 +356,20 @@ def collect_org_kpis(
     # is never mistaken for a complete one -- the totals are exact only when
     # it is 0. Emitted whenever MPM was requested or reported, including a
     # run where every lookup failed.
+    #
+    # `mpm_member_lookup` (a label: ok / refused / not_found / error) records
+    # how the mpm/v3/workspaces call went, so a dashboard can tell "MPM not
+    # installed" from "the key was refused" -- in the latter case the registry
+    # fallback may have missed private models. `None` when --mpm was not given.
     org = workspace_org_totals(ws_records)
+    requested = mpm_member_lookup is not None
     if org["mpm_workspaces"] is not None:
         kpis.append(("mpm_workspaces", org["mpm_workspaces"], "count"))
         kpis.append(("total_monitored_models", org["monitored_models"], "count"))
-    if mpm_requested or org["mpm_workspaces"] is not None:
+    if requested or org["mpm_workspaces"] is not None:
         kpis.append(("mpm_workspaces_unchecked", org["mpm_unchecked"], "count"))
+    if requested:
+        kpis.append(("mpm_member_lookup", None, "label", mpm_member_lookup))
 
     if split is not None:
         for bucket in ("personal", "service"):

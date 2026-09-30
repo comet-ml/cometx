@@ -58,6 +58,7 @@ from cometx.utils import (
     exception_text,
     fetch_chargeback_report,
     format_time_key,
+    http_error_status,
     redact_url_userinfo,
 )
 
@@ -211,21 +212,11 @@ def _fetch_service_accounts(api) -> "set[str] | None":
         return None
 
 
-def _error_status(exc) -> "int | None":
-    """HTTP status of a failed request: from the SDK exception's `response`
-    when it has one, else parsed from its text (`status_code: NNN`)."""
-    status = getattr(getattr(exc, "response", None), "status_code", None)
-    if isinstance(status, int):
-        return status
-    match = re.search(r"status_code:\s*(\d+)", exception_text(exc))
-    return int(match.group(1)) if match else None
-
-
 def _chargeback_error_message(exc) -> str:
     """Say what actually went wrong fetching the chargeback report, rather
     than attributing every failure to a non-admin key: a 404 (wrong URL or
     path prefix) or a 5xx says nothing about the key."""
-    status = _error_status(exc)
+    status = http_error_status(exc)
     response = getattr(exc, "response", None)
     url = getattr(response, "url", None)
     # Prefer "HTTP 401: <server message>" over the SDK exception's text, which
@@ -463,6 +454,9 @@ class GrowthReporter:
         self.api = api
         # --mpm: collect MPM presence client-side (see admin_growth_mpm).
         self.mpm = mpm
+        # How the mpm/v3/workspaces call went on the last --mpm build (see
+        # admin_growth_mpm.LOOKUP_*); None when --mpm was not given.
+        self._mpm_member_lookup = None
         self.window = window
         self.units = units
         self.active_window = active_window
@@ -538,6 +532,7 @@ class GrowthReporter:
         chargeback = self._filter_personal_chargeback(chargeback)
         excluded_personal_count = before - len((chargeback.get("workspaces") or []))
         scope = set(workspaces) if workspaces else None
+        self._mpm_member_lookup = None
         if self.mpm:
             chargeback = self._add_mpm_presence(chargeback, scope)
         print("Building report...")
@@ -572,7 +567,7 @@ class GrowthReporter:
             if w.get("name") and (scope is None or w.get("name") in scope)
         ]
         print("Collecting MPM presence for %d workspace(s)..." % len(names))
-        presence = fetch_mpm_presence(self.api, names)
+        presence, self._mpm_member_lookup = fetch_mpm_presence(self.api, names)
         checked = sum(1 for n in names if presence.get(n) is not None)
         if checked < len(names):
             print(
@@ -583,20 +578,30 @@ class GrowthReporter:
         return apply_mpm_presence(chargeback, presence)
 
     def _mpm_note(self, ws_records):
-        """Short provenance text for MPM figures in hints/KPI subs."""
+        """Short provenance text for MPM figures in hints/KPI subs. Says when
+        the mpm/v3/workspaces call failed, so "MPM not installed" and "key
+        refused" never look like a clean run."""
+        lookup_notes = {
+            "refused": "MPM API refused this key; counts may be low",
+            "not_found": "MPM API not found on this server",
+            "error": "MPM API call failed",
+        }
+        lookup_note = lookup_notes.get(self._mpm_member_lookup)
         if not mpm_reported(ws_records):
-            return (
-                "MPM not collected (run with --mpm)"
-                if not self.mpm
-                else "MPM could not be determined"
+            if not self.mpm:
+                return "MPM not collected (run with --mpm)"
+            return "MPM could not be determined" + (
+                "; " + lookup_note if lookup_note else ""
             )
         org = workspace_org_totals(ws_records)
         if org["mpm_unchecked"]:
-            return "MPM checked in %d/%d workspaces" % (
+            note = "MPM checked in %d/%d workspaces" % (
                 org["workspaces"] - org["mpm_unchecked"],
                 org["workspaces"],
             )
-        return "MPM shown separately"
+        else:
+            note = "MPM shown separately"
+        return note + ("; " + lookup_note if lookup_note else "")
 
     def _empty_export_reason(self, scope, excluded_personal_count):
         """A block reason when the filters left nothing to export, else None.
@@ -961,6 +966,7 @@ class GrowthReporter:
                 }
             )
             partial = org["mpm_unchecked"] > 0
+            lookup_failed = self._mpm_member_lookup not in (None, "ok")
             kpis.append(
                 {
                     "label": "Monitored models",
@@ -970,7 +976,9 @@ class GrowthReporter:
                         else org["monitored_models"]
                     ),
                     "sub": (
-                        self._mpm_note(ws_records) if partial else "MPM (is_monitored)"
+                        self._mpm_note(ws_records)
+                        if partial or lookup_failed
+                        else "MPM (is_monitored)"
                     ),
                 }
             )
@@ -1604,7 +1612,7 @@ class GrowthReporter:
                     active_window_days,
                     scope=scope,
                     excluded_personal_count=excluded_personal_count,
-                    mpm_requested=self.mpm,
+                    mpm_member_lookup=self._mpm_member_lookup,
                 ),
             )
         except Exception as exc:

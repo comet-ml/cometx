@@ -23,7 +23,12 @@ A model counts as MPM-monitored when the registry flags it `is_monitored`
 Both sources below apply exactly that predicate server-side:
 
 1. `GET /api/mpm/v3/workspaces` -- one call returning every workspace the
-   API key's user is a MEMBER of, with its monitored models.
+   API key's user is a MEMBER of, with its monitored models. The path is
+   fixed on purpose: it is a backend-react route (registered in
+   ReactWebappServerApplication), not an MPM-service one, so it resolves the
+   same way on Cloud and on chart deployments. If it fails, the failure is
+   classified (refused / not_found / error), warned about, and recorded, so
+   "MPM not installed" is distinguishable from "key refused".
 2. For the remaining workspaces (an org admin need not be a member), the REST
    v2 registry: list the workspace's models, then read each model's details
    for its monitored flag. Org admins may read any workspace this way,
@@ -45,10 +50,23 @@ from __future__ import annotations
 
 import concurrent.futures
 
-from cometx.utils import admin_api_url
+from cometx.utils import (
+    admin_api_url,
+    exception_text,
+    http_error_status,
+    redact_url_userinfo,
+)
 
 MPM_WORKSPACES_PATH = "/api/mpm/v3/workspaces"
 DEFAULT_MAX_WORKERS = 8
+
+# Outcome of the `mpm/v3/workspaces` call, kept so the report and CSV can tell
+# "MPM not installed" apart from "the key was refused". Every value but
+# LOOKUP_OK means the registry covered every workspace instead.
+LOOKUP_OK = "ok"
+LOOKUP_REFUSED = "refused"  # 401/403
+LOOKUP_NOT_FOUND = "not_found"  # 404: MPM not installed, or not routed
+LOOKUP_ERROR = "error"  # anything else: 5xx, network, unexpected shape
 
 
 def _mpm_url(api) -> str:
@@ -58,11 +76,41 @@ def _mpm_url(api) -> str:
     return admin_api_url(api.config["comet.url_override"], MPM_WORKSPACES_PATH)
 
 
-def _fetch_member_workspaces(api) -> "dict[str, list[dict]] | None":
-    """`mpm/v3/workspaces` -> {workspace_name: [{"id", "name"}, ...]} for the
-    workspaces the caller belongs to. `None` on any failure (MPM disabled on
-    the deployment, network error, unexpected shape): the registry path then
-    covers every workspace instead."""
+def _lookup_warning(lookup, exc, url) -> str:
+    """Operator-facing warning for a failed `mpm/v3/workspaces` call."""
+    where = redact_url_userinfo(url) if url else MPM_WORKSPACES_PATH
+    detail = exception_text(exc)
+    if lookup == LOOKUP_REFUSED:
+        return (
+            "Warning: the MPM API refused this key at %s (%s). Checking every "
+            "workspace via the model registry instead. There, workspaces the "
+            "key's user is not a member of show only public models unless "
+            "the user is an organization admin, so counts may be low." % (where, detail)
+        )
+    if lookup == LOOKUP_NOT_FOUND:
+        return (
+            "Warning: the MPM API was not found at %s (%s); MPM may not be "
+            "installed or routed on this deployment. Checking every workspace "
+            "via the model registry instead." % (where, detail)
+        )
+    return (
+        "Warning: the MPM API call to %s failed (%s). Checking every "
+        "workspace via the model registry instead." % (where, detail)
+    )
+
+
+def _fetch_member_workspaces(api) -> "tuple[dict[str, list[dict]] | None, str]":
+    """`mpm/v3/workspaces` -> ({workspace_name: [{"id", "name"}, ...]}, lookup)
+    for the workspaces the caller belongs to.
+
+    On failure the dict is `None` (the registry path then covers every
+    workspace) and `lookup` says why -- LOOKUP_REFUSED, LOOKUP_NOT_FOUND or
+    LOOKUP_ERROR -- with a warning printed. Failures are classified rather
+    than swallowed because the fallback is only as complete as the key's
+    registry access: a refused key that also isn't an org admin would
+    otherwise yield a confident-looking low count instead of a visible
+    problem."""
+    url = None
     try:
         url = _mpm_url(api)
         response = api._client.get(
@@ -79,9 +127,17 @@ def _fetch_member_workspaces(api) -> "dict[str, list[dict]] | None":
                 for m in (ws.get("models") or [])
                 if isinstance(m, dict)
             ]
-        return out
-    except Exception:
-        return None
+    except Exception as exc:
+        status = http_error_status(exc)
+        if status in (401, 403):
+            lookup = LOOKUP_REFUSED
+        elif status == 404:
+            lookup = LOOKUP_NOT_FOUND
+        else:
+            lookup = LOOKUP_ERROR
+        print(_lookup_warning(lookup, exc, url))
+        return None, lookup
+    return out, LOOKUP_OK
 
 
 def _is_monitored(details) -> "bool | None":
@@ -158,13 +214,15 @@ def _registry_monitored_models(
 
 def fetch_mpm_presence(
     api, workspace_names, max_workers=DEFAULT_MAX_WORKERS
-) -> "dict[str, list[dict] | None]":
-    """Monitored models per workspace: {name: [{"id", "name"}, ...]}, or
-    {name: None} where it could not be determined. Workspaces in
-    `mpm/v3/workspaces` are answered from that single call; the rest fall
-    back to the registry."""
+) -> "tuple[dict[str, list[dict] | None], str]":
+    """(presence, lookup). `presence` maps each workspace to its monitored
+    models, [{"id", "name"}, ...], or to `None` where they could not be
+    determined. Workspaces in `mpm/v3/workspaces` are answered from that
+    single call; the rest fall back to the registry. `lookup` is how that
+    call went (LOOKUP_OK or a failure class; see `_fetch_member_workspaces`)."""
     names = list(dict.fromkeys(n for n in workspace_names if n))
-    member = _fetch_member_workspaces(api) or {}
+    member, lookup = _fetch_member_workspaces(api)
+    member = member or {}
     presence = {n: member[n] for n in names if n in member}
     remaining = [n for n in names if n not in presence]
     if remaining:
@@ -175,7 +233,7 @@ def fetch_mpm_presence(
         presence.update(
             _registry_monitored_models(api, remaining, max_workers=max_workers)
         )
-    return presence
+    return presence, lookup
 
 
 def apply_mpm_presence(chargeback, presence) -> dict:

@@ -57,8 +57,9 @@ def test_member_workspaces_answered_from_one_call():
             ]
         }
     )
-    presence = fetch_mpm_presence(api, ["fraud", "research"])
+    presence, lookup = fetch_mpm_presence(api, ["fraud", "research"])
     assert presence == {"fraud": [{"id": "m1", "name": "scorer"}], "research": []}
+    assert lookup == "ok"
     # every requested workspace was covered by v3: no registry calls
     api._client.get_registry_models.assert_not_called()
 
@@ -76,7 +77,7 @@ def test_non_member_workspaces_fall_back_to_registry():
             ("credit", "ead"): {"isMonitored": False},
         },
     )
-    presence = fetch_mpm_presence(api, ["fraud", "credit"])
+    presence, _lookup = fetch_mpm_presence(api, ["fraud", "credit"])
     assert presence["fraud"] == []
     # sorted by name for stable output
     assert presence["credit"] == [
@@ -93,8 +94,9 @@ def test_v3_failure_uses_registry_for_everything():
         registry={"a": ["m"], "b": []},
         details={("a", "m"): {"isMonitored": True}},
     )
-    presence = fetch_mpm_presence(api, ["a", "b"])
+    presence, lookup = fetch_mpm_presence(api, ["a", "b"])
     assert presence == {"a": [{"id": "id-m", "name": "m"}], "b": []}
+    assert lookup == "error"  # a bare exception with no HTTP status
 
 
 @pytest.mark.parametrize(
@@ -115,7 +117,7 @@ def test_unknown_is_none_not_empty(registry, details):
     from cometx.cli.admin_growth_mpm import fetch_mpm_presence
 
     api = _api(registry=registry, details=details)
-    assert fetch_mpm_presence(api, ["w"]) == {"w": None}
+    assert fetch_mpm_presence(api, ["w"])[0] == {"w": None}
 
 
 def test_apply_mpm_presence_leaves_unknown_workspaces_untouched():
@@ -259,3 +261,85 @@ def test_mpm_url_drops_sdk_clientlib_segment(override, expected):
     api = MagicMock()
     api.config = {"comet.url_override": override}
     assert _mpm_url(api) == expected
+
+
+def _status_error(status):
+    exc = RuntimeError("GET failed with status code %d" % status)
+    exc.response = MagicMock(status_code=status)
+    return exc
+
+
+@pytest.mark.parametrize(
+    "error, expected, warning",
+    [
+        (_status_error(401), "refused", "refused this key"),
+        (_status_error(403), "refused", "refused this key"),
+        (_status_error(404), "not_found", "may not be installed"),
+        (_status_error(502), "error", "failed"),
+        (RuntimeError("connection reset"), "error", "failed"),
+    ],
+)
+def test_member_lookup_failures_are_classified_and_warned(
+    capsys, error, expected, warning
+):
+    from cometx.cli.admin_growth_mpm import fetch_mpm_presence
+
+    api = _api(member_error=error, registry={"w": []})
+    presence, lookup = fetch_mpm_presence(api, ["w"])
+    assert lookup == expected
+    # the fallback still runs
+    assert presence == {"w": []}
+    out = capsys.readouterr().out
+    assert "Warning: the MPM API" in out and warning in out
+    if expected == "refused":
+        # the refused case says why the fallback may undercount
+        assert "organization admin" in out
+
+
+def test_member_lookup_shape_error_is_error_not_ok():
+    from cometx.cli.admin_growth_mpm import fetch_mpm_presence
+
+    api = _api(member_payload={"unexpected": []}, registry={"w": []})
+    _presence, lookup = fetch_mpm_presence(api, ["w"])
+    assert lookup == "error"
+
+
+@pytest.mark.parametrize(
+    "error, lookup, note",
+    [
+        (None, "ok", None),
+        (_status_error(401), "refused", "MPM API refused this key; counts may be low"),
+        (_status_error(404), "not_found", "MPM API not found on this server"),
+    ],
+)
+def test_build_records_member_lookup_in_csv_and_html(error, lookup, note):
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    api = _api(
+        member_error=error,
+        member_payload={"workspaces": [{"workspaceName": "fraud", "models": []}]},
+        registry={"fraud": [], "credit": []},
+    )
+    r = GrowthReporter(api, window="7d", units="month", mpm=True)
+    report = r.build([], chargeback=_chargeback())
+    _users, _ws, kpis = r.last_parsed()
+    text_by_name = {k[0]: k[3] for k in kpis}
+    assert text_by_name["mpm_member_lookup"] == lookup
+    models_kpi = next(
+        k
+        for k in report["sections"]["unified"]["kpis"]
+        if k["label"] == "Monitored models"
+    )
+    if note:
+        # even with every workspace checked, a failed lookup is flagged
+        assert note in models_kpi["sub"]
+    else:
+        assert models_kpi["sub"] == "MPM (is_monitored)"
+
+
+def test_build_without_mpm_has_no_member_lookup_kpi():
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    r = GrowthReporter(_api(), window="7d", units="month")
+    r.build([], chargeback=_chargeback())
+    assert "mpm_member_lookup" not in {k[0] for k in r.last_parsed()[2]}
