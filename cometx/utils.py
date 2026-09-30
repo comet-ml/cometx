@@ -491,11 +491,19 @@ def admin_api_url(base, path):
     """Join an operator-supplied server base with an admin API `path`.
 
     Validates `base` via the shared `validate_server_base`, then preserves its
-    scheme, host, AND any path prefix (e.g. `/clientlib`) that on-prem
-    deployments sit behind.
+    scheme, host, and any path prefix a deployment sits behind (e.g.
+    `/comet`).
+
+    A trailing `/clientlib` segment is dropped: it is the SDK's own API root
+    (the SDK's `comet.url_override` ends in `/clientlib/`), and the admin and
+    MPM APIs are served beside it, not under it. Joined naively,
+    `https://host/clientlib/` gave `https://host/clientlib/api/admin/...`,
+    which 404s. `smoke_test` strips it the same way.
     """
     parsed = validate_server_base(base)
     prefix = parsed.path.rstrip("/")
+    if prefix == "/clientlib" or prefix.endswith("/clientlib"):
+        prefix = prefix[: -len("/clientlib")]
     return "%s://%s%s%s" % (parsed.scheme, parsed.netloc, prefix, path)
 
 
