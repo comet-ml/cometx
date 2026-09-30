@@ -257,7 +257,7 @@ Use the `deleted_users` KPI to see how many were excluded.
 
 **`growth_workspaces.csv`**: `report_date, workspace, member_count, num_projects, num_experiments, data_mb, mpm_enabled, num_monitored_models`
 
-`mpm_enabled` is `1`/`0` (so `SUM(mpm_enabled)` counts MPM workspaces) and `num_monitored_models` a count; both are empty unless `--mpm` was given and that workspace could be checked. With `--mpm`, `growth_org_kpis.csv` also gets `mpm_workspaces`, `total_monitored_models`, and `mpm_workspaces_unchecked`.
+`mpm_enabled` is `1`/`0` (so `SUM(mpm_enabled)` counts MPM workspaces) and `num_monitored_models` is a count; both are empty unless `--mpm` was given and that workspace could be checked. With `--mpm`, `growth_org_kpis.csv` also gets `mpm_workspaces`, `total_monitored_models`, and `mpm_workspaces_unchecked`. The two totals cover only the workspaces that could be checked, so they are exact only when `mpm_workspaces_unchecked` is 0; otherwise they are lower bounds, and the HTML report labels them that way.
 
 **`growth_org_kpis.csv`**: `report_date, metric_name, metric_value, metric_unit, metric_text` — long format so new metrics arrive as new rows without ever changing the Glue schema. `metric_unit` is one of `count`, `percent`, `megabytes`, `label`.
 

@@ -137,6 +137,19 @@ def test_apply_mpm_presence_leaves_unknown_workspaces_untouched():
     assert (ws["c"].mpm_enabled, ws["c"].num_monitored_models) == (None, None)
 
 
+def test_apply_mpm_presence_drops_stale_fields_on_failed_lookup():
+    from cometx.cli.admin_growth_mpm import apply_mpm_presence
+    from cometx.cli.admin_growth_users import parse_workspaces
+
+    cb = {
+        "workspaces": [
+            {"name": "w", "mpmEnabled": True, "monitoredModels": [{"id": "old"}]}
+        ]
+    }
+    (w,) = parse_workspaces(apply_mpm_presence(cb, {"w": None}))
+    assert (w.mpm_enabled, w.num_monitored_models) == (None, None)
+
+
 def _chargeback():
     return {
         "workspaces": [
@@ -188,8 +201,29 @@ def test_build_with_mpm_merges_presence_and_reports_unchecked():
     assert by_name["mpm_workspaces"] == 1
     assert by_name["mpm_workspaces_unchecked"] == 1
     overview = report["sections"]["unified"]
-    models_kpi = next(k for k in overview["kpis"] if k["label"] == "Monitored models")
+    kpis_by_label = {k["label"]: k for k in overview["kpis"]}
+    models_kpi = kpis_by_label["Monitored models"]
+    # partial: a lower bound, labeled as such
+    assert models_kpi["value"] == "≥ 1"
     assert models_kpi["sub"] == "MPM checked in 1/2 workspaces"
+    ws_kpi = kpis_by_label["MPM workspaces"]
+    # percentage over the checked workspace, not all workspaces
+    assert ws_kpi["sub"] == "100% of 1 checked; 1 unknown"
+
+
+def test_build_with_mpm_all_lookups_failed_still_reports_unchecked():
+    from cometx.cli.admin_growth_report import GrowthReporter
+
+    api = _api(
+        member_error=RuntimeError("404"),
+        registry={"fraud": RuntimeError("403"), "credit": RuntimeError("403")},
+    )
+    r = GrowthReporter(api, window="7d", units="month", mpm=True)
+    r.build([], chargeback=_chargeback())
+    _users, _ws, kpis = r.last_parsed()
+    by_name = {k[0]: k[1] for k in kpis}
+    assert "mpm_workspaces" not in by_name
+    assert by_name["mpm_workspaces_unchecked"] == 2
 
 
 def test_build_with_mpm_only_checks_scoped_workspaces():

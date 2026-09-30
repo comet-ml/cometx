@@ -247,7 +247,7 @@ def collect_org_kpis(
     active_window_days,
     scope=None,
     excluded_personal_count=0,
-    mpm_status=None,
+    mpm_requested=False,
 ):
     """Flatten the report's org-level numbers into (name, value, unit) triples.
 
@@ -350,21 +350,18 @@ def collect_org_kpis(
         ("total_experiments", sum(w.num_experiments for w in ws_records), "count")
     )
     kpis.append(("total_data_mb", sum(w.data_mb for w in ws_records), "megabytes"))
-    # MPM presence (--mpm). Omitted (not zero) when not collected.
-    # `mpm_workspaces_unchecked` says how many workspaces the totals could not
-    # cover, so a partial run is never mistaken for a complete one.
+    # MPM presence (--mpm). Omitted (not zero) when not collected. The totals
+    # cover the known workspaces only; `mpm_workspaces_unchecked` (workspaces
+    # whose model count is unknown) says how many they miss, so a partial run
+    # is never mistaken for a complete one -- the totals are exact only when
+    # it is 0. Emitted whenever MPM was requested or reported, including a
+    # run where every lookup failed.
     org = workspace_org_totals(ws_records)
     if org["mpm_workspaces"] is not None:
         kpis.append(("mpm_workspaces", org["mpm_workspaces"], "count"))
         kpis.append(("total_monitored_models", org["monitored_models"], "count"))
-    if mpm_status is not None:
-        kpis.append(
-            (
-                "mpm_workspaces_unchecked",
-                mpm_status["total"] - mpm_status["checked"],
-                "count",
-            )
-        )
+    if mpm_requested or org["mpm_workspaces"] is not None:
+        kpis.append(("mpm_workspaces_unchecked", org["mpm_unchecked"], "count"))
 
     if split is not None:
         for bucket in ("personal", "service"):

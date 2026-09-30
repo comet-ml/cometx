@@ -732,7 +732,8 @@ def _parse_mpm(w: dict) -> "tuple[bool | None, int | None, tuple]":
     """Read a chargeback workspace's MPM presence fields.
 
     `monitoredModels` may be a list (of model dicts or names; its length is
-    the count) or already a number. `mpmEnabled` is taken as given when it is
+    the count) or already a whole number; a fractional or negative number is
+    malformed and leaves the count unknown rather than truncating it. `mpmEnabled` is taken as given when it is
     a real bool, otherwise inferred from the count. Returns
     (mpm_enabled, num_monitored_models, monitored_model_names); all-`None`
     when the server reports neither field."""
@@ -753,7 +754,9 @@ def _parse_mpm(w: dict) -> "tuple[bool | None, int | None, tuple]":
             )
             if n
         )
-    elif isinstance(raw, (int, float)) and not isinstance(raw, bool):
+    elif isinstance(raw, int) and not isinstance(raw, bool):
+        count = raw if raw >= 0 else None
+    elif isinstance(raw, float) and raw.is_integer() and raw >= 0:
         count = int(raw)
     enabled = w.get("mpmEnabled")
     if not isinstance(enabled, bool):
@@ -805,9 +808,12 @@ def workspace_org_totals(workspaces: "list[WorkspaceRecord]") -> dict:
     """Org-wide totals across all workspaces (from chargeback).
 
     `mpm_workspaces` / `monitored_models` are `None` when MPM presence was not
-    collected, so a run without --mpm never reads as zero adoption.
-    Monitored models come from the registry `is_monitored` flag, NOT
-    `nb_models_registered` (which counts every registry model)."""
+    collected, so a run without --mpm never reads as zero adoption. When it
+    was only partly collected they are sums over the known workspaces -- a
+    lower bound -- and `mpm_unchecked` (workspaces whose model count is
+    unknown) says how much is missing; `mpm_checked` counts workspaces whose
+    MPM flag is known. Monitored models come from the registry `is_monitored`
+    flag, NOT `nb_models_registered` (which counts every registry model)."""
     reported = mpm_reported(workspaces)
     return {
         "workspaces": len(workspaces),
@@ -820,6 +826,8 @@ def workspace_org_totals(workspaces: "list[WorkspaceRecord]") -> dict:
         "monitored_models": (
             sum(w.num_monitored_models or 0 for w in workspaces) if reported else None
         ),
+        "mpm_checked": sum(1 for w in workspaces if w.mpm_enabled is not None),
+        "mpm_unchecked": sum(1 for w in workspaces if w.num_monitored_models is None),
     }
 
 

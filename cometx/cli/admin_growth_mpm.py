@@ -181,13 +181,21 @@ def fetch_mpm_presence(
 def apply_mpm_presence(chargeback, presence) -> dict:
     """Return a copy of `chargeback` whose workspaces carry `mpmEnabled` /
     `monitoredModels` from `presence`. Workspaces that are unknown (`None`)
-    or absent from `presence` are left without the fields, which
-    `parse_workspaces` reads as "not reported"."""
+    or absent from `presence` end up WITHOUT the fields -- any already in the
+    input (e.g. a hand-edited `--chargeback-report` file) are removed rather
+    than passed through as current -- which `parse_workspaces` reads as
+    "not reported"."""
     workspaces = []
     for w in chargeback.get("workspaces") or []:
         models = presence.get(w.get("name"))
         if models is None:
-            workspaces.append(w)
+            workspaces.append(
+                {
+                    k: v
+                    for k, v in w.items()
+                    if k not in ("mpmEnabled", "monitoredModels")
+                }
+            )
         else:
             workspaces.append(
                 {**w, "mpmEnabled": bool(models), "monitoredModels": list(models)}

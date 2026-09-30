@@ -463,8 +463,6 @@ class GrowthReporter:
         self.api = api
         # --mpm: collect MPM presence client-side (see admin_growth_mpm).
         self.mpm = mpm
-        # {"checked": n, "total": m} after an --mpm build, else None.
-        self._mpm_status = None
         self.window = window
         self.units = units
         self.active_window = active_window
@@ -540,7 +538,6 @@ class GrowthReporter:
         chargeback = self._filter_personal_chargeback(chargeback)
         excluded_personal_count = before - len((chargeback.get("workspaces") or []))
         scope = set(workspaces) if workspaces else None
-        self._mpm_status = None
         if self.mpm:
             chargeback = self._add_mpm_presence(chargeback, scope)
         print("Building report...")
@@ -566,8 +563,9 @@ class GrowthReporter:
 
     def _add_mpm_presence(self, chargeback, scope):
         """Merge client-side MPM presence into the chargeback workspaces (only
-        those in `scope`, when given, to avoid needless per-model calls), and
-        record how many could actually be checked."""
+        those in `scope`, when given, to avoid needless per-model calls).
+        Unknown workspaces stay unknown in the records, which is what the
+        report and CSV count -- no separate run status is kept."""
         names = [
             w.get("name")
             for w in (chargeback.get("workspaces") or [])
@@ -576,7 +574,6 @@ class GrowthReporter:
         print("Collecting MPM presence for %d workspace(s)..." % len(names))
         presence = fetch_mpm_presence(self.api, names)
         checked = sum(1 for n in names if presence.get(n) is not None)
-        self._mpm_status = {"checked": checked, "total": len(names)}
         if checked < len(names):
             print(
                 "Warning: could not determine MPM presence for %d of %d "
@@ -593,11 +590,11 @@ class GrowthReporter:
                 if not self.mpm
                 else "MPM could not be determined"
             )
-        status = self._mpm_status
-        if status and status["checked"] < status["total"]:
+        org = workspace_org_totals(ws_records)
+        if org["mpm_unchecked"]:
             return "MPM checked in %d/%d workspaces" % (
-                status["checked"],
-                status["total"],
+                org["workspaces"] - org["mpm_unchecked"],
+                org["workspaces"],
             )
         return "MPM shown separately"
 
@@ -945,25 +942,35 @@ class GrowthReporter:
         # MPM presence (OPIK-8411, --mpm): registry models flagged
         # `is_monitored`. Only shown when collected -- rendering 0 otherwise
         # would read as "no MPM adoption".
+        # Partial coverage is labeled, never presented as complete: the
+        # percentage is over the workspaces actually checked, and a model total
+        # missing any workspace is shown as a lower bound.
         if org["mpm_workspaces"] is not None:
-            total_ws = org["workspaces"]
-            pct = round(100 * org["mpm_workspaces"] / total_ws) if total_ws else 0
+            checked = org["mpm_checked"]
+            pct = round(100 * org["mpm_workspaces"] / checked) if checked else 0
+            unknown_flags = org["workspaces"] - checked
             kpis.append(
                 {
                     "label": "MPM workspaces",
                     "value": org["mpm_workspaces"],
-                    "sub": f"{pct}% of workspaces",
+                    "sub": (
+                        f"{pct}% of {checked} checked; {unknown_flags} unknown"
+                        if unknown_flags
+                        else f"{pct}% of workspaces"
+                    ),
                 }
             )
+            partial = org["mpm_unchecked"] > 0
             kpis.append(
                 {
                     "label": "Monitored models",
-                    "value": org["monitored_models"],
+                    "value": (
+                        f"≥ {org['monitored_models']}"
+                        if partial
+                        else org["monitored_models"]
+                    ),
                     "sub": (
-                        self._mpm_note(ws_records)
-                        if self._mpm_status
-                        and self._mpm_status["checked"] < self._mpm_status["total"]
-                        else "MPM (is_monitored)"
+                        self._mpm_note(ws_records) if partial else "MPM (is_monitored)"
                     ),
                 }
             )
@@ -1597,7 +1604,7 @@ class GrowthReporter:
                     active_window_days,
                     scope=scope,
                     excluded_personal_count=excluded_personal_count,
-                    mpm_status=self._mpm_status,
+                    mpm_requested=self.mpm,
                 ),
             )
         except Exception as exc:
