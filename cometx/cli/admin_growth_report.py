@@ -55,10 +55,10 @@ from cometx.cli.admin_growth_users import (
 from cometx.utils import (
     InvalidServerURLError,
     admin_api_url,
+    apparent_http_status,
     exception_text,
     fetch_chargeback_report,
     format_time_key,
-    http_error_status,
     redact_url_userinfo,
 )
 
@@ -216,7 +216,11 @@ def _chargeback_error_message(exc) -> str:
     """Say what actually went wrong fetching the chargeback report, rather
     than attributing every failure to a non-admin key: a 404 (wrong URL or
     path prefix) or a 5xx says nothing about the key."""
-    status = http_error_status(exc)
+    # Permissive on purpose: this only chooses the wording of a message a
+    # human reads, so a status recovered from the exception's text is worth
+    # having. The MPM classification uses the strict http_error_status, where
+    # a guess would be recorded as fact.
+    status = apparent_http_status(exc)
     response = getattr(exc, "response", None)
     url = getattr(response, "url", None)
     # Prefer "HTTP 401: <server message>" over the SDK exception's text, which

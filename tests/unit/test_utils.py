@@ -388,3 +388,30 @@ def test_http_error_status_rejects_a_bool_status():
     exc.response = MagicMock(status_code=True)
 
     assert http_error_status(exc) is None
+
+
+def test_apparent_http_status_may_read_the_text():
+    """The permissive counterpart, for message wording only.
+
+    `_chargeback_error_message` needs it: the SDK path it reports on can
+    surface a failure whose status is only in the text, and the reader sees
+    the underlying error beside the sentence either way.
+    """
+    from cometx.utils import apparent_http_status
+
+    assert (
+        apparent_http_status(
+            RuntimeError("status_code: 403, body: {'message': 'Forbidden'}")
+        )
+        == 403
+    )
+    assert apparent_http_status(Exception("nothing to go on")) is None
+
+
+def test_apparent_http_status_still_prefers_a_real_response():
+    from cometx.utils import apparent_http_status
+
+    exc = Exception("status_code: 500 somewhere in an inner frame")
+    exc.response = MagicMock(status_code=404)
+
+    assert apparent_http_status(exc) == 404

@@ -447,14 +447,34 @@ def http_error_status(exc):
     is by definition incidental to some inner frame. It had no upside and one
     failure mode.
 
-    `_short_api_error` in admin_growth_report matches the same shape on
-    purpose and should keep doing so: there the number is only displayed, so a
-    wrong match is cosmetic rather than a misrouted classification.
+    `apparent_http_status` below is the permissive counterpart, for callers
+    that only shape a message someone reads.
     """
     status = getattr(getattr(exc, "response", None), "status_code", None)
     if isinstance(status, int) and not isinstance(status, bool):
         return status
     return None
+
+
+def apparent_http_status(exc):
+    """HTTP status of a failed request, falling back to `status_code: NNN` in
+    the exception's text.
+
+    For callers that only choose the wording of a message a human reads --
+    "this needs an admin key" against "that URL is wrong". Guessing is
+    acceptable there because the reader sees the underlying error alongside
+    it, and a wrong guess costs a confusing sentence.
+
+    Use `http_error_status` instead whenever the answer is recorded, rendered
+    as data, or routed on. The distinction is the whole point of having two:
+    an unknown status that merely reads as unknown is harmless, while one that
+    becomes `not_found` in a stored result asserts that MPM is not installed.
+    """
+    status = http_error_status(exc)
+    if status is not None:
+        return status
+    match = re.search(r"status_code:\s*(\d+)", exception_text(exc))
+    return int(match.group(1)) if match else None
 
 
 def redact_url_userinfo(value):
