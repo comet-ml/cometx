@@ -431,14 +431,30 @@ def exception_text(exc):
 
 
 def http_error_status(exc):
-    """HTTP status of a failed request, or `None`: from the SDK exception's
-    `response` when it has one, else parsed from its text
-    (`status_code: NNN`)."""
+    """HTTP status of a failed request, or `None`.
+
+    Taken only from a real response, never parsed out of the exception's text.
+    Callers route on this -- 401/403 means the key was refused, 404 means MPM
+    is not installed or not routed -- so a status guessed from incidental text
+    does not degrade to "unknown", it asserts something specific and wrong,
+    and that answer is then recorded and rendered.
+
+    There is nothing to lose by refusing to guess: every HTTP failure the SDK
+    raises carries a response. `CometRestApiException.__init__` always assigns
+    one, and `NotFound` and `Unauthorized` both subclass it. So the text branch
+    could only ever fire for a *non*-HTTP exception -- a connection reset, a
+    DNS failure, a parse error -- where any `status_code: NNN` in the message
+    is by definition incidental to some inner frame. It had no upside and one
+    failure mode.
+
+    `_short_api_error` in admin_growth_report matches the same shape on
+    purpose and should keep doing so: there the number is only displayed, so a
+    wrong match is cosmetic rather than a misrouted classification.
+    """
     status = getattr(getattr(exc, "response", None), "status_code", None)
     if isinstance(status, int) and not isinstance(status, bool):
         return status
-    match = re.search(r"status_code:\s*(\d+)", exception_text(exc))
-    return int(match.group(1)) if match else None
+    return None
 
 
 def redact_url_userinfo(value):

@@ -44,10 +44,16 @@ def parse_args():
     parser.add_argument("--src-api-key", help="defaults to the configured key")
     parser.add_argument("--dst-api-key", help="defaults to the source key")
     parser.add_argument("--match", help="only copy views whose name contains this")
-    parser.add_argument("--include-transient", action="store_true",
-                        help="also copy 'Unsaved Changes' views")
-    parser.add_argument("--experiment-views", action="store_true",
-                        help="also copy the first experiment's own views")
+    parser.add_argument(
+        "--include-transient",
+        action="store_true",
+        help="also copy 'Unsaved Changes' views",
+    )
+    parser.add_argument(
+        "--experiment-views",
+        action="store_true",
+        help="also copy the first experiment's own views",
+    )
     parser.add_argument("--apply", action="store_true", help="perform the copy")
     return parser.parse_args()
 
@@ -64,12 +70,19 @@ def main():
     args = parse_args()
     comet_ml.login()
 
-    source = comet_ml.API(api_key=args.src_api_key) if args.src_api_key else comet_ml.API()
+    source = (
+        comet_ml.API(api_key=args.src_api_key) if args.src_api_key else comet_ml.API()
+    )
     destination = comet_ml.API(api_key=args.dst_api_key) if args.dst_api_key else source
 
-    print("=== Project-level views in %s/%s ===" % (args.src_workspace, args.src_project))
-    project_views = [v for v in source.get_views(args.src_workspace, args.src_project)
-                     if wanted(v, args)]
+    print(
+        "=== Project-level views in %s/%s ===" % (args.src_workspace, args.src_project)
+    )
+    project_views = [
+        v
+        for v in source.get_views(args.src_workspace, args.src_project)
+        if wanted(v, args)
+    ]
     for view in project_views:
         print(describe_view(view, indent="  "))
     if not project_views:
@@ -80,17 +93,28 @@ def main():
         experiments = source.get_experiments(args.src_workspace, args.src_project)
         if experiments:
             print("\n=== Experiment-level views on %s ===" % experiments[0].id)
-            experiment_views = [v for v in experiments[0].get_views() if wanted(v, args)]
+            experiment_views = [
+                v for v in experiments[0].get_views() if wanted(v, args)
+            ]
             for view in experiment_views:
                 print(describe_view(view, indent="  "))
             if not experiment_views:
                 print("  (none matched)")
 
     if not args.apply:
-        print("\nDry run. Re-run with --apply to copy %d project view(s)%s to %s/%s."
-              % (len(project_views),
-                 " and %d experiment view(s)" % len(experiment_views) if experiment_views else "",
-                 args.dst_workspace, args.dst_project))
+        print(
+            "\nDry run. Re-run with --apply to copy %d project view(s)%s to %s/%s."
+            % (
+                len(project_views),
+                (
+                    " and %d experiment view(s)" % len(experiment_views)
+                    if experiment_views
+                    else ""
+                ),
+                args.dst_workspace,
+                args.dst_project,
+            )
+        )
         return
 
     print("\n=== Creating in %s/%s ===" % (args.dst_workspace, args.dst_project))

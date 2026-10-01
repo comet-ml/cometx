@@ -76,7 +76,9 @@ def harvest(api, workspace, projects):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", help="workspace to harvest from")
-    parser.add_argument("--projects", nargs="*", help="limit the scan to these projects")
+    parser.add_argument(
+        "--projects", nargs="*", help="limit the scan to these projects"
+    )
     parser.add_argument("--limit", type=int, default=25, help="max projects to scan")
     parser.add_argument("--into", help="project that should receive the rebuilt view")
     parser.add_argument("--into-workspace", help="defaults to --workspace")
@@ -89,12 +91,17 @@ def main():
     api = comet_ml.API()
 
     projects = args.projects or api.get_projects(workspace)[: args.limit]
-    print("Scanning %d project(s) in %s for custom/Python panels...\n" % (len(projects), workspace))
+    print(
+        "Scanning %d project(s) in %s for custom/Python panels...\n"
+        % (len(projects), workspace)
+    )
     found = harvest(api, workspace, projects)
 
     if not found:
-        print("No custom or Python panels found. Add one from the Panel gallery in the "
-              "UI, then re-run -- its ids become reusable from the SDK.")
+        print(
+            "No custom or Python panels found. Add one from the Panel gallery in the "
+            "UI, then re-run -- its ids become reusable from the SDK."
+        )
         return
 
     for (kind, identifier), (panel, project, view_name) in sorted(found.items()):
@@ -109,17 +116,21 @@ def main():
     section = Section("Harvested panels", columns=2, height=2)
     for (kind, identifier), (panel, _, _) in sorted(found.items()):
         if kind == "custom":
-            section.add(custom_panel(
-                identifier,
-                instance_name=panel.get("instanceName", ""),
-                default_config=panel.get("defaultConfig", ""),
-            ))
+            section.add(
+                custom_panel(
+                    identifier,
+                    instance_name=panel.get("instanceName", ""),
+                    default_config=panel.get("defaultConfig", ""),
+                )
+            )
         else:
-            section.add(python_panel(
-                identifier,
-                revision_id=panel.get("revisionId", ""),
-                name=panel.get("chartName", ""),
-            ))
+            section.add(
+                python_panel(
+                    identifier,
+                    revision_id=panel.get("revisionId", ""),
+                    name=panel.get("chartName", ""),
+                )
+            )
 
     view = build_view(args.name, sections=[section])
     print("\nComposed:")
@@ -131,11 +142,15 @@ def main():
 
     target_workspace = args.into_workspace or workspace
     created = api.create_view(target_workspace, args.into, view)
-    print("\n[%s] %r in %s/%s" % ("OK" if created else "FAILED", args.name,
-                                  target_workspace, args.into))
+    print(
+        "\n[%s] %r in %s/%s"
+        % ("OK" if created else "FAILED", args.name, target_workspace, args.into)
+    )
     if created and target_workspace != workspace:
-        print("Note: a panel instance belongs to its own workspace. Copying one "
-              "across workspaces only works if the panel is shared/public.")
+        print(
+            "Note: a panel instance belongs to its own workspace. Copying one "
+            "across workspaces only works if the panel is shared/public."
+        )
 
 
 if __name__ == "__main__":

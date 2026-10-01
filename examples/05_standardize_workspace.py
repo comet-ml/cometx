@@ -44,7 +44,11 @@ STANDARD_METRICS = [
     ("auc", True),
 ]
 
-SYSTEM_METRICS = ["sys.cpu.percent.avg", "sys.ram.percent.used", "sys.gpu.0.gpu_utilization"]
+SYSTEM_METRICS = [
+    "sys.cpu.percent.avg",
+    "sys.ram.percent.used",
+    "sys.gpu.0.gpu_utilization",
+]
 
 
 def project_metric_names(api, workspace, project):
@@ -59,7 +63,11 @@ def project_metric_names(api, workspace, project):
 
 def build(available):
     """Build the standard view from whichever standard metrics are present."""
-    present = [(name, higher_better) for name, higher_better in STANDARD_METRICS if name in available]
+    present = [
+        (name, higher_better)
+        for name, higher_better in STANDARD_METRICS
+        if name in available
+    ]
     if not present:
         return None
 
@@ -67,7 +75,10 @@ def build(available):
         scalar_panel(name, aggregation="max" if higher_better else "min")
         for name, higher_better in present[:6]
     ]
-    curves = [line_panel(name, name="%s over steps" % name, smoothing=0.4) for name, _ in present]
+    curves = [
+        line_panel(name, name="%s over steps" % name, smoothing=0.4)
+        for name, _ in present
+    ]
 
     sections = [
         Section("Key results", tiles, columns=3),
@@ -76,8 +87,14 @@ def build(available):
 
     system = [m for m in SYSTEM_METRICS if m in available]
     if system:
-        sections.append(Section("System", [line_panel(m, name=m) for m in system],
-                                columns=3, expanded=False))
+        sections.append(
+            Section(
+                "System",
+                [line_panel(m, name=m) for m in system],
+                columns=3,
+                expanded=False,
+            )
+        )
 
     return build_view(
         VIEW_NAME,
@@ -96,8 +113,11 @@ def main():
     parser.add_argument("--workspace")
     parser.add_argument("--projects", nargs="*", help="limit to these projects")
     parser.add_argument("--limit", type=int, help="stop after N projects")
-    parser.add_argument("--update", action="store_true",
-                        help="rebuild the view even if it already exists")
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help="rebuild the view even if it already exists",
+    )
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
 
@@ -145,8 +165,10 @@ def main():
         print("  %-40s [%s] %d panels" % (project, "OK" if ok else "FAILED", panels))
         created += ok
 
-    print("\n%d created/updated, %d already present, %d without standard metrics"
-          % (created, skipped, empty))
+    print(
+        "\n%d created/updated, %d already present, %d without standard metrics"
+        % (created, skipped, empty)
+    )
     if not args.apply:
         print("Dry run -- re-run with --apply.")
 

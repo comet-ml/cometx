@@ -48,9 +48,15 @@ def build(name):
         columns=3,
         height=1,
         panels=[
-            scalar_panel("accuracy", aggregation="max", description="Best accuracy reached"),
+            scalar_panel(
+                "accuracy", aggregation="max", description="Best accuracy reached"
+            ),
             scalar_panel("loss", aggregation="min", description="Lowest training loss"),
-            scalar_panel("val_accuracy", aggregation="last", description="Final validation accuracy"),
+            scalar_panel(
+                "val_accuracy",
+                aggregation="last",
+                description="Final validation accuracy",
+            ),
         ],
     )
 
@@ -60,8 +66,14 @@ def build(name):
         columns=2,
         panels=[
             # Two metrics overlaid in a single chart.
-            line_panel(["loss", "val_loss"], name="Loss: train vs validation", smoothing=0.6),
-            line_panel(["accuracy", "val_accuracy"], name="Accuracy: train vs validation", smoothing=0.6),
+            line_panel(
+                ["loss", "val_loss"], name="Loss: train vs validation", smoothing=0.6
+            ),
+            line_panel(
+                ["accuracy", "val_accuracy"],
+                name="Accuracy: train vs validation",
+                smoothing=0.6,
+            ),
             # Log-scale y-axis, and a legend keyed on a hyperparameter.
             line_panel(
                 "loss",
@@ -71,7 +83,9 @@ def build(name):
             ),
             # x-axis other than step; locked so the dashboard-wide x-axis
             # setting below does not override it.
-            line_panel("accuracy", x="duration", name="Accuracy over wall-clock", locked=True),
+            line_panel(
+                "accuracy", x="duration", name="Accuracy over wall-clock", locked=True
+            ),
         ],
     )
 
@@ -155,7 +169,9 @@ def main():
     parser.add_argument("--workspace")
     parser.add_argument("--project", default="view-api-demo")
     parser.add_argument("--name", default="SDK Full Dashboard")
-    parser.add_argument("--dry-run", action="store_true", help="print the view instead of creating it")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="print the view instead of creating it"
+    )
     args = parser.parse_args()
 
     view = build(args.name)
@@ -174,7 +190,9 @@ def main():
 
     created = api.create_view(workspace, args.project, view)
     if not created:
-        raise SystemExit("create_view returned nothing -- the backend rejected the view.")
+        raise SystemExit(
+            "create_view returned nothing -- the backend rejected the view."
+        )
 
     print("\nCreated %r (template_id=%s)" % (created.name, created.template_id))
     print("Open: %s" % get_project_url(workspace, args.project))
