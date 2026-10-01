@@ -57,9 +57,13 @@ def log_one(workspace, project, index):
         noise = random.uniform(-0.02, 0.02)
         loss = max(0.01, 2.5 * (1 - progress) + noise)
         experiment.log_metric("loss", loss, step=step)
-        experiment.log_metric("accuracy", min(0.999, 0.1 + 0.88 * progress + noise), step=step)
+        experiment.log_metric(
+            "accuracy", min(0.999, 0.1 + 0.88 * progress + noise), step=step
+        )
         experiment.log_metric("val_loss", loss * random.uniform(1.0, 1.3), step=step)
-        experiment.log_metric("val_accuracy", min(0.999, 0.1 + 0.84 * progress + noise), step=step)
+        experiment.log_metric(
+            "val_accuracy", min(0.999, 0.1 + 0.84 * progress + noise), step=step
+        )
 
     try:
         import numpy
@@ -73,9 +77,21 @@ def log_one(workspace, project, index):
         "per_class_metrics.csv",
         tabular_data=[
             ["class", "precision", "recall"],
-            ["cat", round(random.uniform(0.7, 0.99), 3), round(random.uniform(0.7, 0.99), 3)],
-            ["dog", round(random.uniform(0.7, 0.99), 3), round(random.uniform(0.7, 0.99), 3)],
-            ["bird", round(random.uniform(0.7, 0.99), 3), round(random.uniform(0.7, 0.99), 3)],
+            [
+                "cat",
+                round(random.uniform(0.7, 0.99), 3),
+                round(random.uniform(0.7, 0.99), 3),
+            ],
+            [
+                "dog",
+                round(random.uniform(0.7, 0.99), 3),
+                round(random.uniform(0.7, 0.99), 3),
+            ],
+            [
+                "bird",
+                round(random.uniform(0.7, 0.99), 3),
+                round(random.uniform(0.7, 0.99), 3),
+            ],
         ],
         headers=False,
     )
@@ -97,8 +113,10 @@ def main():
     for index in range(args.count):
         key = log_one(workspace, args.project, index)
         print("  logged %s" % key)
-    print("\nDone. Now run: python 02_build_project_dashboard.py --workspace %s --project %s"
-          % (workspace, args.project))
+    print(
+        "\nDone. Now run: python 02_build_project_dashboard.py --workspace %s --project %s"
+        % (workspace, args.project)
+    )
 
 
 if __name__ == "__main__":

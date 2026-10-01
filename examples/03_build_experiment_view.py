@@ -40,8 +40,14 @@ def build(name):
         "Summary",
         columns=3,
         panels=[
-            scalar_panel("accuracy", aggregation="last", description="Accuracy at the last step"),
-            scalar_panel("val_accuracy", aggregation="max", description="Best validation accuracy"),
+            scalar_panel(
+                "accuracy", aggregation="last", description="Accuracy at the last step"
+            ),
+            scalar_panel(
+                "val_accuracy",
+                aggregation="max",
+                description="Best validation accuracy",
+            ),
             scalar_panel("loss", aggregation="min", description="Lowest loss"),
         ],
     )
@@ -83,8 +89,12 @@ def main():
     parser.add_argument("--workspace")
     parser.add_argument("--project", default="view-api-demo")
     parser.add_argument("--name", default="Single-run Deep Dive")
-    parser.add_argument("--all", action="store_true", help="apply to every experiment in the project")
-    parser.add_argument("--dry-run", action="store_true", help="print the view instead of creating it")
+    parser.add_argument(
+        "--all", action="store_true", help="apply to every experiment in the project"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="print the view instead of creating it"
+    )
     args = parser.parse_args()
 
     if args.dry_run:
@@ -115,7 +125,10 @@ def main():
     for experiment in targets:
         # Build a fresh view per experiment so panel ids stay unique.
         created = experiment.create_view(build(args.name))
-        print("  [%s] %s  %s" % ("OK" if created else "FAILED", experiment.id, experiment.name or ""))
+        print(
+            "  [%s] %s  %s"
+            % ("OK" if created else "FAILED", experiment.id, experiment.name or "")
+        )
 
     print("\nReading back with Experiment.get_views():")
     for view in targets[0].get_views():

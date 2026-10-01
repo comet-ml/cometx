@@ -1112,7 +1112,7 @@ def test_build_raises_when_chargeback_unavailable(monkeypatch):
         r.build([])
         assert False, "expected GrowthReportError"
     except GrowthReportError as exc:
-        assert "admin API key" in str(exc)
+        assert "admin user's API key" in str(exc)
 
 
 def test_build_reports_malformed_url_as_a_url_problem(monkeypatch):
@@ -1128,7 +1128,7 @@ def test_build_reports_malformed_url_as_a_url_problem(monkeypatch):
     with pytest.raises(GrowthReportError) as exc_info:
         r.build([])
     assert "could not reach the chargeback endpoint" in str(exc_info.value)
-    assert "admin API key" not in str(exc_info.value)
+    assert "requires an admin" not in str(exc_info.value)
 
 
 def test_build_reports_non_json_response_as_unavailable_not_bad_url(monkeypatch):
@@ -1147,8 +1147,64 @@ def test_build_reports_non_json_response_as_unavailable_not_bad_url(monkeypatch)
     r = GrowthReporter(MagicMock(), window="7d", units="month")
     with pytest.raises(GrowthReportError) as exc_info:
         r.build([])
-    assert "admin API key" in str(exc_info.value)
+    assert "non-JSON response" in str(exc_info.value)
     assert "could not reach the chargeback endpoint" not in str(exc_info.value)
+
+
+def _http_error(status, url="https://c.example.com/api/admin/chargeback/report"):
+    exc = RuntimeError("GET failed with status code %d" % status)
+    exc.response = MagicMock(status_code=status, url=url)
+    return exc
+
+
+def _build_error(monkeypatch, exc):
+    import cometx.cli.admin_growth_report as agr
+    from cometx.cli.admin_growth_report import GrowthReporter, GrowthReportError
+
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(agr, "fetch_chargeback_report", boom)
+    r = GrowthReporter(MagicMock(), window="7d", units="month")
+    with pytest.raises(GrowthReportError) as exc_info:
+        r.build([])
+    return str(exc_info.value)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_chargeback_auth_failure_says_admin_key(monkeypatch, status):
+    exc = _http_error(status)
+    exc.response.json.return_value = {"msg": "You don't have permission"}
+    msg = _build_error(monkeypatch, exc)
+    assert "requires an admin user's API key" in msg
+    assert "refused this key (HTTP %d: You don't have permission)" % status in msg
+    assert "workspace roles such as Manage do not count" in msg
+
+
+def test_chargeback_404_is_a_url_problem_not_a_key_problem(monkeypatch):
+    msg = _build_error(
+        monkeypatch,
+        _http_error(404, "https://u:p@c.example.com/clientlib/api/admin/x"),
+    )
+    assert "could not find the chargeback endpoint" in msg
+    assert "requires an admin" not in msg
+    assert "COMET_URL_OVERRIDE" in msg
+    # the URL is shown, with credentials redacted
+    assert "c.example.com/clientlib/api/admin/x" in msg
+    assert "u:p@" not in msg
+
+
+def test_chargeback_server_error_does_not_blame_the_key(monkeypatch):
+    msg = _build_error(monkeypatch, _http_error(502))
+    assert "could not fetch the chargeback report" in msg
+    assert "requires an admin" not in msg
+
+
+def test_chargeback_status_parsed_from_text_when_no_response():
+    from cometx.cli.admin_growth_report import _chargeback_error_message
+
+    exc = RuntimeError("status_code: 403, body: {'message': 'Forbidden'}")
+    assert "requires an admin user's API key" in _chargeback_error_message(exc)
 
 
 def test_generate_growth_report_signature_has_no_sdk_kwargs():
@@ -2300,3 +2356,88 @@ def test_html_scope_label_and_csv_scope_kpi_agree_on_exclude_personal(tmp_path):
     }
     assert rows["scope"][1] == "organization_excluding_personal"
     assert "excluding personal" in report_data["meta"]["scope"]
+
+
+def _cb_mpm(with_mpm=True):
+    fraud = {
+        "name": "fraud",
+        "numberOfExperiments": 5,
+        "projects": [],
+        "members": [{"userName": "alice"}],
+    }
+    research = {
+        "name": "research",
+        "numberOfExperiments": 50,
+        "projects": [{}],
+        "members": [{"userName": "bob"}],
+    }
+    if with_mpm:
+        fraud.update(
+            mpmEnabled=True,
+            monitoredModels=[{"id": "m1", "name": "a"}, {"id": "m2", "name": "b"}],
+        )
+        research.update(mpmEnabled=False, monitoredModels=[])
+    return {
+        "workspaces": [fraud, research],
+        "users": {
+            "licensedUsers": [
+                {"username": "alice", "email": "a", "lastUsedAt": 1},
+                {"username": "bob", "email": "b", "lastUsedAt": 1},
+            ]
+        },
+    }
+
+
+def _unified(cb):
+    from cometx.cli.admin_growth_report import GrowthReporter
+    from cometx.cli.admin_growth_users import parse_users, parse_workspaces
+
+    r = GrowthReporter(MagicMock(), window="7d", units="month")
+    return r._build_unified_section(
+        _win(),
+        people_users=parse_users(cb),
+        ws_records=parse_workspaces(cb),
+        now_ms=2,
+        active_window_days=30,
+    )
+
+
+def test_unified_section_mpm_kpis_and_table_column():
+    section = _unified(_cb_mpm())
+    kpis = {k["label"]: k for k in section["kpis"]}
+    assert kpis["MPM workspaces"]["value"] == 1
+    assert kpis["MPM workspaces"]["sub"] == "50% of workspaces"
+    assert kpis["Monitored models"]["value"] == 2
+    table = section["table"]
+    assert table["headers"][-1] == "MPM models"
+    by_ws = {row[0]: row[-1] for row in table["rows"]}
+    assert by_ws == {"fraud": 2, "research": 0}
+    mix = next(c for c in section["charts"] if c["id"] == "chart-unified-platform-mix")
+    assert "MPM shown separately" in mix["hint"]
+
+
+def test_unified_section_without_mpm_hides_mpm_and_says_so():
+    section = _unified(_cb_mpm(with_mpm=False))
+    labels = [k["label"] for k in section["kpis"]]
+    assert "MPM workspaces" not in labels
+    assert "Monitored models" not in labels
+    assert "MPM models" not in section["table"]["headers"]
+    mix = next(c for c in section["charts"] if c["id"] == "chart-unified-platform-mix")
+    assert "MPM not collected (run with --mpm)" in mix["hint"]
+
+
+def test_leaderboards_mpm_models_only_when_reported():
+    from cometx.cli.admin_growth_report import GrowthReporter
+    from cometx.cli.admin_growth_users import parse_users, parse_workspaces
+
+    r = GrowthReporter(MagicMock(), window="7d", units="month", leaderboard_top_n=5)
+    for cb, expected in ((_cb_mpm(), True), (_cb_mpm(with_mpm=False), False)):
+        section = r._build_leaderboards_section(
+            users=parse_users(cb), ws_records=parse_workspaces(cb)
+        )
+        charts = {c["id"]: c for c in (section or {}).get("charts", [])}
+        assert ("chart-lb-ws-mpm-models-top" in charts) is expected
+        if expected:
+            rows = charts["chart-lb-ws-mpm-models-top"]["data"]["rows"]
+            # research has 0 monitored models and is left out
+            assert rows == [{"label": "fraud", "value": 2}]

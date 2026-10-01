@@ -339,3 +339,79 @@ class TestGetFirstExperiment:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --------------------------------------------------------------------------
+# http_error_status
+# --------------------------------------------------------------------------
+
+
+def test_http_error_status_reads_a_real_response():
+    from cometx.utils import http_error_status
+
+    exc = Exception("boom")
+    exc.response = MagicMock(status_code=404)
+
+    assert http_error_status(exc) == 404
+
+
+def test_http_error_status_ignores_status_text_without_a_response():
+    """A status is only trusted from a response, never parsed out of text.
+
+    Callers route on this -- 401/403 is "the key was refused", 404 is "MPM is
+    not installed or not routed" -- so a status guessed from incidental text
+    does not degrade to unknown, it asserts something specific and wrong, and
+    that answer is recorded and rendered. A connection error quoting an inner
+    frame must stay unknown.
+    """
+    from cometx.utils import http_error_status
+
+    assert http_error_status(OSError("connect failed (status_code: 404)")) is None
+    assert http_error_status(ValueError("status_code: 401 while parsing")) is None
+
+
+def test_http_error_status_is_none_when_there_is_no_status():
+    from cometx.utils import http_error_status
+
+    assert http_error_status(Exception("plain failure")) is None
+
+    no_status = Exception("no response attribute")
+    no_status.response = None
+    assert http_error_status(no_status) is None
+
+
+def test_http_error_status_rejects_a_bool_status():
+    """`True` is an int in Python; a mock answering True is not a 1xx."""
+    from cometx.utils import http_error_status
+
+    exc = Exception("boom")
+    exc.response = MagicMock(status_code=True)
+
+    assert http_error_status(exc) is None
+
+
+def test_apparent_http_status_may_read_the_text():
+    """The permissive counterpart, for message wording only.
+
+    `_chargeback_error_message` needs it: the SDK path it reports on can
+    surface a failure whose status is only in the text, and the reader sees
+    the underlying error beside the sentence either way.
+    """
+    from cometx.utils import apparent_http_status
+
+    assert (
+        apparent_http_status(
+            RuntimeError("status_code: 403, body: {'message': 'Forbidden'}")
+        )
+        == 403
+    )
+    assert apparent_http_status(Exception("nothing to go on")) is None
+
+
+def test_apparent_http_status_still_prefers_a_real_response():
+    from cometx.utils import apparent_http_status
+
+    exc = Exception("status_code: 500 somewhere in an inner frame")
+    exc.response = MagicMock(status_code=404)
+
+    assert apparent_http_status(exc) == 404

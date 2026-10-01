@@ -585,8 +585,10 @@ page, built entirely from the **admin chargeback report**. Distinct from
 `usage-report` (experiment-count PDF): `growth-report` gives an org-wide view of
 workspaces, users, and platform adoption, per workspace/department.
 
-**Requires an admin API key** — the report is derived entirely from the admin
-chargeback endpoint, and with a non-admin key the command errors out (non-zero
+**Requires an admin user's API key** — the report is derived entirely from the
+admin chargeback endpoint, which accepts only server admins (the server's admin
+user list) and, on self-hosted installs, organization admins. Workspace roles
+such as Manage don't count. With any other key the command errors out (non-zero
 exit).
 
 ```
@@ -605,6 +607,7 @@ cometx admin growth-report [WORKSPACE ...]
 * `--exclude-personal` - Drop workspaces whose name matches `--personal-pattern` from the chargeback data (default: off; no effect without `--personal-pattern`).
 * `--personal-pattern REGEX` - Regex used with `--exclude-personal` to identify personal-workspace names to drop, e.g. `'^user-'` (default: none).
 * `--no-open` - Don't automatically open the generated HTML file after generation.
+* `--mpm` - Include MPM presence (monitored models per workspace), collected from the MPM and model-registry APIs. The key's user must be an organization admin (a separate check from chargeback's server-admin one) or private models in workspaces they aren't a member of are silently missed; off by default because it makes one request per registry model in workspaces the key's user isn't a member of.
 
 **Two time concepts:**
 * `--units` controls chart *granularity* — every chart shows the full all-time history bucketed at this resolution.
@@ -628,6 +631,7 @@ that section is dropped.
 * **Chargeback is required** — the whole report is derived from the admin chargeback report; without admin access the command errors out.
 * **Workspace "created" is a proxy** — the earliest member `createdAt`, since chargeback has no workspace-creation timestamp. The added-vs-deleted "deleted" series is also a best-effort proxy (all members removed) and typically reads ~0.
 * **"Total projects" counts EM projects only** — chargeback's per-workspace `projects[]` covers Experiment Management; Opik projects and MPM aren't represented (Opik appears only as a per-user span count; MPM is absent).
+* **MPM needs `--mpm`.** Chargeback has no MPM data; `--mpm` collects monitored models per workspace from the MPM and model-registry APIs (see README-ADMIN.md).
 
 **Examples:**
 ```

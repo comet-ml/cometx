@@ -144,9 +144,13 @@ HTML page, built entirely from the **admin chargeback report**. Distinct from
 `usage-report` (an experiment-count PDF): `growth-report` gives an org-wide view
 of workspaces, users, and platform adoption, broken down by workspace/department.
 
-**Requires an admin API key.** The report is derived entirely from the admin
-chargeback endpoint; with a non-admin key the command prints an error and exits
-non-zero — there is no fallback.
+**Requires an admin user's API key.** The report is derived entirely from the
+admin chargeback endpoint, which accepts only server admins (users in the
+server's admin user list) and, on self-hosted installs, organization admins of
+the install's organization. Workspace roles such as Manage don't count. With any
+other key the command prints an error and exits non-zero — there is no fallback.
+If the server restricts admin calls to localhost, even an admin key is refused
+("invalid connection") from anywhere else.
 
 ### Basic Usage
 
@@ -172,6 +176,7 @@ report is scoped to just those workspaces.
 - **`--no-open`**: Don't automatically open the generated HTML file after generation.
 - **`--csv-dir DIR`**: Also write Glue-ready CSV fact tables (`growth_users.csv`, `growth_workspaces.csv`, `growth_org_kpis.csv`) into `DIR`. `DIR` is created if it doesn't exist.
 - **`--no-html`**: Skip the HTML report. Requires `--csv-dir` (otherwise there is nothing to write, and the command errors out).
+- **`--mpm`**: Include MPM presence — whether each workspace uses MPM and how many models it monitors (registry models flagged `is_monitored`). Chargeback has no MPM data, so this is collected from `/api/mpm/v3/workspaces` (one call, covering the workspaces the API key's user belongs to) and, for the rest, the REST v2 model registry (one request per registry model). The key's user must be an **organization admin** for this to be complete. That's a different check from the one chargeback applies: the chargeback endpoint accepts server admins, while the registry lets organization admins read every workspace. For a workspace the user isn't a member of, a key that isn't an organization admin gets only the workspace's *public* models, so private monitored models are silently missed and the workspace still counts as checked. Off by default because of the extra requests.
 - **`--chargeback-report FILE`**: Read the chargeback report from a local JSON file (as saved by `cometx admin chargeback-report`) instead of calling the chargeback endpoint. Useful for CSV-only pipelines that already have a saved snapshot, or for re-running without re-fetching it. Note this skips the *chargeback* request only — the report still queries `/api/admin/service-accounts` to classify accounts, and falls back to a name-pattern heuristic if that request fails (`service_account_source` records which was used).
 
 ### The two time concepts
@@ -209,9 +214,9 @@ cometx admin growth-report --active-window 30d --leaderboard-top-n 10 \
 
 The report generates a single self-contained HTML file containing:
 
-- An **Organization overview (chargeback)** section with org-wide KPIs (Total workspaces, Total EM projects, New in {window} (% of base), Active workspaces %), a workspace platform-mix chart (EM / Opik / both / neither), workspace total-vs-active and added-vs-deleted charts, and a by-workspace table.
+- An **Organization overview (chargeback)** section with org-wide KPIs (Total workspaces, Total EM projects, New in {window} (% of base), Active workspaces %, plus MPM workspaces and Monitored models with `--mpm`), a workspace platform-mix chart (EM / Opik / both / neither), workspace total-vs-active and added-vs-deleted charts, and a by-workspace table (with an MPM models column under `--mpm`).
 - A **Users** section with Total / Active (`--active-window`) / Active % / New in {window} KPIs, plus active-vs-total, adoption-rate, per-capability, and user-churn charts.
-- A **Leaderboards** section ranking workspaces (by experiments and EM projects, exact from chargeback) and users (by Opik spans and EM activity), as top-N and active-aware bottom-N. Metrics with no data are omitted.
+- A **Leaderboards** section ranking workspaces (by experiments and EM projects, exact from chargeback; by MPM monitored models under `--mpm`) and users (by Opik spans and EM activity), as top-N and active-aware bottom-N. Metrics with no data are omitted.
 - A **Personal vs Service accounts** section splitting experiments / data / spans between personal and service accounts. Service accounts are identified from the admin service-accounts API when available, falling back to a labeled regex heuristic; the source is shown in the panel hint.
 
 ### Caveats
@@ -219,6 +224,7 @@ The report generates a single self-contained HTML file containing:
 - **Chargeback is required.** The whole report is derived from the admin chargeback report; without admin access the command errors out (non-zero exit).
 - **Workspace "created" is a proxy** — the earliest member `createdAt` in that workspace, since chargeback has no workspace-creation timestamp. The added-vs-deleted "deleted" series is also a best-effort proxy (all members removed) and typically reads ~0.
 - **"Total projects" counts EM projects only** — chargeback's per-workspace `projects[]` covers Experiment Management. Opik projects and MPM aren't represented there (Opik appears only as a per-user span count; MPM is absent), so the platform mix uses an Opik per-user proxy and excludes MPM.
+- **MPM comes from `--mpm`, not chargeback.** It reflects which models are monitored *now*, so past months can't be reconstructed; a trend builds up from monthly `--csv-dir` exports. A workspace whose MPM lookup fails is reported as unknown (empty in the CSV), never as zero, and the report says how many workspaces were checked. Counts are only complete when the key's user is an organization admin or a member of every workspace (see `--mpm`). `nb_models_registered` from the monthly usage report is not used: it counts every registry model and overstates MPM adoption.
 - **The people layer degrades independently.** If the chargeback payload parses but a section's inputs are missing, a warning is printed and only that section is dropped — the rest of the report still generates.
 
 ### CSV export
@@ -249,7 +255,9 @@ numeric/date types instead of typing everything as `string`.
 this table. The column exists so it is present and typed for a Glue crawler.
 Use the `deleted_users` KPI to see how many were excluded.
 
-**`growth_workspaces.csv`**: `report_date, workspace, member_count, num_projects, num_experiments, data_mb`
+**`growth_workspaces.csv`**: `report_date, workspace, member_count, num_projects, num_experiments, data_mb, mpm_enabled, num_monitored_models`
+
+`mpm_enabled` is `1`/`0` (so `SUM(mpm_enabled)` counts MPM workspaces) and `num_monitored_models` is a count; both are empty unless `--mpm` was given and that workspace could be checked. With `--mpm`, `growth_org_kpis.csv` also gets `mpm_workspaces`, `total_monitored_models`, `mpm_workspaces_unchecked`, and `mpm_member_lookup`. That last one is a `label` metric: its `metric_text` says how the `/api/mpm/v3/workspaces` call went (`ok`, `refused` for a 401/403, `not_found` for a 404, or `error`). Anything but `ok` means every workspace was checked through the registry instead. `refused` is the one to watch: the counts may be low, because the registry hides private models in other workspaces from users who aren't organization admins. The two totals cover only the workspaces that could be checked, so they are exact only when `mpm_workspaces_unchecked` is 0; otherwise they are lower bounds, and the HTML report labels them that way.
 
 **`growth_org_kpis.csv`**: `report_date, metric_name, metric_value, metric_unit, metric_text` — long format so new metrics arrive as new rows without ever changing the Glue schema. `metric_unit` is one of `count`, `percent`, `megabytes`, `label`.
 

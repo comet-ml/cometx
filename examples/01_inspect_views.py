@@ -63,7 +63,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace")
     parser.add_argument("--project", default="view-api-demo")
-    parser.add_argument("--json", action="store_true", help="dump every field of every view")
+    parser.add_argument(
+        "--json", action="store_true", help="dump every field of every view"
+    )
     args = parser.parse_args()
 
     comet_ml.login()
@@ -83,10 +85,15 @@ def main():
 
     # The same call, widened to the whole workspace. Useful for finding a
     # dashboard you built in another project and want to reuse here.
-    workspace_views = api.get_views(workspace, args.project, include_workspace_views=True)
+    workspace_views = api.get_views(
+        workspace, args.project, include_workspace_views=True
+    )
     extra = len(workspace_views) - len(project_views)
-    print("include_workspace_views=True adds %d view(s) from sibling projects" % max(0, extra))
-    for view in workspace_views[len(project_views):][:10]:
+    print(
+        "include_workspace_views=True adds %d view(s) from sibling projects"
+        % max(0, extra)
+    )
+    for view in workspace_views[len(project_views) :][:10]:
         print("  - %r (project_id=%s)" % (view.name, view.project_id))
     if extra > 10:
         print("  ... and %d more" % (extra - 10))

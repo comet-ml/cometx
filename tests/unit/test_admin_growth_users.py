@@ -3,6 +3,8 @@
 """Unit tests for cometx.cli.admin_growth_users (people layer parse +
 adoption/leaderboard derivations)."""
 
+import pytest
+
 NOW = 1_720_000_000_000  # fixed ms; ~2024-07, tests pass now_ms explicitly
 
 
@@ -608,6 +610,11 @@ def test_parse_workspaces_org_totals_and_platform_mix():
         "projects": 3,
         "experiments": 13,
         "data_mb": 5.0,
+        # no MPM fields in the payload -> not reported, not zero
+        "mpm_workspaces": None,
+        "monitored_models": None,
+        "mpm_checked": 0,
+        "mpm_unchecked": 4,
     }
     # em-ws=EM only; opik-ws=Opik only (b has spans); both-ws=both; empty-ws=neither
     assert platform_mix(ws, parse_users(cb)) == {
@@ -747,3 +754,98 @@ def test_adoption_rate_series_omits_capability_without_signal():
     keys = pts[0]["values"].keys()
     assert "overall" in keys and "em" in keys
     assert "opik" not in keys  # no opik signal -> omitted, not a flat 0%
+
+
+def test_parse_workspaces_mpm_absent_is_none_not_zero():
+    from cometx.cli.admin_growth_users import mpm_reported, parse_workspaces
+
+    ws = parse_workspaces({"workspaces": [{"name": "w", "members": []}]})
+    assert ws[0].mpm_enabled is None
+    assert ws[0].num_monitored_models is None
+    assert ws[0].monitored_models == ()
+    assert not mpm_reported(ws)
+
+
+def test_parse_workspaces_mpm_fields():
+    from cometx.cli.admin_growth_users import (
+        mpm_reported,
+        parse_workspaces,
+        workspace_org_totals,
+    )
+
+    cb = {
+        "workspaces": [
+            # explicit flag + list of model dicts
+            {
+                "name": "fraud",
+                "mpmEnabled": True,
+                "monitoredModels": [
+                    {"id": "m1", "name": "scorer"},
+                    {"id": "m2", "modelName": "ranker"},
+                    {"id": "m3"},
+                ],
+            },
+            # count only, flag inferred from it
+            {"name": "credit", "monitoredModels": 2},
+            # list of plain names, flag inferred
+            {"name": "risk", "monitoredModels": ["a"]},
+            # reported as not enabled, no models
+            {"name": "research", "mpmEnabled": False, "monitoredModels": []},
+            # flag without a model list: enabled, count unknown
+            {"name": "ops", "mpmEnabled": True},
+            # malformed values are ignored rather than trusted
+            {"name": "bad", "mpmEnabled": "yes", "monitoredModels": True},
+        ]
+    }
+    ws = {w.name: w for w in parse_workspaces(cb)}
+    assert ws["fraud"].mpm_enabled is True
+    assert ws["fraud"].num_monitored_models == 3
+    assert ws["fraud"].monitored_models == ("scorer", "ranker", "m3")
+    assert (ws["credit"].mpm_enabled, ws["credit"].num_monitored_models) == (True, 2)
+    assert ws["risk"].monitored_models == ("a",)
+    assert (ws["research"].mpm_enabled, ws["research"].num_monitored_models) == (
+        False,
+        0,
+    )
+    assert (ws["ops"].mpm_enabled, ws["ops"].num_monitored_models) == (True, None)
+    assert (ws["bad"].mpm_enabled, ws["bad"].num_monitored_models) == (None, None)
+    assert mpm_reported(list(ws.values()))
+
+    totals = workspace_org_totals(list(ws.values()))
+    assert totals["mpm_workspaces"] == 4  # fraud, credit, risk, ops
+    assert totals["monitored_models"] == 6  # 3 + 2 + 1 (+ ops unknown)
+
+
+@pytest.mark.parametrize("raw", [1.5, -1, -2.0])
+def test_parse_workspaces_rejects_malformed_model_counts(raw):
+    from cometx.cli.admin_growth_users import parse_workspaces
+
+    (w,) = parse_workspaces({"workspaces": [{"name": "w", "monitoredModels": raw}]})
+    assert w.num_monitored_models is None
+    assert w.mpm_enabled is None
+
+
+def test_parse_workspaces_accepts_whole_float_count():
+    from cometx.cli.admin_growth_users import parse_workspaces
+
+    (w,) = parse_workspaces({"workspaces": [{"name": "w", "monitoredModels": 3.0}]})
+    assert (w.mpm_enabled, w.num_monitored_models) == (True, 3)
+
+
+def test_org_totals_count_unknown_workspaces():
+    from cometx.cli.admin_growth_users import parse_workspaces, workspace_org_totals
+
+    ws = parse_workspaces(
+        {
+            "workspaces": [
+                {"name": "a", "mpmEnabled": True, "monitoredModels": [{"id": 1}]},
+                {"name": "b"},  # unknown
+                {"name": "c", "mpmEnabled": True},  # flag only: count unknown
+            ]
+        }
+    )
+    totals = workspace_org_totals(ws)
+    assert totals["mpm_workspaces"] == 2
+    assert totals["monitored_models"] == 1  # lower bound
+    assert totals["mpm_checked"] == 2  # a, c have a known flag
+    assert totals["mpm_unchecked"] == 2  # b, c have no known count

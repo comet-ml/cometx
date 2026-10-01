@@ -478,7 +478,10 @@ def get_available_workspaces_and_projects(data: Dict) -> Dict[str, List[str]]:
         ws = exp_info.get("workspace", "Unknown")
         proj = exp_info.get("project_name", "Unknown")
         workspace_projects[ws].add(proj)
-    return {ws: sorted(list(projects)) for ws, projects in sorted(workspace_projects.items())}
+    return {
+        ws: sorted(list(projects))
+        for ws, projects in sorted(workspace_projects.items())
+    }
 
 
 def get_available_dates(data: Dict) -> Tuple[List[str], str, str]:
@@ -532,6 +535,7 @@ def main():
     # This must be done before any Streamlit elements are rendered
     try:
         import streamlit.config as _config
+
         _config.set_option("theme.primaryColor", "#1f77b4")
     except Exception:
         pass  # Fallback gracefully if internal API changes
@@ -602,7 +606,8 @@ def main():
     all_workspaces = list(workspace_projects_map.keys())
 
     # Custom CSS for professional styling (override Streamlit's default red/pink accent)
-    st.markdown("""
+    st.markdown(
+        """
         <style>
         /* Override checkbox checked color - target the role=checkbox div */
         div[role="checkbox"][aria-checked="true"] {
@@ -622,7 +627,9 @@ def main():
             color: white !important;
         }
         </style>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
     # Sidebar configuration
     with st.sidebar:
@@ -666,7 +673,9 @@ def main():
                 st.rerun()
 
         # Expandable project selector for fine-grained control
-        with st.expander("Select specific projects", expanded=st.session_state.projects_expander_open):
+        with st.expander(
+            "Select specific projects", expanded=st.session_state.projects_expander_open
+        ):
             # Group projects by workspace for cleaner display
             for ws in all_workspaces:
                 ws_projects = [f"{ws}/{p}" for p in workspace_projects_map.get(ws, [])]

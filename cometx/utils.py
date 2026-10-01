@@ -430,6 +430,53 @@ def exception_text(exc):
     return type(exc).__name__
 
 
+def http_error_status(exc):
+    """HTTP status of a failed request, or `None`.
+
+    Taken only from a real response, never parsed out of the exception's text.
+    Callers route on this -- 401/403 means the key was refused, 404 means MPM
+    is not installed or not routed -- so a status guessed from incidental text
+    does not degrade to "unknown", it asserts something specific and wrong,
+    and that answer is then recorded and rendered.
+
+    There is nothing to lose by refusing to guess: every HTTP failure the SDK
+    raises carries a response. `CometRestApiException.__init__` always assigns
+    one, and `NotFound` and `Unauthorized` both subclass it. So the text branch
+    could only ever fire for a *non*-HTTP exception -- a connection reset, a
+    DNS failure, a parse error -- where any `status_code: NNN` in the message
+    is by definition incidental to some inner frame. It had no upside and one
+    failure mode.
+
+    `apparent_http_status` below is the permissive counterpart, for callers
+    that only shape a message someone reads.
+    """
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int) and not isinstance(status, bool):
+        return status
+    return None
+
+
+def apparent_http_status(exc):
+    """HTTP status of a failed request, falling back to `status_code: NNN` in
+    the exception's text.
+
+    For callers that only choose the wording of a message a human reads --
+    "this needs an admin key" against "that URL is wrong". Guessing is
+    acceptable there because the reader sees the underlying error alongside
+    it, and a wrong guess costs a confusing sentence.
+
+    Use `http_error_status` instead whenever the answer is recorded, rendered
+    as data, or routed on. The distinction is the whole point of having two:
+    an unknown status that merely reads as unknown is harmless, while one that
+    becomes `not_found` in a stored result asserts that MPM is not installed.
+    """
+    status = http_error_status(exc)
+    if status is not None:
+        return status
+    match = re.search(r"status_code:\s*(\d+)", exception_text(exc))
+    return int(match.group(1)) if match else None
+
+
 def redact_url_userinfo(value):
     """Replace any `user:password@` userinfo in `value` with `***@`.
 
@@ -491,11 +538,19 @@ def admin_api_url(base, path):
     """Join an operator-supplied server base with an admin API `path`.
 
     Validates `base` via the shared `validate_server_base`, then preserves its
-    scheme, host, AND any path prefix (e.g. `/clientlib`) that on-prem
-    deployments sit behind.
+    scheme, host, and any path prefix a deployment sits behind (e.g.
+    `/comet`).
+
+    A trailing `/clientlib` segment is dropped: it is the SDK's own API root
+    (the SDK's `comet.url_override` ends in `/clientlib/`), and the admin and
+    MPM APIs are served beside it, not under it. Joined naively,
+    `https://host/clientlib/` gave `https://host/clientlib/api/admin/...`,
+    which 404s. `smoke_test` strips it the same way.
     """
     parsed = validate_server_base(base)
     prefix = parsed.path.rstrip("/")
+    if prefix == "/clientlib" or prefix.endswith("/clientlib"):
+        prefix = prefix[: -len("/clientlib")]
     return "%s://%s%s%s" % (parsed.scheme, parsed.netloc, prefix, path)
 
 

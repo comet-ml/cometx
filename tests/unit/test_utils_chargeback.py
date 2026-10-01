@@ -57,13 +57,37 @@ def test_fetch_chargeback_allows_http_on_prem_base():
     assert called_url == "http://comet.internal.corp/api/admin/chargeback/report"
 
 
-def test_fetch_chargeback_preserves_path_prefix():
-    # A base with a path prefix (e.g. /clientlib) must keep that prefix
-    # rather than silently dropping it.
+@pytest.mark.parametrize(
+    "override, expected",
+    [
+        # The SDK's url_override ends in /clientlib/: the admin API is served
+        # beside it, not under it (/clientlib/api/admin/... 404s).
+        (
+            "https://comet.x.com/clientlib/",
+            "https://comet.x.com/api/admin/chargeback/report",
+        ),
+        # A real deployment prefix in front of /clientlib is kept.
+        (
+            "https://comet.x.com/comet/clientlib/",
+            "https://comet.x.com/comet/api/admin/chargeback/report",
+        ),
+        # ...and a prefix without /clientlib is kept as-is.
+        (
+            "https://comet.x.com/comet/",
+            "https://comet.x.com/comet/api/admin/chargeback/report",
+        ),
+        # Only a whole trailing segment is dropped, not a lookalike.
+        (
+            "https://comet.x.com/myclientlib/",
+            "https://comet.x.com/myclientlib/api/admin/chargeback/report",
+        ),
+    ],
+)
+def test_fetch_chargeback_url_prefix_handling(override, expected):
     from cometx.utils import fetch_chargeback_report
 
     api = MagicMock()
-    api.config = {"comet.url_override": "https://comet.x.com/clientlib/"}
+    api.config = {"comet.url_override": override}
     api.api_key = "KEY"
     resp = MagicMock(status_code=200)
     resp.json.return_value = {}
@@ -72,7 +96,7 @@ def test_fetch_chargeback_preserves_path_prefix():
     fetch_chargeback_report(api)
 
     called_url = api._client.get.call_args[0][0]
-    assert called_url == ("https://comet.x.com/clientlib/api/admin/chargeback/report")
+    assert called_url == expected
 
 
 @pytest.mark.parametrize(

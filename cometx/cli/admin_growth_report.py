@@ -24,10 +24,12 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import json
 import os
 import re
 
 from cometx.cli.admin_growth_csv import collect_org_kpis, write_growth_csvs
+from cometx.cli.admin_growth_mpm import apply_mpm_presence, fetch_mpm_presence
 from cometx.cli.admin_growth_render import build_html, write_html
 from cometx.cli.admin_growth_users import (
     _extract_licensed_users,
@@ -39,6 +41,7 @@ from cometx.cli.admin_growth_users import (
     churn_series,
     classify_accounts,
     em_user_breakdown_series,
+    mpm_reported,
     opik_user_breakdown_series,
     parse_users,
     parse_workspaces,
@@ -52,6 +55,7 @@ from cometx.cli.admin_growth_users import (
 from cometx.utils import (
     InvalidServerURLError,
     admin_api_url,
+    apparent_http_status,
     exception_text,
     fetch_chargeback_report,
     format_time_key,
@@ -208,6 +212,55 @@ def _fetch_service_accounts(api) -> "set[str] | None":
         return None
 
 
+def _chargeback_error_message(exc) -> str:
+    """Say what actually went wrong fetching the chargeback report, rather
+    than attributing every failure to a non-admin key: a 404 (wrong URL or
+    path prefix) or a 5xx says nothing about the key."""
+    # Permissive on purpose: this only chooses the wording of a message a
+    # human reads, so a status recovered from the exception's text is worth
+    # having. The MPM classification uses the strict http_error_status, where
+    # a guess would be recorded as fact.
+    status = apparent_http_status(exc)
+    response = getattr(exc, "response", None)
+    url = getattr(response, "url", None)
+    # Prefer "HTTP 401: <server message>" over the SDK exception's text, which
+    # carries a partly-masked API key and a truncated URL.
+    detail = _short_api_error(exc)
+    if isinstance(status, int) and response is not None:
+        try:
+            server_msg = response.json().get("msg")
+        except Exception:
+            server_msg = None
+        detail = "HTTP %d" % status + (
+            ": %s" % server_msg if isinstance(server_msg, str) and server_msg else ""
+        )
+    at = " at %s" % redact_url_userinfo(url) if isinstance(url, str) else ""
+    if status in (401, 403):
+        return (
+            "growth-report requires an admin user's API key: the chargeback "
+            "endpoint refused this key (%s). The key's user must be a server "
+            "admin, or an organization admin on self-hosted installs; "
+            "workspace roles such as Manage do not count. This report is "
+            "built entirely from the admin chargeback report." % detail
+        )
+    if status == 404:
+        return (
+            "growth-report could not find the chargeback endpoint%s (%s). "
+            "Check the server URL (COMET_URL_OVERRIDE / comet.url_override); "
+            "this is not an API-key problem." % (at, detail)
+        )
+    if isinstance(exc, json.JSONDecodeError):
+        return (
+            "growth-report got a non-JSON response from the chargeback "
+            "endpoint%s -- often an SSO or proxy login page. Check the server "
+            "URL, and that the API key belongs to an admin." % at
+        )
+    return "growth-report could not fetch the chargeback report%s (%s)." % (
+        at,
+        detail,
+    )
+
+
 def _short_api_error(exc):
     """Condense a verbose SDK/HTTP exception (which may dump full response
     headers, cookies, and CSP) into a single short line: "status: message"
@@ -334,6 +387,7 @@ def generate_growth_report(
     no_html=False,
     chargeback=None,
     report_date=None,
+    mpm=False,
 ):
     reporter = GrowthReporter(
         api,
@@ -343,6 +397,7 @@ def generate_growth_report(
         leaderboard_top_n=leaderboard_top_n,
         exclude_personal=exclude_personal,
         personal_pattern=personal_pattern,
+        mpm=mpm,
     )
     report_data = reporter.build(workspaces, chargeback=chargeback)
 
@@ -398,8 +453,14 @@ class GrowthReporter:
         leaderboard_top_n=5,
         exclude_personal=False,
         personal_pattern=None,
+        mpm=False,
     ):
         self.api = api
+        # --mpm: collect MPM presence client-side (see admin_growth_mpm).
+        self.mpm = mpm
+        # How the mpm/v3/workspaces call went on the last --mpm build (see
+        # admin_growth_mpm.LOOKUP_*); None when --mpm was not given.
+        self._mpm_member_lookup = None
         self.window = window
         self.units = units
         self.active_window = active_window
@@ -444,11 +505,7 @@ class GrowthReporter:
                     "%s" % exception_text(exc)
                 ) from exc
             except Exception as exc:
-                raise GrowthReportError(
-                    "growth-report requires an admin API key: the chargeback "
-                    f"endpoint is unavailable ({_short_api_error(exc)}). This "
-                    "report is built entirely from the admin chargeback report."
-                ) from exc
+                raise GrowthReportError(_chargeback_error_message(exc)) from exc
         # Structural check AFTER the fetch, so it covers both sources with one
         # implementation. The chargeback parsers are deliberately permissive,
         # returning empty lists rather than raising, so without this a report
@@ -478,9 +535,12 @@ class GrowthReporter:
         before = len((chargeback.get("workspaces") or []))
         chargeback = self._filter_personal_chargeback(chargeback)
         excluded_personal_count = before - len((chargeback.get("workspaces") or []))
+        scope = set(workspaces) if workspaces else None
+        self._mpm_member_lookup = None
+        if self.mpm:
+            chargeback = self._add_mpm_presence(chargeback, scope)
         print("Building report...")
         now_ms = int(now.timestamp() * 1000)
-        scope = set(workspaces) if workspaces else None
         report_data = self._assemble_report_data(
             chargeback,
             window,
@@ -499,6 +559,53 @@ class GrowthReporter:
                 scope, excluded_personal_count
             )
         return report_data
+
+    def _add_mpm_presence(self, chargeback, scope):
+        """Merge client-side MPM presence into the chargeback workspaces (only
+        those in `scope`, when given, to avoid needless per-model calls).
+        Unknown workspaces stay unknown in the records, which is what the
+        report and CSV count -- no separate run status is kept."""
+        names = [
+            w.get("name")
+            for w in (chargeback.get("workspaces") or [])
+            if w.get("name") and (scope is None or w.get("name") in scope)
+        ]
+        print("Collecting MPM presence for %d workspace(s)..." % len(names))
+        presence, self._mpm_member_lookup = fetch_mpm_presence(self.api, names)
+        checked = sum(1 for n in names if presence.get(n) is not None)
+        if checked < len(names):
+            print(
+                "Warning: could not determine MPM presence for %d of %d "
+                "workspace(s); they are reported as unknown, not as no MPM."
+                % (len(names) - checked, len(names))
+            )
+        return apply_mpm_presence(chargeback, presence)
+
+    def _mpm_note(self, ws_records):
+        """Short provenance text for MPM figures in hints/KPI subs. Says when
+        the mpm/v3/workspaces call failed, so "MPM not installed" and "key
+        refused" never look like a clean run."""
+        lookup_notes = {
+            "refused": "MPM API refused this key; counts may be low",
+            "not_found": "MPM API not found on this server",
+            "error": "MPM API call failed",
+        }
+        lookup_note = lookup_notes.get(self._mpm_member_lookup)
+        if not mpm_reported(ws_records):
+            if not self.mpm:
+                return "MPM not collected (run with --mpm)"
+            return "MPM could not be determined" + (
+                "; " + lookup_note if lookup_note else ""
+            )
+        org = workspace_org_totals(ws_records)
+        if org["mpm_unchecked"]:
+            note = "MPM checked in %d/%d workspaces" % (
+                org["workspaces"] - org["mpm_unchecked"],
+                org["workspaces"],
+            )
+        else:
+            note = "MPM shown separately"
+        return note + ("; " + lookup_note if lookup_note else "")
 
     def _empty_export_reason(self, scope, excluded_personal_count):
         """A block reason when the filters left nothing to export, else None.
@@ -640,21 +747,31 @@ class GrowthReporter:
 
     def _workspace_chargeback_table(self, ws_records):
         """Org-wide by-workspace table from chargeback (top 20 by experiments):
-        projects, experiments and data logged per workspace."""
+        projects, experiments and data logged per workspace, plus monitored
+        MPM models when MPM presence was collected (--mpm)."""
         rows = sorted(ws_records, key=lambda w: -w.num_experiments)[:20]
+        with_mpm = mpm_reported(ws_records)
+        headers = ["Workspace", "Members", "Projects", "Experiments", "Data (MB)"]
+        if with_mpm:
+            headers.append("MPM models")
+        out_rows = []
+        for w in rows:
+            row = [
+                w.name,
+                len(w.members),
+                w.num_projects,
+                _num(w.num_experiments),
+                _num(round(w.data_mb)),
+            ]
+            if with_mpm:
+                row.append(
+                    "" if w.num_monitored_models is None else w.num_monitored_models
+                )
+            out_rows.append(row)
         return {
             "title": "By workspace (org-wide, chargeback)",
-            "headers": ["Workspace", "Members", "Projects", "Experiments", "Data (MB)"],
-            "rows": [
-                [
-                    w.name,
-                    len(w.members),
-                    w.num_projects,
-                    _num(w.num_experiments),
-                    _num(round(w.data_mb)),
-                ]
-                for w in rows
-            ],
+            "headers": headers,
+            "rows": out_rows,
         }
 
     @staticmethod
@@ -777,9 +894,9 @@ class GrowthReporter:
                 )
 
         # Org-wide platform mix (chargeback): EM-only / Opik-only / both /
-        # neither. MPM is not in chargeback, so it's excluded; Opik is a
-        # per-user proxy (a member's Opik usage is attributed to all their
-        # workspaces).
+        # neither. MPM has its own KPIs rather than being folded in here; Opik
+        # is a per-user proxy (a member's Opik usage is attributed to all
+        # their workspaces).
         if ws_records:
             mix = platform_mix(ws_records, people_users or [])
             mix_rows = [
@@ -795,7 +912,7 @@ class GrowthReporter:
                     "title": "Workspace platform mix",
                     "hint": (
                         "org-wide (chargeback); Opik is a per-user proxy; "
-                        "MPM not represented in chargeback"
+                        + self._mpm_note(ws_records)
                     ),
                     "data": {"rows": mix_rows},
                 }
@@ -831,6 +948,44 @@ class GrowthReporter:
                 "sub": f"{wa['active']}/{wa['total']} active",
             },
         ]
+        # MPM presence (OPIK-8411, --mpm): registry models flagged
+        # `is_monitored`. Only shown when collected -- rendering 0 otherwise
+        # would read as "no MPM adoption".
+        # Partial coverage is labeled, never presented as complete: the
+        # percentage is over the workspaces actually checked, and a model total
+        # missing any workspace is shown as a lower bound.
+        if org["mpm_workspaces"] is not None:
+            checked = org["mpm_checked"]
+            pct = round(100 * org["mpm_workspaces"] / checked) if checked else 0
+            unknown_flags = org["workspaces"] - checked
+            kpis.append(
+                {
+                    "label": "MPM workspaces",
+                    "value": org["mpm_workspaces"],
+                    "sub": (
+                        f"{pct}% of {checked} checked; {unknown_flags} unknown"
+                        if unknown_flags
+                        else f"{pct}% of workspaces"
+                    ),
+                }
+            )
+            partial = org["mpm_unchecked"] > 0
+            lookup_failed = self._mpm_member_lookup not in (None, "ok")
+            kpis.append(
+                {
+                    "label": "Monitored models",
+                    "value": (
+                        f"≥ {org['monitored_models']}"
+                        if partial
+                        else org["monitored_models"]
+                    ),
+                    "sub": (
+                        self._mpm_note(ws_records)
+                        if partial or lookup_failed
+                        else "MPM (is_monitored)"
+                    ),
+                }
+            )
         return {
             "title": "Organization overview (chargeback)",
             "window_chip": self._window_label(window),
@@ -1114,8 +1269,8 @@ class GrowthReporter:
 
     def _build_leaderboards_section(self, users, ws_records):
         """Top-N / bottom-N workspace and user leaderboards, all org-wide from
-        chargeback. Experiments and projects are ranked EXACTLY from the
-        chargeback per-workspace numbers; Opik spans from the chargeback
+        chargeback. Experiments, projects and MPM models are ranked EXACTLY
+        from the chargeback per-workspace numbers; Opik spans from the chargeback
         per-user rollup (a proxy: a member's spans are attributed to each of
         their workspaces). Bottom-N is active-aware (strictly-positive,
         ascending). Empty metrics are omitted; returns `None` when there is
@@ -1169,6 +1324,20 @@ class GrowthReporter:
                 "ws-projects",
                 "projects",
                 {w.name: w.num_projects for w in ws_records if w.num_projects},
+                org_exact_hint,
+            )
+
+        # MPM monitored models: exact, per-workspace from chargeback (only when
+        # MPM presence was collected; emit_ws skips an empty dict).
+        if ws_records and mpm_reported(ws_records):
+            emit_ws(
+                "ws-mpm-models",
+                "MPM monitored models",
+                {
+                    w.name: w.num_monitored_models
+                    for w in ws_records
+                    if w.num_monitored_models
+                },
                 org_exact_hint,
             )
 
@@ -1447,6 +1616,7 @@ class GrowthReporter:
                     active_window_days,
                     scope=scope,
                     excluded_personal_count=excluded_personal_count,
+                    mpm_member_lookup=self._mpm_member_lookup,
                 ),
             )
         except Exception as exc:
