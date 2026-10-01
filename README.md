@@ -607,7 +607,10 @@ cometx admin growth-report [WORKSPACE ...]
 * `--exclude-personal` - Drop workspaces whose name matches `--personal-pattern` from the chargeback data (default: off; no effect without `--personal-pattern`).
 * `--personal-pattern REGEX` - Regex used with `--exclude-personal` to identify personal-workspace names to drop, e.g. `'^user-'` (default: none).
 * `--no-open` - Don't automatically open the generated HTML file after generation.
-* `--mpm` - Include MPM presence (monitored models per workspace), collected from the MPM and model-registry APIs. The key's user must be an organization admin (a separate check from chargeback's server-admin one) or private models in workspaces they aren't a member of are silently missed; off by default because it makes one request per registry model in workspaces the key's user isn't a member of.
+* `--csv-dir DIR` - Also write Glue-ready CSV fact tables (`growth_users.csv`, `growth_workspaces.csv`, `growth_org_kpis.csv`) into `DIR` (created if missing). See [CSV export](README-ADMIN.md#csv-export) for the schema and the S3/Glue layout.
+* `--no-html` - Skip the HTML report. Requires `--csv-dir`; with neither, there is nothing to write and the command errors out.
+* `--mpm` - Include MPM presence (monitored models per workspace), collected from the MPM and model-registry APIs. The key's user must be an organization admin (a separate check from chargeback's server-admin one) or a member of every workspace; otherwise private models in workspaces they aren't a member of are silently missed. Off by default because it makes one request per registry model in workspaces the key's user isn't a member of.
+* `--chargeback-report FILE` - Read the chargeback report from a local JSON file (as saved by `cometx admin chargeback-report`) instead of calling the chargeback endpoint. This skips the chargeback request only; `/api/admin/service-accounts` is still queried to classify accounts.
 
 **Two time concepts:**
 * `--units` controls chart *granularity* — every chart shows the full all-time history bucketed at this resolution.
@@ -619,10 +622,11 @@ proxied from each workspace's earliest member `createdAt`.
 
 **Report sections:** an **Organization overview (chargeback)** section (org-wide
 KPIs, workspace platform mix, total-vs-active and added-vs-deleted charts, and a
-by-workspace table), a **Users** section (Total / Active / Active % / New-in-window
+by-workspace table; with `--mpm`, also MPM workspaces / Monitored models KPIs and
+an MPM models column), a **Users** section (Total / Active / Active % / New-in-window
 KPIs plus over-time charts), a **Leaderboards** section (top-N and active-aware
-bottom-N workspaces by experiments/projects and users by Opik spans / EM activity,
-exact from chargeback), and a **Personal vs Service accounts** split (service
+bottom-N workspaces by experiments/projects, and by MPM monitored models with
+`--mpm`, and users by Opik spans / EM activity), and a **Personal vs Service accounts** split (service
 accounts from the admin API, with a labeled regex fallback). Each people section
 degrades independently: if its inputs are missing, a warning is printed and only
 that section is dropped.
@@ -630,8 +634,8 @@ that section is dropped.
 **Caveats:**
 * **Chargeback is required** — the whole report is derived from the admin chargeback report; without admin access the command errors out.
 * **Workspace "created" is a proxy** — the earliest member `createdAt`, since chargeback has no workspace-creation timestamp. The added-vs-deleted "deleted" series is also a best-effort proxy (all members removed) and typically reads ~0.
-* **"Total projects" counts EM projects only** — chargeback's per-workspace `projects[]` covers Experiment Management; Opik projects and MPM aren't represented (Opik appears only as a per-user span count; MPM is absent).
-* **MPM needs `--mpm`.** Chargeback has no MPM data; `--mpm` collects monitored models per workspace from the MPM and model-registry APIs (see README-ADMIN.md).
+* **"Total projects" counts EM projects only** — chargeback's per-workspace `projects[]` covers Experiment Management; Opik projects and MPM aren't represented there (Opik appears only as a per-user span count; MPM comes only from `--mpm`, below).
+* **MPM needs `--mpm`.** Chargeback has no MPM data; `--mpm` collects monitored models per workspace from the MPM and model-registry APIs. It reflects which models are monitored *now*, so a trend builds up only from regular `--csv-dir` exports. A workspace whose lookup fails is reported as unknown, never as zero (see [README-ADMIN.md](README-ADMIN.md#growth-report)).
 
 **Examples:**
 ```
@@ -648,6 +652,18 @@ cometx admin growth-report --no-open --output growth.html
 # workspaces named like "user-..."
 cometx admin growth-report --active-window 30d --leaderboard-top-n 10 \
   --exclude-personal --personal-pattern '^user-'
+
+# Write Glue-ready CSVs alongside the HTML report
+cometx admin growth-report --csv-dir ./out
+
+# CSV-only, no HTML
+cometx admin growth-report --csv-dir ./out --no-html
+
+# Regenerate CSVs from a saved chargeback snapshot
+cometx admin growth-report --chargeback-report report.json --csv-dir ./out
+
+# Include MPM presence (monitored models per workspace)
+cometx admin growth-report --mpm --csv-dir ./out
 ```
 
 #### gpu-report
