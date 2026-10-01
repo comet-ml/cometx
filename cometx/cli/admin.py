@@ -479,13 +479,18 @@ Arguments:
         One or more workspaces to run the growth report for.
         If not provided, all workspaces are included.
 
-Requires an ADMIN API key: the report is built entirely from the admin
-chargeback report. Without admin access the command exits with an error.
+Requires an admin user's API key: the report is built entirely from the admin
+chargeback report, which accepts only server admins and, on self-hosted
+installs, organization admins. Workspace roles such as Manage don't count.
+Without admin access the command exits with an error.
 
 Output:
     Generates a self-contained HTML page with the organization overview, users,
     personal-vs-service, and leaderboard sections, all derived from the admin
     chargeback report and broken down by workspace/department.
+    With --csv-dir, also writes Glue-ready CSV fact tables (growth_users.csv,
+    growth_workspaces.csv, growth_org_kpis.csv); add --no-html for CSV-only
+    output. With --mpm, adds MPM presence (monitored models per workspace).
 
 Examples:
     cometx admin growth-report
