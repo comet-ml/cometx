@@ -25,7 +25,7 @@ import json
 
 import comet_ml
 
-from cometx.utils import resolve_workspace
+from cometx import API
 from cometx.views import describe_view
 
 
@@ -69,8 +69,8 @@ def main():
     args = parser.parse_args()
 
     comet_ml.login()
-    workspace = resolve_workspace(args.workspace)
-    api = comet_ml.API()
+    api = API()
+    workspace = args.workspace or api.get_default_workspace()
 
     print("=" * 72)
     print("API.get_views(%r, %r)" % (workspace, args.project))
@@ -93,7 +93,8 @@ def main():
         "include_workspace_views=True adds %d view(s) from sibling projects"
         % max(0, extra)
     )
-    for view in workspace_views[len(project_views) :][:10]:
+    siblings_start = len(project_views)
+    for view in workspace_views[siblings_start:][:10]:
         print("  - %r (project_id=%s)" % (view.name, view.project_id))
     if extra > 10:
         print("  ... and %d more" % (extra - 10))

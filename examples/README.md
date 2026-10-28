@@ -1,61 +1,73 @@
-# Comet View API demos
+# Comet panel and view API examples
 
-Six runnable scripts that exercise the full spectrum of the saved-view API:
+Eight runnable scripts that build, read, copy and update Comet dashboards from
+Python, with `cometx.views` and cometx's `API` (which works with any recent
+`comet_ml`):
 
 | Function | Scope | Demonstrated in |
 | --- | --- | --- |
-| `API.get_views(workspace, project)` | project dashboards | 01, 04, 05, 06 |
-| `API.create_view(workspace, project, view)` | project dashboards | 02, 04, 05, 06 |
-| `APIExperiment.get_views()` | one experiment | 01, 03, 04 |
-| `APIExperiment.create_view(view)` | one experiment | 03, 04 |
+| `API.get_views(workspace, project)` | project dashboards | 01, 04, 05, 06, 07 |
+| `API.create_view(workspace, project, view)` | project dashboards | 02, 04, 05, 06, 07 |
+| `API.update_view(workspace, project, view)` | project dashboards | 05, 06, 07 |
+| `APIExperiment.get_views()` | experiment views | 01, 03, 04 |
+| `API.create_experiment_view(experiment, view)` | experiment views | 03, 04 |
+| `API.update_experiment_view(experiment, view)` | experiment views | 03 |
+| `API.upload_panel_code` / `API.get_panel_code` | Panel library | 07 |
 
-Everything panel- and section-related lives in `cometx.views`, a builder library
-with a factory per panel type. The demo scripts are thin: they import from
-`cometx.views`, compose sections, and hand the result to `create_view`.
+The layouts come from `cometx.views`, a builder library with a factory per
+panel type. The scripts are thin: they compose sections from those factories and
+hand the result to `create_view` or `update_view`.
 
 ## The scripts
 
 ```bash
 python 00_seed_demo_project.py --workspace WS          # log 6 small runs to point panels at
 python 01_inspect_views.py     --workspace WS [--json] # read both scopes, with the widening flags
-python 02_build_project_dashboard.py --workspace WS    # 4 sections, every panel type, filter + table
-python 03_build_experiment_view.py   --workspace WS [--all]   # per-run layout, optionally on every run
+python 02_build_project_dashboard.py --workspace WS    # 4 sections, every built-in panel type
+python 03_build_experiment_view.py   --workspace WS    # a layout for each run's own page
 python 04_migrate_views.py --src-workspace A --src-project p \
                            --dst-workspace B --dst-project q [--apply]
 python 05_standardize_workspace.py --workspace WS [--apply] [--update]
 python 06_harvest_panels.py --workspace WS [--into PROJECT --apply]
+python 07_code_panels.py    --workspace WS [--no-javascript]
 ```
 
 `--workspace` defaults to your configured default workspace, `--project` to
 `view-api-demo`. Scripts 04, 05 and 06 are **dry-run by default**; pass
-`--apply` to write. Start with 00 then 02 — that pair gives you a full
-dashboard in about a minute.
+`--apply` to write. Start with 00, then 02 and 07: that gives you a full
+dashboard and a dashboard of code panels in a couple of minutes. A freshly
+logged project takes about half a minute before its panels have data.
 
-- **00 seed** — logs metrics (`loss`, `accuracy`, `val_loss`, `val_accuracy`),
+- **00 seed**: logs metrics (`loss`, `accuracy`, `val_loss`, `val_accuracy`),
   params (`learning_rate`, `batch_size`, `optimizer`, `hidden_size`), one image
-  and one CSV table, so every panel type in 02 has something to draw.
-- **01 inspect** — what each getter returns, how `view_source` distinguishes
+  and one CSV table, so every panel type in the other scripts has something to
+  draw.
+- **01 inspect**: what each getter returns, how `view_source` tells
   `dashboard_template` from `chart_template`, and what
   `include_workspace_views` / `include_workspace_project_views` add. `--json`
   dumps every field with the serialized blobs unpacked.
-- **02 project dashboard** — the widest demo: scalar tiles, multi-metric line
-  charts, a log-scale axis, a legend keyed on a hyperparameter, a locked panel,
-  bar and box plots, 2D and 3D scatter, parallel coordinates, an image grid, a
-  table panel, a saved OR-of-AND filter, a configured experiment table, and
-  dashboard-wide smoothing/sampling. `--dry-run` prints the `v3` payload.
-- **03 experiment view** — the same sections in the experiment scope, plus
-  `--all` to stamp one layout onto every run in a project.
-- **04 migrate** — copy views between projects, workspaces or accounts
-  (`--dst-api-key`), with `--match` filtering and transient
-  `"Unsaved Changes"` views skipped by default. This is the CLI-driven successor
-  to `../migrate_views.py`.
-- **05 standardize** — push one house dashboard across a whole workspace,
+- **02 project dashboard**: the widest demo: scalar tiles, multi-metric line
+  charts, a log-scale axis, a legend keyed on a hyperparameter, locked panels,
+  a bar chart and a box plot grouped by optimizer, 2D and 3D scatter, parallel
+  coordinates, an image grid, a table panel, a saved OR-of-AND filter, a
+  configured experiment table, and dashboard-wide smoothing/sampling.
+  `--dry-run` prints the `v3` payload.
+- **03 experiment view**: the same kind of sections for each run's own page.
+  One experiment view serves every run in the project; rerunning updates it.
+- **04 migrate**: copy views between projects, workspaces or accounts
+  (`--dst-api-key`), with `--match` filtering and transient `"Unsaved Changes"`
+  views skipped by default. Safe to rerun: views the destination already has are
+  skipped, and the destination project is created if needed.
+- **05 standardize**: push one house dashboard across a whole workspace,
   building each project's panels from the metrics that project actually logs, so
-  nobody gets a wall of empty charts. `--update` rewrites in place instead of
+  nobody gets a wall of empty charts. `--update` replaces it in place instead of
   adding a duplicate.
-- **06 harvest** — custom JavaScript panels and Python panels reference panel
-  instances that already exist, so their ids cannot be invented. This scans
-  existing views for them and rebuilds them into a new view.
+- **06 harvest**: collect every code panel on existing dashboards (JavaScript,
+  Python, and Panel library panels placed in the UI) and rebuild them into a
+  "Panel Gallery" view.
+- **07 code panels**: a Python panel written in the script, a Python panel
+  copied from a panel uploaded to the Panel library, and a JavaScript panel, all
+  on one dashboard.
 
 ## What a View actually holds
 
@@ -71,51 +83,81 @@ matter when building one:
 | `table_state` | `reactGridTableState` | experiment table columns, sorting, page size |
 
 A section is `{id, title, expanded, autogenerated, panels, layout}`. `layout` is
-a react-grid-layout list — one `{i, x, y, w, h}` entry per panel on a **6-unit
+a react-grid-layout list, one `{i, x, y, w, h}` entry per panel on a **6-unit
 wide** grid, so `w: 2` is a third of a row and `h` maxes out at 3.
 `Section(columns=N)` computes all of that for you.
 
 The two scopes take different envelopes: `build_view()` for project dashboards
 (state in `v3`), `build_experiment_view()` for experiment views (state in
-`v2["panels"]`). Sections and panels are byte-identical between them — only the
-wrapper differs. Passing a `v3`-shaped view to `APIExperiment.create_view` is
-accepted by the backend but comes back with no panels.
+`v2["panels"]`). Sections and panels are identical between them; only the
+wrapper differs. `create_view` checks the envelope and raises if it is the wrong
+one for its scope.
 
 ## Panel types
 
 ```python
-line_panel(["loss", "val_loss"], x="step", smoothing=0.6, transform_y="log")
-bar_panel("accuracy", aggregation="last", plot_type="BOX", group_by_aggregation="mean")
+line_panel(["loss", "val_loss"], x="step", smoothing=0.6, transform_y="log", locked=True)
+bar_panel("val_accuracy", plot_type="BOX", group_by="optimizer")
 scatter_panel("learning_rate", "accuracy", z="loss", params=["learning_rate"])
 parallel_panel(params=["lr", "batch_size"], metrics=["accuracy"], target="accuracy")
 scalar_panel("accuracy", aggregation="max")          # big-number tile
 image_panel(["prediction-grid.png"])                 # image grid
 data_panel("per_class_metrics.csv")                  # logged table asset
-custom_panel(instance_id, instance_name)             # JS panel from the gallery
-python_panel(template_id, revision_id)               # saved Python panel
+python_panel(code=PYTHON_SOURCE, name="My panel")    # Python panel, code in the view
+javascript_panel(JS_SOURCE, name="My panel")         # JavaScript panel, code in the view
+custom_panel(instance_id, instance_name)             # Panel library panel placed in the UI
+python_panel(template_id, revision_id)               # Python panel added in the UI
 ```
 
 Every factory mints a fresh `chartId`, so build a new view object per target
-rather than reusing one across experiments.
+rather than reusing one across projects.
 
-Built-in panels can be written from nothing. `custom_panel` and `python_panel`
-need ids from an existing panel instance — see script 06.
+Built-in panels, `python_panel(code=...)` and `javascript_panel` can be written
+from nothing. `custom_panel` and `python_panel(template_id, ...)` point at
+something created in the UI, so their ids are read off an existing dashboard;
+script 06 does that.
+
+## Code panels
+
+- A **Python panel** runs on a Comet server. `api.get_panel_experiment_keys()`
+  gives the experiments shown on the dashboard, `api.get_panel_experiment_colors()`
+  their colors, and `ui.display()` shows a Plotly figure, text or HTML. The first
+  load in a session waits for the server to start, which can take most of a
+  minute.
+- A **JavaScript panel** runs in the browser. Its class must be named `MyPanel`
+  and extend `Comet.Panel`; `this.plot({data, layout})` draws a Plotly figure.
+  It needs a Comet version with JavaScript panel support.
+- **Panel library panels** (`upload_panel_code`, `upload_panel_zip`) can be
+  uploaded with an API key but not placed on a dashboard: placing one creates a
+  panel instance, which only the UI can do. To show an uploaded panel's code on
+  a dashboard, copy it in: `python_panel(code=api.get_panel_code(template_id))`.
+  Their template ids don't work with `python_panel(template_id, ...)`, which
+  expects a Python panel added in the UI.
 
 ## Gotchas worth knowing
 
-- **`create_view` always inserts.** There is no `delete_view`, and calling
-  `create_view` twice with the same name yields two views. To update in place
-  you need the existing `template_id`, and `create_view` cannot carry one: it
-  calls `as_portable()`, which deliberately clears it. Script 05 shows the
-  lower-level `_client.upsert_view` route for that case.
+- **Values the UI doesn't know are ignored silently**, so the factories check
+  their options and raise on anything else. `transform_y="log"` is a log-scale
+  axis; `"ln"` and `"log10"` plot the log of each value.
+- **The dashboard's own settings override unlocked panels.** On a dashboard with
+  a `global_config` (and on every experiment page), line panels take their
+  x-axis, transform, smoothing, sample size and outliers from it. Pass
+  `locked=True` to keep a panel's own, as 02 and 03 do for their log-scale
+  charts.
+- **`create_view` only adds views.** A project can't have two views with the same
+  name, so calling it again with a name already in use raises a `ValueError`. To
+  replace a view, set the existing view's `template_id` on the new one and call
+  `update_view`, as 05, 06 and 07 do.
+- **Experiment view names are unique across all your projects**, while
+  `APIExperiment.get_views()` lists only the current project's. A name used in
+  another project is refused; `API.create_experiment_view` raises a `ValueError`
+  that says so.
 - **`as_portable()` is what makes a view movable.** It strips `template_id`,
   `project_id`, `experiment_key`, `pinned_experiments`, and the `experimentKey`
   embedded in `v2`/`v3`. It does *not* rewrite experiment keys inside
   `chart_state`, so a panel pinned to a specific run needs manual fixing.
-- **Panels referencing absent metrics render empty**, not as errors — which is
-  why script 05 inspects each project's metrics before building.
-- **`locked: True`** on a panel keeps its own axis/smoothing settings instead of
-  inheriting the dashboard-level `globalConfig`.
+- **Panels referencing absent metrics render empty**, not as errors, which is
+  why script 05 reads each project's metrics before building.
 - **`autoGenerate: True`** lets Comet keep appending auto-generated panels for
   newly logged metrics below your sections; `False` gives you exactly the
   layout you built.

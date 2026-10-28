@@ -21,8 +21,6 @@ import random
 
 import comet_ml
 
-from cometx.utils import resolve_workspace
-
 OPTIMIZERS = ["adam", "sgd", "rmsprop"]
 
 
@@ -108,7 +106,7 @@ def main():
     args = parser.parse_args()
 
     comet_ml.login()
-    workspace = resolve_workspace(args.workspace)
+    workspace = args.workspace or comet_ml.API().get_default_workspace()
     print("Seeding %s/%s with %d experiment(s)" % (workspace, args.project, args.count))
     for index in range(args.count):
         key = log_one(workspace, args.project, index)

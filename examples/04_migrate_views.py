@@ -23,12 +23,18 @@ from one project can be handed straight to another.
 
     # only some views, and skip the transient UI ones
     python 04_migrate_views.py ... --match "Weekly" --apply
+
+Rerunning is safe: a view whose name the destination already has is skipped.
+Experiment view names must be unique across all of an account's projects, so
+within one account a copied experiment view is renamed "NAME (SOURCE-PROJECT)".
+The destination project is created if it doesn't exist.
 """
 
 import argparse
 
 import comet_ml
 
+from cometx import API
 from cometx.views import describe_view
 
 # Views the UI creates as scratch state; rarely worth copying.
@@ -58,6 +64,11 @@ def parse_args():
     return parser.parse_args()
 
 
+def has_project_sections(view):
+    """True for a project dashboard's layout (sections in view.v3)."""
+    return isinstance(view.v3, dict) and bool(view.v3.get("sections"))
+
+
 def wanted(view, args):
     if not args.include_transient and view.name in TRANSIENT_NAMES:
         return False
@@ -70,10 +81,8 @@ def main():
     args = parse_args()
     comet_ml.login()
 
-    source = (
-        comet_ml.API(api_key=args.src_api_key) if args.src_api_key else comet_ml.API()
-    )
-    destination = comet_ml.API(api_key=args.dst_api_key) if args.dst_api_key else source
+    source = API(api_key=args.src_api_key) if args.src_api_key else API()
+    destination = API(api_key=args.dst_api_key) if args.dst_api_key else source
 
     print(
         "=== Project-level views in %s/%s ===" % (args.src_workspace, args.src_project)
@@ -93,8 +102,12 @@ def main():
         experiments = source.get_experiments(args.src_workspace, args.src_project)
         if experiments:
             print("\n=== Experiment-level views on %s ===" % experiments[0].id)
+            # get_views() on an experiment can also return project dashboards;
+            # those are copied above with the project views.
             experiment_views = [
-                v for v in experiments[0].get_views() if wanted(v, args)
+                v
+                for v in experiments[0].get_views()
+                if wanted(v, args) and not has_project_sections(v)
             ]
             for view in experiment_views:
                 print(describe_view(view, indent="  "))
@@ -118,7 +131,16 @@ def main():
         return
 
     print("\n=== Creating in %s/%s ===" % (args.dst_workspace, args.dst_project))
+    if destination.get_project(args.dst_workspace, args.dst_project) is None:
+        destination.create_project(args.dst_workspace, args.dst_project)
+        print("  created project %s" % args.dst_project)
+    present = {
+        v.name for v in destination.get_views(args.dst_workspace, args.dst_project)
+    }
     for view in project_views:
+        if view.name in present:
+            print("  [SKIPPED] %r already exists" % view.name)
+            continue
         # as_portable() is applied inside create_view(); call it explicitly only
         # if you want to inspect or further edit the portable copy first.
         created = destination.create_view(args.dst_workspace, args.dst_project, view)
@@ -131,9 +153,31 @@ def main():
             return
         target = targets[0]
         print("\n=== Creating experiment views on %s ===" % target.id)
+        present = {v.name for v in target.get_views()}
         for view in experiment_views:
-            created = target.create_view(view)
-            print("  [%s] %r" % ("OK" if created else "FAILED", view.name))
+            name = view.name
+            if name in present:
+                print("  [SKIPPED] %r already exists" % name)
+                continue
+            try:
+                created = destination.create_experiment_view(target, view)
+            except ValueError as error:
+                if "already exists" not in str(error):
+                    raise
+                # The name is taken in another project of this account.
+                view.name = "%s (%s)" % (name, args.src_project)
+                if view.name in present:
+                    print("  [SKIPPED] %r already exists" % view.name)
+                    continue
+                created = destination.create_experiment_view(target, view)
+            print(
+                "  [%s] %r%s"
+                % (
+                    "OK" if created else "FAILED",
+                    view.name,
+                    "" if view.name == name else " (renamed from %r)" % name,
+                )
+            )
 
     print("\nDone.")
 

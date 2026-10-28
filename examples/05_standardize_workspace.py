@@ -22,7 +22,7 @@ import argparse
 
 import comet_ml
 
-from cometx.utils import resolve_workspace
+from cometx import API
 from cometx.views import (
     Section,
     build_view,
@@ -122,8 +122,8 @@ def main():
     args = parser.parse_args()
 
     comet_ml.login()
-    workspace = resolve_workspace(args.workspace)
-    api = comet_ml.API()
+    api = API()
+    workspace = args.workspace or api.get_default_workspace()
 
     projects = args.projects or api.get_projects(workspace)
     if args.limit:
@@ -151,15 +151,11 @@ def main():
             continue
 
         # Reusing the existing template_id updates that view in place instead of
-        # adding a second one with the same name. create_view() cannot do this:
-        # it calls as_portable(), which deliberately clears template_id, so an
-        # in-place update has to go through the lower-level upsert.
+        # adding a second one with the same name. create_view() always adds a
+        # new view, so an in-place update goes through update_view().
         if VIEW_NAME in existing:
             view.template_id = existing[VIEW_NAME].template_id
-            result = api._client.upsert_view(
-                api.get_project(workspace, project)["projectId"], view
-            )
-            ok = bool(result)
+            ok = bool(api.update_view(workspace, project, view))
         else:
             ok = bool(api.create_view(workspace, project, view))
         print("  %-40s [%s] %d panels" % (project, "OK" if ok else "FAILED", panels))
