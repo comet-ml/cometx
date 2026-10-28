@@ -65,11 +65,32 @@ def get_parser_arguments(parser):
         default=8502,
         help="the port the panel itself is served on (default 8502)",
     )
+    add_credential_arguments(parser)
+
+
+def add_credential_arguments(parser):
     parser.add_argument("--api-key", help="a Comet API key")
     parser.add_argument(
         "--url-override",
         help="a Comet server, e.g. https://comet.example.com/clientlib/",
     )
+
+
+def apply_credentials(parsed_args):
+    """Make --api-key and --url-override what comet_ml uses."""
+    if parsed_args.api_key:
+        os.environ["COMET_API_KEY"] = parsed_args.api_key
+    if parsed_args.url_override:
+        os.environ["COMET_URL_OVERRIDE"] = parsed_args.url_override
+
+
+def make_work_dir():
+    """A private temp folder for panel pages, removed on exit. The pages hold
+    the API key, as on Comet's panel server."""
+    work_dir = tempfile.mkdtemp(prefix="cometx-panel-studio-")
+    # Removed after the panel server stops (atexit runs in reverse order).
+    atexit.register(shutil.rmtree, work_dir, ignore_errors=True)
+    return work_dir
 
 
 def port_in_use(port):
@@ -127,10 +148,7 @@ def start_panel_server(work_dir, port):
 
 
 def panel_studio(parsed_args, remaining=None):
-    if parsed_args.api_key:
-        os.environ["COMET_API_KEY"] = parsed_args.api_key
-    if parsed_args.url_override:
-        os.environ["COMET_URL_OVERRIDE"] = parsed_args.url_override
+    apply_credentials(parsed_args)
 
     # Move past ports that are taken, such as by another studio.
     port = free_port(parsed_args.port)
@@ -143,10 +161,7 @@ def panel_studio(parsed_args, remaining=None):
             print("Port %d is in use; the %s uses port %d." % (wanted, name, chosen))
     parsed_args.port, parsed_args.panel_port = port, panel_port
 
-    # Private to this user: panel pages hold the API key, as on Comet's server.
-    work_dir = tempfile.mkdtemp(prefix="cometx-panel-studio-")
-    # Removed on exit, after the panel server stops (atexit runs in reverse).
-    atexit.register(shutil.rmtree, work_dir, ignore_errors=True)
+    work_dir = make_work_dir()
     _, pages_dir = start_panel_server(work_dir, parsed_args.panel_port)
 
     os.environ["COMETX_PANEL_STUDIO_PAGES"] = pages_dir

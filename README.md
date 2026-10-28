@@ -48,6 +48,7 @@ for ML management.
 * [cometx log](#cometx-log)
 * [cometx migrate-users](#cometx-migrate-users)
 * [cometx panel-studio](#cometx-panel-studio)
+* [cometx panel-preview, panel-upload, panel-download](#cometx-panel-preview-panel-upload-panel-download)
 * [cometx rename-duplicates](#cometx-rename-duplicates)
 * [cometx reproduce](#cometx-reproduce)
 * [cometx smoke-test](#cometx-smoke-test)
@@ -415,6 +416,25 @@ server, so a panel that imports something you have locally can still fail on
 comet.com; `%pip install` at the top of the panel covers both.
 
 For the full guide, see [PANEL-STUDIO.md](PANEL-STUDIO.md), or `cometx panel-studio --help`.
+
+## cometx panel-preview, panel-upload, panel-download
+
+Work on Python panels in your own editor:
+
+```
+cometx panel-preview FILE --project PROJECT [--experiments 25|all|NAMES]
+cometx panel-upload FILE --project PROJECT --dashboard NAME [--name PANEL]
+cometx panel-upload FILE --library [--name PANEL]
+cometx panel-download --project PROJECT --dashboard NAME [--name PANEL] [-o FILE]
+cometx panel-download --library --name PANEL [-o FILE]
+```
+
+`panel-preview` runs the panel against your experiments and shows it in your
+browser, running it again each time you save the file. `panel-upload` puts the
+file on a dashboard or in the Panel library, replacing a panel with the same name;
+`panel-download` fetches a panel's code to edit. The studio's **Follow file**
+toggle does the same live reloading inside `panel-studio`. See
+[Using your own editor](PANEL-STUDIO.md#using-your-own-editor).
 
 ## cometx rename-duplicates
 

@@ -18,7 +18,11 @@ panel server does, and putting a panel's code on a dashboard.
 
 import copy
 import os
+import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
+
+from comet_ml.config import get_config
 
 from .panel_engine import copy_user_code
 from .views import Section, build_view, new_id, python_panel
@@ -294,3 +298,171 @@ def display_path(path: str, root: str) -> str:
 
 def new_page_name() -> str:
     return "page_" + new_id(10)
+
+
+def page_name_for(path: str) -> str:
+    """A readable panel page name for a file, e.g. page_loss_curves for
+    loss-curves.py; the panel's URL ends with it."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", stem).strip("_")
+    return "page_" + (cleaned or "panel")
+
+
+def file_mtime(path: Optional[str]) -> Optional[float]:
+    """The file's modification time, or None when it can't be read."""
+    if not path:
+        return None
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return None
+
+
+def file_signature(path: Optional[str]) -> Optional[Tuple[int, int]]:
+    """(modification time in ns, size), which changes whenever the file is
+    written; None when the file can't be read."""
+    if not path:
+        return None
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
+def read_settled(
+    path: str, settle: float = 0.15
+) -> Optional[Tuple[Tuple[int, int], str]]:
+    """Read a file that was just changed, once it has stopped changing.
+
+    Editors often save by emptying a file and then writing it, so a change can
+    be seen halfway. Returns (signature, text), or None while the file is still
+    being written (or can't be read); try again on the next check.
+    """
+    before = file_signature(path)
+    if before is None:
+        return None
+    time.sleep(settle)
+    try:
+        with open(path) as fp:
+            text = fp.read()
+    except OSError:
+        return None
+    if file_signature(path) != before:
+        return None
+    return before, text
+
+
+def resolve_workspace(api, workspace: Optional[str] = None) -> str:
+    """The given workspace, the configured one, or the account's default."""
+    return workspace or get_config("comet.workspace") or api.get_default_workspace()
+
+
+def list_experiments(api, workspace: str, project: str) -> List[Tuple[str, str, int]]:
+    """(key, name, updated) for each experiment in a project; updated is the
+    later of its start and end times, in ms, so running experiments count."""
+    return [
+        (
+            e.id,
+            e.name or e.id[:9],
+            max(e.start_server_timestamp or 0, e.end_server_timestamp or 0),
+        )
+        for e in api.get_experiments(workspace, project)
+    ]
+
+
+def choose_experiments(
+    entries: List[Tuple[str, str, int]], spec: str = str(DASHBOARD_PAGE_SIZE)
+) -> List[str]:
+    """Pick experiment keys from sorted (key, name, updated) entries.
+
+    spec: "all"; a number N for the first N, as a dashboard shows its first
+    page; or comma-separated experiment keys, key prefixes or names.
+    """
+    spec = spec.strip()
+    if spec.lower() == "all":
+        return [key for key, _, _ in entries]
+    if spec.isdigit():
+        return [key for key, _, _ in entries][: int(spec)]
+
+    chosen = []
+    for wanted in (w.strip() for w in spec.split(",")):
+        if not wanted:
+            continue
+        # An exact key or name wins; otherwise a key prefix must be unique.
+        matches = [k for k, n, _ in entries if wanted in (k, n)]
+        if not matches:
+            matches = [k for k, _, _ in entries if k.startswith(wanted)]
+            if len(matches) > 1:
+                raise ValueError(
+                    "%r starts %d experiment keys; give more of the key"
+                    % (wanted, len(matches))
+                )
+        if not matches:
+            raise ValueError("No experiment matches %r" % wanted)
+        chosen.extend(key for key in matches if key not in chosen)
+    return chosen
+
+
+def _dashboard(api, workspace: str, project: str, dashboard: str):
+    views = [v for v in api.get_views(workspace, project) if v.name == dashboard]
+    if not views:
+        names = sorted(
+            v.name
+            for v in api.get_views(workspace, project)
+            if v.name and v.name != "Unsaved Changes"
+        )
+        raise ValueError(
+            "No dashboard %r in %s/%s. Dashboards: %s"
+            % (dashboard, workspace, project, ", ".join(names) or "none")
+        )
+    return views[0]
+
+
+def dashboard_panel_code(
+    api, workspace: str, project: str, dashboard: str, name: Optional[str] = None
+) -> Tuple[str, str]:
+    """The (name, code) of a Python panel on a dashboard.
+
+    name may be left out when the dashboard has a single Python panel.
+    """
+    view = _dashboard(api, workspace, project, dashboard)
+    panels = [
+        panel
+        for section in (view.v3 or {}).get("sections") or []
+        for panel in section.get("panels") or []
+        if panel.get("chartType") == "python"
+    ]
+    names = [p.get("chartName") or "(untitled)" for p in panels]
+    if not panels:
+        raise ValueError("Dashboard %r has no Python panels." % dashboard)
+    if name is None:
+        if len(panels) > 1:
+            raise ValueError(
+                "Dashboard %r has %d Python panels; pick one with --name: %s"
+                % (dashboard, len(panels), ", ".join(names))
+            )
+        panel = panels[0]
+    else:
+        found = [p for p in panels if p.get("chartName") == name]
+        if not found:
+            raise ValueError(
+                "Dashboard %r has no Python panel %r. Its Python panels: %s"
+                % (dashboard, name, ", ".join(names))
+            )
+        panel = found[0]
+    if not panel.get("code"):
+        raise ValueError(
+            "Panel %r was added in the Comet UI, which keeps its code where "
+            "only the UI can read it. Open the panel's editor in Comet and copy "
+            "the code instead." % (panel.get("chartName") or "(untitled)")
+        )
+    return panel.get("chartName") or "", panel["code"]
+
+
+def library_panel_code(api, workspace: str, name: str) -> str:
+    """The code of a Python panel in the workspace's Panel library."""
+    found = [p for p in api.get_panels(workspace) if p.get("templateName") == name]
+    if not found:
+        raise ValueError("No panel %r in the Panel library of %s." % (name, workspace))
+    return api.get_panel_code(found[0]["templateId"])
