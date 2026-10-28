@@ -47,6 +47,7 @@ for ML management.
 * [cometx list](#cometx-list)
 * [cometx log](#cometx-log)
 * [cometx migrate-users](#cometx-migrate-users)
+* [cometx panel-studio](#cometx-panel-studio)
 * [cometx rename-duplicates](#cometx-rename-duplicates)
 * [cometx reproduce](#cometx-reproduce)
 * [cometx smoke-test](#cometx-smoke-test)
@@ -371,6 +372,49 @@ cometx migrate-users --api-key DEST_KEY --url https://comet.dest.example.com \
 ```
 
 For more information, `cometx migrate-users --help`
+
+## cometx panel-studio
+
+Write and test a Comet Python panel on your own machine, then upload it.
+
+```
+cometx panel-studio [FILE] [--workspace WS] [--project PROJECT]
+```
+
+This opens an editor in your browser. In the sidebar, enter your Comet server
+(e.g. `https://www.comet.com`) and API key, then pick a workspace, a project
+and the experiments the panel should see. "Open in Comet" opens that project. Edit the code and press **Run**: the panel runs the
+way it does on comet.com, against your real experiments, with the real
+`comet_ml.ui`, `print` shown in the panel, and `%pip install` and `%include`
+supported. It uses the same page-building code as Comet's Python panel server.
+
+**Upload** sends the panel to either:
+
+* **a dashboard** in the project, new or existing. A panel with the same name
+  on that dashboard is replaced; otherwise the panel is added to a
+  "Panel Studio" section, leaving the rest of the dashboard as it was.
+* **the Panel library** of the workspace, replacing a library panel with the
+  same name. Library panels are added to dashboards from Add panel > Panel
+  library in Comet.
+
+Type a path in the **File** box, or use **Browse** to find a `.py` file anywhere
+on your machine; an existing file opens in the editor. **Save** writes the code to
+that file (creating it if needed) and **Load** reads it again, so the panel can
+live in version control.
+
+### Flags
+
+* `FILE` - the panel's Python file to open; it is created when you save
+* `--workspace WORKSPACE` and `--project PROJECT` - where to start
+* `--api-key KEY` and `--url-override URL` - otherwise taken from your Comet config
+* `--port PORT` - the editor's port (default 8501)
+* `--panel-port PORT` - the port the panel is served on (default 8502)
+
+Packages installed on your machine may differ from those on Comet's panel
+server, so a panel that imports something you have locally can still fail on
+comet.com; `%pip install` at the top of the panel covers both.
+
+For the full guide, see [PANEL-STUDIO.md](PANEL-STUDIO.md), or `cometx panel-studio --help`.
 
 ## cometx rename-duplicates
 

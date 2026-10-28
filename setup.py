@@ -54,7 +54,10 @@ setup_args = dict(
         "requests",
         "tqdm",
         "matplotlib",
-        "streamlit",
+        # panel-studio: st.dialog, st.context and tertiary buttons (1.41)
+        "streamlit>=1.41.0",
+        # panel-studio: Comet's default Python panel template uses Plotly
+        "plotly",
         "boto3",
     ],
     extras_require={
@@ -77,6 +80,7 @@ setup_args = dict(
         "cometx.framework.comet",
         "cometx",
     ],
+    package_data={"cometx.cli": ["assets/*.png"]},
     entry_points={"console_scripts": ["cometx = cometx.cli:main"]},
     python_requires=">=3.6",
     license="MIT License",
