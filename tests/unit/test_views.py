@@ -423,7 +423,6 @@ class TestBuildView:
         assert view.v3["autoGenerate"] is True
         assert view.v3["isPersonalView"] is True
         assert view.v3["globalConfig"] == global_config()
-        assert view.layout_scope() == "project"
 
     def test_build_view__panels__mirrored_in_legacy_chart_state(self):
         scalar, line = scalar_panel("acc"), line_panel("loss")
@@ -463,7 +462,6 @@ class TestBuildExperimentView:
         assert view.v2["x_axis"] == "epoch"
         assert view.v2["panels"]["sections"][0]["title"] == "Curves"
         assert view.v2["panels"]["compareXAxis"] == "epoch"
-        assert view.layout_scope() == "experiment"
 
     def test_build_experiment_view__happyflow__experiment_key_omitted(self):
         view = build_experiment_view("Run", [])

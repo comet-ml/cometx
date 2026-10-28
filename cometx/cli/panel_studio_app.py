@@ -129,10 +129,13 @@ st.markdown(
 
 
 @st.cache_resource(show_spinner=False)
-def get_api(url_override, api_key):
+def get_api(url_override, api_key, cache=True):
+    """An API for this server and key. Uploads pass cache=False: they read a
+    dashboard or the Panel library and write it back, so they need current
+    data, and some comet_ml versions cache those reads."""
     # comet_ml reads the server from the environment when an API is created.
     os.environ["COMET_URL_OVERRIDE"] = url_override
-    return API(api_key=api_key)
+    return API(api_key=api_key, cache=cache)
 
 
 @st.cache_data(show_spinner=False, ttl=60)
@@ -373,7 +376,7 @@ def sidebar():
 
 @st.dialog("Upload panel")
 def upload_dialog(context):
-    api = get_api(context["url_override"], context["api_key"])
+    api = get_api(context["url_override"], context["api_key"], cache=False)
     workspace, project = context["workspace"], context["project"]
     code = st.session_state.code
 
