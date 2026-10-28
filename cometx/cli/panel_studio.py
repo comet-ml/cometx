@@ -57,30 +57,47 @@ def get_parser_arguments(parser):
     parser.add_argument("--workspace", help="the workspace to start with")
     parser.add_argument("--project", help="the project to start with")
     parser.add_argument(
-        "--port", type=int, default=8501, help="the editor's port (default 8501)"
+        "--port",
+        type=port_number,
+        default=8501,
+        help="the editor's port (default 8501)",
     )
     parser.add_argument(
         "--panel-port",
-        type=int,
+        type=port_number,
         default=8502,
         help="the port the panel itself is served on (default 8502)",
     )
     add_credential_arguments(parser)
 
 
+def port_number(value):
+    """argparse type for a TCP port, 1 through 65535."""
+    try:
+        port = int(value)
+    except ValueError:
+        port = 0
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("%r is not a port number (1-65535)" % (value,))
+    return port
+
+
 def add_credential_arguments(parser):
-    parser.add_argument("--api-key", help="a Comet API key")
+    # SUPPRESS: when not given here, keep a value given before the command
+    # (cometx --api-key KEY panel-preview ...) instead of replacing it with None.
+    parser.add_argument("--api-key", help="a Comet API key", default=argparse.SUPPRESS)
     parser.add_argument(
         "--url-override",
         help="a Comet server, e.g. https://comet.example.com/clientlib/",
+        default=argparse.SUPPRESS,
     )
 
 
 def apply_credentials(parsed_args):
     """Make --api-key and --url-override what comet_ml uses."""
-    if parsed_args.api_key:
+    if getattr(parsed_args, "api_key", None):
         os.environ["COMET_API_KEY"] = parsed_args.api_key
-    if parsed_args.url_override:
+    if getattr(parsed_args, "url_override", None):
         os.environ["COMET_URL_OVERRIDE"] = parsed_args.url_override
 
 

@@ -17,6 +17,7 @@ panel server does, and putting a panel's code on a dashboard.
 """
 
 import copy
+import hashlib
 import os
 import re
 import time
@@ -318,21 +319,24 @@ def file_mtime(path: Optional[str]) -> Optional[float]:
         return None
 
 
-def file_signature(path: Optional[str]) -> Optional[Tuple[int, int]]:
-    """(modification time in ns, size), which changes whenever the file is
-    written; None when the file can't be read."""
+def file_signature(path: Optional[str]) -> Optional[Tuple[int, int, str]]:
+    """(modification time in ns, size, hash of the contents), which changes
+    whenever the file's contents do, even on filesystems whose timestamps are
+    too coarse to tell two quick saves apart; None when it can't be read."""
     if not path:
         return None
     try:
         stat = os.stat(path)
+        with open(path, "rb") as fp:
+            digest = hashlib.sha1(fp.read()).hexdigest()
     except OSError:
         return None
-    return stat.st_mtime_ns, stat.st_size
+    return stat.st_mtime_ns, stat.st_size, digest
 
 
 def read_settled(
     path: str, settle: float = 0.15
-) -> Optional[Tuple[Tuple[int, int], str]]:
+) -> Optional[Tuple[Tuple[int, int, str], str]]:
     """Read a file that was just changed, once it has stopped changing.
 
     Editors often save by emptying a file and then writing it, so a change can

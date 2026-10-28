@@ -1,11 +1,13 @@
 import argparse
+import os
 from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
 from cometx import panel_studio
-from cometx.cli import panel_download, panel_upload
+from cometx.cli import panel_download, panel_preview, panel_upload
+from cometx.cli.panel_studio import apply_credentials, port_number
 from cometx.panel_studio import (
     choose_experiments,
     dashboard_panel_code,
@@ -191,3 +193,55 @@ def test_panel_download__existing_output__refused_without_force(tmp_path):
     with pytest.raises(SystemExit, match="--force"):
         panel_download.panel_download(args)
     assert out.read_text() == "keep me"
+
+
+def test_file_signature__same_time_and_size__contents_still_differ(tmp_path):
+    path = tmp_path / "p.py"
+    path.write_text("x = 1\n")
+    stat = os.stat(path)
+    before = file_signature(str(path))
+
+    path.write_text("x = 2\n")  # same size
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))  # same time
+
+    assert file_signature(str(path)) != before
+
+
+@pytest.mark.parametrize("port", ["0", "65536", "-1", "http"])
+def test_port_number__out_of_range__parse_error(port):
+    parser = argparse.ArgumentParser()
+    panel_preview.get_parser_arguments(parser)
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["p.py", "--project", "proj", "--port", port])
+
+
+def test_port_number__in_range__int():
+    assert port_number("8502") == 8502
+
+
+def test_credentials__given_before_command__kept():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--api-key")
+    sub = parser.add_subparsers().add_parser("panel-preview")
+    panel_preview.get_parser_arguments(sub)
+
+    args = parser.parse_args(
+        ["--api-key", "KEY", "panel-preview", "p.py", "--project", "proj"]
+    )
+
+    assert args.api_key == "KEY"
+
+
+def test_credentials__given_after_command__used(monkeypatch):
+    monkeypatch.delenv("COMET_API_KEY", raising=False)
+    args = _parse(panel_preview, ["p.py", "--project", "proj", "--api-key", "KEY"])
+
+    apply_credentials(args)
+
+    assert os.environ["COMET_API_KEY"] == "KEY"
+
+
+def test_read_first__folder_or_missing__none(tmp_path):
+    assert panel_preview.read_first(str(tmp_path)) is None
+    assert panel_preview.read_first(str(tmp_path / "missing.py")) is None

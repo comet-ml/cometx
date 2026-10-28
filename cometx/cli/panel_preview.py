@@ -43,7 +43,6 @@ from ..api import API
 from ..panel_studio import (
     choose_experiments,
     clientlib_url,
-    file_mtime,
     file_signature,
     list_experiments,
     page_name_for,
@@ -58,6 +57,7 @@ from .panel_studio import (
     apply_credentials,
     free_port,
     make_work_dir,
+    port_number,
     start_panel_server,
 )
 
@@ -85,7 +85,10 @@ def get_parser_arguments(parser):
         help="order of experiments: recently updated (default) or name",
     )
     parser.add_argument(
-        "--port", type=int, default=8502, help="the panel's port (default 8502)"
+        "--port",
+        type=port_number,
+        default=8502,
+        help="the panel's port (default 8502)",
     )
     parser.add_argument(
         "--no-browser", action="store_true", help="don't open the panel in a browser"
@@ -93,11 +96,24 @@ def get_parser_arguments(parser):
     add_credential_arguments(parser)
 
 
+def read_first(path, attempts=10):
+    """The file's (signature, text) once it's readable and not mid-save, or
+    None if it's missing, a folder, or never settles."""
+    if not os.path.isfile(path):
+        return None
+    for _ in range(attempts):
+        settled = read_settled(path)
+        if settled is not None:
+            return settled
+    return None
+
+
 def panel_preview(parsed_args, remaining=None):
     apply_credentials(parsed_args)
     path = os.path.abspath(parsed_args.FILE)
-    if file_mtime(path) is None:
-        sys.exit("Could not read %s." % parsed_args.FILE)
+    first = read_first(path)
+    if first is None:
+        sys.exit("Could not read the file %r." % parsed_args.FILE)
 
     api = API()
     workspace = resolve_workspace(api, parsed_args.workspace)
@@ -131,8 +147,7 @@ def panel_preview(parsed_args, remaining=None):
         page_name,
     )
 
-    with open(path) as fp:
-        write_panel_page(fp.read(), pages_dir, page_name, cfg)
+    write_panel_page(first[1], pages_dir, page_name, cfg)
     url = "http://localhost:%d/%s?embed=true" % (port, page_name)
     print(
         "Previewing %s in %s/%s with %d experiment(s):\n  %s\n"
@@ -155,7 +170,7 @@ def panel_preview(parsed_args, remaining=None):
 
     # The panel server re-runs a page when it changes, so rewriting the page
     # is all it takes to run the panel again.
-    last = file_signature(path)
+    last = first[0]
     try:
         while True:
             time.sleep(POLL_INTERVAL)
