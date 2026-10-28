@@ -414,7 +414,7 @@ Packages installed on your machine may differ from those on Comet's panel
 server, so a panel that imports something you have locally can still fail on
 comet.com; `%pip install` at the top of the panel covers both.
 
-For more information, `cometx panel-studio --help`
+For the full guide, see [PANEL-STUDIO.md](PANEL-STUDIO.md), or `cometx panel-studio --help`.
 
 ## cometx rename-duplicates
 
