@@ -29,12 +29,14 @@ dashboards) or ``build_experiment_view()`` (per-experiment views).
     )
     API().create_view(workspace, project_name, view)
 
-The Comet SDK exposes four functions for working with saved dashboard views:
+The Comet SDK exposes these functions for working with saved dashboard views:
 
     API.get_views(workspace, project_name)      -> list[View]
     API.create_view(workspace, project_name, v) -> View     (project-level)
+    API.update_view(workspace, project_name, v) -> View     (in place)
     APIExperiment.get_views()                   -> list[View]
     APIExperiment.create_view(view)             -> View     (experiment-level)
+    APIExperiment.update_view(view)             -> View     (in place)
 
 A ``View`` is mostly a carrier for the dashboard's serialized layout state, and
 the interesting content lives in ``view.v3`` -- a dict of *sections*, each
@@ -67,12 +69,16 @@ Experiment-level views (the chart-template scope, written by
 ``view.v2["panels"]`` and the display settings sit at the top of ``v2``, with
 ``v3`` unused. ``build_view`` targets the project scope and
 ``build_experiment_view`` the experiment scope; sections and panels are
-identical between the two.
+identical between the two. ``create_view`` and ``update_view`` raise
+``ValueError`` when given the other scope's envelope, which the backend would
+otherwise save but render with no panels.
 
 Nothing here calls the network; ``build_view`` returns a plain ``View`` that you
-pass to ``API.create_view`` or ``APIExperiment.create_view``.
+pass to ``API.create_view``, and ``build_experiment_view`` one for
+``APIExperiment.create_view``.
 """
 
+import hashlib
 import json
 import random
 import string
@@ -94,6 +100,7 @@ __all__ = [
     "data_panel",
     "custom_panel",
     "python_panel",
+    "javascript_panel",
     "legend_key",
     "global_config",
     "table_state",
@@ -136,6 +143,86 @@ def legend_key(
 DEFAULT_LEGEND = [legend_key("Name")]
 
 
+def _legend(legend: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """The given legend, or a fresh copy of DEFAULT_LEGEND when it is None."""
+    if legend is None:
+        return [dict(entry) for entry in DEFAULT_LEGEND]
+    return legend
+
+
+# ---------------------------------------------------------------------------
+# Option values. Each maps the names these factories document to the value the
+# UI stores; the UI's own values are accepted too. Anything else would be saved
+# as-is and silently ignored by the UI, so it raises instead.
+# ---------------------------------------------------------------------------
+
+_TRANSFORMS = {
+    "log": "log scale",
+    "log scale": "log scale",
+    "ln": "log(value)",
+    "log(value)": "log(value)",
+    "log10": "log(10)",
+    "log(10)": "log(10)",
+    "moving average": "moving average",
+}
+
+_OUTLIERS = {"show": "show", "hide": "ignore", "ignore": "ignore"}
+
+_AGGREGATIONS = {
+    "average": "avg",
+    "mean": "avg",
+    **{
+        name: name
+        for name in (
+            "count",
+            "sum",
+            "avg",
+            "median",
+            "mode",
+            "rms",
+            "stddev",
+            "min",
+            "max",
+            "first",
+            "last",
+        )
+    },
+}
+
+_PLOT_TYPES = {
+    "BAR": "BAR",
+    "STACKED_BAR": "STACKED_BAR",
+    "BOX": "BOX_PLOT",
+    "BOX_PLOT": "BOX_PLOT",
+    "VIOLIN": "VIOLIN_PLOT",
+    "VIOLIN_PLOT": "VIOLIN_PLOT",
+}
+
+_GROUP_AGGREGATIONS = ("mean", "median", "min", "max")
+
+
+def _option(kind: str, value: Any, options: Dict[str, str]) -> str:
+    key = value.upper() if options is _PLOT_TYPES else value
+    if key not in options:
+        raise ValueError(
+            "%s must be one of %s, not %r"
+            % (kind, ", ".join(sorted(set(options))), value)
+        )
+    return options[key]
+
+
+def _transform(value: Optional[str]) -> Optional[str]:
+    return None if value is None else _option("transform_y", value, _TRANSFORMS)
+
+
+def _outliers(value: str) -> str:
+    return _option("outliers", value, _OUTLIERS)
+
+
+def _aggregation(value: str) -> str:
+    return _option("aggregation", value, _AGGREGATIONS)
+
+
 # ---------------------------------------------------------------------------
 # Panel factories. Each returns a v3 panel dict with a fresh chartId.
 # ---------------------------------------------------------------------------
@@ -157,23 +244,29 @@ def line_panel(
     Args:
         y: metric name, or a list of metric names to overlay in one chart.
         x: "step", "duration", "epoch", "wall", or any logged metric name.
-        transform_y: None, "log", "ln", "sqrt" -- y-axis transform.
+        transform_y: None, "log" (a log-scale y-axis), "ln" (plot ln of each
+            value), "log10" (plot log10 of each value), or "moving average".
         smoothing: 0..1 exponential smoothing factor.
         outliers: "show" or "hide".
         sample_size: max points fetched per curve.
         locked: True pins this panel's config against dashboard-level changes.
+            On a dashboard built with ``global_config``, x, smoothing,
+            transform_y, outliers and sample_size come from that config
+            unless the panel is locked.
     """
     metric_names = [y] if isinstance(y, str) else list(y)
+    if not metric_names:
+        raise ValueError("line_panel() requires at least one metric name in y")
     return {
         "chartType": "line",
         "chartId": new_id(),
         "chartName": name,
         "selectedXAxis": x,
         "selectedYAxis": metric_names[0],
-        "selectedOutliers": outliers,
-        "selectedLegendKeys": legend or DEFAULT_LEGEND,
+        "selectedOutliers": _outliers(outliers),
+        "selectedLegendKeys": _legend(legend),
         "transformX": None,
-        "transformY": transform_y,
+        "transformY": _transform(transform_y),
         "smoothingX": 0,
         "smoothingY": smoothing,
         "metricName": "",
@@ -191,33 +284,45 @@ def bar_panel(
     plot_type: str = "BAR",
     group_by_aggregation: Optional[str] = None,
     legend: Optional[List[Dict[str, Any]]] = None,
+    group_by: Optional[str] = None,
 ) -> Dict[str, Any]:
     """A bar chart of one metric, one bar per experiment.
 
     Args:
         aggregation: how to reduce a metric's history to one number --
-            "last", "min", "max", "average", "sum".
+            "last", "first", "min", "max", "average", "median", "sum", ...
         orientation: "v" (vertical bars) or "h".
-        plot_type: "BAR", "BOX", or "VIOLIN".
-        group_by_aggregation: if set (e.g. "mean"), bars are grouped and
-            aggregated instead of one-per-experiment.
+        plot_type: "BAR", "STACKED_BAR", "BOX", or "VIOLIN".
+        group_by_aggregation: "mean", "median", "min" or "max"; with
+            ``group_by``, how each group's bar is computed.
+        group_by: a hyperparameter name; experiments sharing its value are
+            drawn as one group (one box, for a box plot).
     """
+    plot_type = _option("plot_type", plot_type, _PLOT_TYPES)
+    if group_by_aggregation is not None and group_by_aggregation not in (
+        _GROUP_AGGREGATIONS
+    ):
+        raise ValueError(
+            "group_by_aggregation must be one of %s, not %r"
+            % (", ".join(_GROUP_AGGREGATIONS), group_by_aggregation)
+        )
     return {
         "chartType": "bar",
         "chartId": new_id(),
         "chartName": name,
         "selectedXAxis": metric,
         "metricName": metric,
-        "aggregationX": aggregation,
+        "aggregationX": _aggregation(aggregation),
         "orientation": orientation,
         "plotType": plot_type,
         "grouping": {
-            "enabled": group_by_aggregation is not None,
+            "enabled": group_by is not None,
             "plotType": plot_type,
             "aggregation": group_by_aggregation or "mean",
+            "groupByParameter": group_by,
         },
         "customRange": {"x": {"min": "", "max": ""}, "y": {"min": "", "max": ""}},
-        "selectedLegendKeys": legend or DEFAULT_LEGEND,
+        "selectedLegendKeys": _legend(legend),
     }
 
 
@@ -246,11 +351,11 @@ def scatter_panel(
         "chartName": name,
         "selectedXAxis": x,
         "selectedYAxis": y,
-        "selectedOutliers": outliers,
+        "selectedOutliers": _outliers(outliers),
         "sampleSize": sample_size,
-        "selectedLegendKeys": legend or DEFAULT_LEGEND,
-        "aggregationX": aggregation,
-        "aggregationY": aggregation,
+        "selectedLegendKeys": _legend(legend),
+        "aggregationX": _aggregation(aggregation),
+        "aggregationY": _aggregation(aggregation),
         "metrics": metrics if metrics is not None else [],
         "params": params or [],
         "metricName": "",
@@ -267,7 +372,7 @@ def scatter_panel(
     }
     if z:
         panel["selectedZAxis"] = z
-        panel["aggregationZ"] = aggregation
+        panel["aggregationZ"] = _aggregation(aggregation)
     return panel
 
 
@@ -307,9 +412,12 @@ def scalar_panel(
     """A single big-number tile.
 
     Args:
-        aggregation: "last", "min", "max", "average", "sum".
-        description: subtitle. Defaults to Comet's generated wording.
+        aggregation: "last", "first", "min", "max", "average", "median",
+            "sum", ...
+        description: subtitle; "" for none. Defaults to Comet's generated
+            wording.
     """
+    aggregation = _aggregation(aggregation)
     return {
         "chartType": "scalar",
         "chartId": new_id(),
@@ -318,8 +426,11 @@ def scalar_panel(
         "paramName": "",
         "aggregation": aggregation,
         "precision": precision,
-        "description": description
-        or "The %s value of %s metric" % (aggregation, metric),
+        "description": (
+            description
+            if description is not None
+            else "The %s value of %s metric" % (aggregation, metric)
+        ),
         "isCustomDescription": description is not None,
         "isNumber": True,
         "locked": False,
@@ -383,11 +494,12 @@ def custom_panel(
     name: str = "",
     default_config: str = "",
 ) -> Dict[str, Any]:
-    """A JavaScript custom panel from the Panel gallery.
+    """An instance of a JavaScript panel saved in the Panel library.
 
     ``instance_id``/``instance_name`` identify an existing panel instance and
     cannot be invented -- copy them off a panel already on a dashboard (scan
     existing views with ``get_views()``) or from the panel's URL in the UI.
+    To write a JavaScript panel from nothing, use ``javascript_panel``.
     """
     panel = {
         "chartType": "custom",
@@ -403,15 +515,37 @@ def custom_panel(
 
 
 def python_panel(
-    template_id: str,
+    template_id: str = "",
     revision_id: str = "",
     name: str = "",
     code_version: str = "",
+    code: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """A Python panel (a saved Python panel template rendered server-side).
+    """A Python panel, rendered server-side.
 
-    Like ``custom_panel``, the ids refer to an existing saved panel template.
+    Give either ``code``, the panel's Python source, which is stored in the
+    view itself and so can be written from nothing, or the ``template_id`` and
+    ``revision_id`` of a Python panel already on a dashboard, read off it with
+    ``get_views()``.
+
+    Panels uploaded with ``API.upload_panel_code`` are Panel library panels,
+    kept in a different store, so their ids do not work here.
+
+    Args:
+        template_id: the template of an existing Python panel.
+        revision_id: the revision of that template to show.
+        name: the panel's title.
+        code_version: a tag the page uses to know the code changed. With
+            ``code``, it defaults to one derived from the code.
+        code: the panel's Python source, stored in the view.
     """
+    if code is not None and template_id:
+        raise ValueError("give a Python panel either code or a template_id, not both")
+    if code is None and not template_id:
+        raise ValueError("a Python panel needs code or a template_id")
+    if code is not None and not code_version:
+        code_version = hashlib.sha1(code.encode("utf-8")).hexdigest()[:6]
+
     return {
         "chartType": "python",
         "chartId": new_id(),
@@ -419,8 +553,85 @@ def python_panel(
         "templateId": template_id,
         "revisionId": revision_id,
         "codeVersion": code_version,
-        "code": None,
+        "code": code,
         "locked": False,
+    }
+
+
+# A JavaScript panel draws into this element unless its HTML says otherwise.
+JS_PANEL_DEFAULT_HTML = '<div id="chart-mount"></div>'
+
+_JS_RESOURCE_TYPES = ("script", "stylesheet")
+
+
+def _js_resource(resource: Union[str, Dict[str, str]]) -> Dict[str, str]:
+    if isinstance(resource, str):
+        # The same guess the UI makes for a bare URL.
+        path = resource.strip().split("?", 1)[0].split("#", 1)[0]
+        kind = "stylesheet" if path.lower().endswith(".css") else "script"
+        return {"url": resource, "type": kind}
+    url = resource.get("url")
+    kind = resource.get("type")
+    if not isinstance(url, str):
+        raise ValueError("a resource needs a 'url' string, not %r" % (resource,))
+    if kind not in _JS_RESOURCE_TYPES:
+        raise ValueError(
+            "a resource's type must be 'script' or 'stylesheet', not %r" % (kind,)
+        )
+    return {"url": url, "type": kind}
+
+
+def javascript_panel(
+    code: str,
+    html: str = JS_PANEL_DEFAULT_HTML,
+    css: str = "",
+    resources: Sequence[Union[str, Dict[str, str]]] = (),
+    name: str = "JavaScript panel",
+) -> Dict[str, Any]:
+    """A JavaScript panel whose code is stored in the view itself.
+
+    Unlike ``custom_panel``, this needs no existing panel: the code, HTML, CSS
+    and resources are all saved in the panel's config, so it can be written
+    from nothing. The code defines a ``Comet.Panel`` subclass, which must be
+    named ``MyPanel``; the panel runs nothing else:
+
+        class MyPanel extends Comet.Panel {
+          setup() { this.options = {metrics: ["loss"]}; }
+          async draw(experimentKeys, projectId) {
+            const results = await this.api.experimentMetricsForChart(
+              experimentKeys, this.options.metrics);
+            this.plot({data: [...], layout: {}});
+          }
+        }
+
+    ``this.plot({data, layout})`` hands a Plotly figure to the page, which
+    draws it like its built-in charts; only the scatter, bar, box, violin and
+    parcoords trace types are available. A panel that never calls
+    ``this.plot`` shows its own HTML instead.
+
+    Args:
+        code: the panel's JavaScript.
+        html: the panel's HTML. The default holds the element charts draw into.
+        css: the panel's stylesheet.
+        resources: extra scripts and stylesheets, loaded in order before the
+            code runs. Each is a URL, or a dict ``{"url": ..., "type": ...}``
+            with type "script" or "stylesheet". A bare URL is a stylesheet if
+            it ends in ``.css``, and a script otherwise.
+        name: the panel's title.
+    """
+    chart_id = new_id()
+    return {
+        "chartType": "javascript",
+        "chartId": chart_id,
+        "chartName": name,
+        # The JS SDK's store (this.api.store) is kept under this id.
+        "storeId": chart_id,
+        "code": {
+            "code": code,
+            "html": html,
+            "css": css,
+            "resources": [_js_resource(r) for r in resources],
+        },
     }
 
 
@@ -438,6 +649,7 @@ _LEGACY_BUCKETS = [
     "pcd",
     "curves",
     "python",
+    "javascript",
     "autoGeneratedMetrics",
     "autoGeneratedCurve",
     "autoGeneratedImage",
@@ -469,8 +681,11 @@ class Section:
         expanded: bool = True,
         height: int = 1,
     ):
-        if GRID_WIDTH % columns:
-            raise ValueError("columns must divide %d evenly" % GRID_WIDTH)
+        # bool is excluded explicitly: True == 1 would otherwise pass.
+        if isinstance(columns, bool) or columns not in (1, 2, 3, 6):
+            raise ValueError("columns must be 1, 2, 3, or 6, not %r" % (columns,))
+        if isinstance(height, bool) or height not in (1, 2, 3):
+            raise ValueError("height must be 1, 2, or 3, not %r" % (height,))
         self.title = title
         self.panels = list(panels)
         self.columns = columns
@@ -526,12 +741,15 @@ def global_config(
     outliers: str = "show",
     sample_size: int = 100,
 ) -> Dict[str, Any]:
-    """Dashboard-wide defaults applied to every non-``locked`` panel."""
+    """Dashboard-wide defaults applied to every non-``locked`` panel.
+
+    ``transform_y`` and ``outliers`` take the same values as in ``line_panel``.
+    """
     return {
         "selectedXAxis": x_axis,
-        "transformY": transform_y,
+        "transformY": _transform(transform_y),
         "smoothingY": smoothing,
-        "selectedOutliers": outliers,
+        "selectedOutliers": _outliers(outliers),
         "sampleSize": sample_size,
     }
 
@@ -663,8 +881,9 @@ def build_view(
         personal: mark the view as personal (visible only to you).
 
     Returns:
-        A ``View``. Pass it to ``API.create_view(workspace, project, view)`` or
-        ``APIExperiment.create_view(view)``.
+        A ``View`` for a project dashboard. Pass it to
+        ``API.create_view(workspace, project, view)``; for an experiment's own
+        page, build with ``build_experiment_view`` instead.
     """
     section_dicts = [s.to_dict() for s in sections]
     all_panels = [p for s in section_dicts for p in s["panels"]]
@@ -725,7 +944,7 @@ def build_experiment_view(
         sections: ``Section`` objects -- the same ones ``build_view`` takes.
         x_axis: "step", "duration", "wall", or "epoch".
         smoothing: 0..1 curve smoothing applied to every chart.
-        transform_y: None, "log", "ln", "sqrt".
+        transform_y: the same values as in ``line_panel``.
         sample_size: max points fetched per curve.
         auto_generate: let Comet append auto panels for new metrics.
         auto_refresh: refresh the view while the run is live.
@@ -741,7 +960,7 @@ def build_experiment_view(
         "template_name": name,
         "x_axis": x_axis,
         "smoothing": smoothing,
-        "transformY": transform_y,
+        "transformY": _transform(transform_y),
         "sampleSize": sample_size,
         "entire_row_charts": False,
         "charts": [],  # legacy per-experiment chart list; sections supersede it

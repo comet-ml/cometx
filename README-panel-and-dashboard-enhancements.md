@@ -224,17 +224,24 @@ view object per target rather than reusing one across projects or experiments.
 | `scalar_panel(metric, aggregation="last", precision=3, ...)` | Single big-number tile |
 | `image_panel(images=(), step=None, ...)` | Image grid across experiments |
 | `data_panel(file_name, axis=0, join_type="outer", ...)` | Table from a logged tabular asset |
-| `custom_panel(instance_id, instance_name="", ...)` | An instance of a JavaScript panel |
-| `python_panel(template_id, revision_id="", ...)` | An instance of a Python panel |
+| `bar_panel(..., group_by=None)` | With `group_by`, one bar (or box) per value of a hyperparameter |
+| `python_panel(code=..., name=...)` | A Python panel whose code is stored in the view |
+| `javascript_panel(code, html=..., css="", resources=(), name=...)` | A JavaScript panel whose code is stored in the view (its class must be named `MyPanel`) |
+| `custom_panel(instance_id, instance_name="", ...)` | A Panel library panel already placed on a dashboard in the UI |
+| `python_panel(template_id, revision_id="", ...)` | A Python panel added in the UI |
 
 Axis and legend helpers: `legend_key(value, label=None, source="log_other")` builds one
 entry of a chart's legend, so a chart can be colored by experiment name, tags, or a
 hyperparameter.
 
-> **Note:** Built-in panels can be written from nothing. `custom_panel` and
-> `python_panel` reference a panel instance that already exists, so their ids cannot
-> be invented — read them off a panel already on a dashboard via `get_views()`, or
-> from the panel's URL in the UI.
+> **Note:** Built-in panels, `python_panel(code=...)` and `javascript_panel` can be
+> written from nothing. `custom_panel` and `python_panel(template_id, ...)` reference
+> a panel that already exists, so their ids cannot be invented — read them off a
+> panel already on a dashboard via `get_views()`, or from the panel's URL in the UI.
+> Panels uploaded with `upload_panel_code` are Panel library panels: an API key can
+> upload them but not place them on a dashboard, so to show one's code on a
+> dashboard, use `python_panel(code=api.get_panel_code(template_id))`. To write and
+> test a Python panel locally first, see `cometx panel-studio`.
 
 ---
 

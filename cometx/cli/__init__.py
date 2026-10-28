@@ -27,6 +27,7 @@ Examples:
     cometx update
     cometx admin
     cometx migrate-users
+    cometx panel-studio
 
 For more information:
     cometx COMMAND --help
@@ -49,6 +50,7 @@ from . import (
     list_command,
     log,
     migrate_users,
+    panel_studio,
     rename_duplicates,
     reproduce,
     smoke_test,
@@ -111,6 +113,7 @@ def main(raw_args=sys.argv[1:]):
     add_subparser(subparsers, rename_duplicates, "rename-duplicates")
     add_subparser(subparsers, smoke_test, "smoke-test")
     add_subparser(subparsers, migrate_users, "migrate-users")
+    add_subparser(subparsers, panel_studio, "panel-studio")
     add_subparser(
         subparsers, upload_optimizer_experiments, "upload-optimizer-experiments"
     )

@@ -77,6 +77,7 @@ setup_args = dict(
         "cometx.framework.comet",
         "cometx",
     ],
+    package_data={"cometx.cli": ["assets/*.png"]},
     entry_points={"console_scripts": ["cometx = cometx.cli:main"]},
     python_requires=">=3.6",
     license="MIT License",

@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 import requests
 from comet_ml import API
+from comet_ml.api_objects.view import View
 
 from .panel_utils import create_panel_zip
 
@@ -353,6 +354,37 @@ class API(API):
             payload=body,
         )
         return results.json()
+
+    def update_view(self, workspace: str, project_name: str, view: View) -> Any:
+        """
+        Overwrite an existing project-level view in place.
+
+        Unlike `create_view`, this keeps the view's `template_id`, so the saved
+        view is replaced rather than a new one added. Uses comet_ml's own
+        `update_view` where the installed version has it.
+
+        Args:
+            workspace (str): the workspace name
+            project_name (str): the project name
+            view (View): a View with `template_id` set, typically one returned
+                by `get_views()` and then modified
+
+        Returns: the updated View, or None on failure
+        """
+        base_update = getattr(super(), "update_view", None)
+        if base_update is not None:
+            return base_update(workspace, project_name, view)
+
+        if not view.template_id:
+            raise ValueError(
+                "update_view requires a view with template_id set; "
+                "use create_view to add a new view"
+            )
+        project = self.get_project(workspace, project_name)
+        if not project:
+            raise ValueError("unknown project %s/%s" % (workspace, project_name))
+        result = self._client.upsert_view(project["projectId"], view)
+        return View.from_payload_dict(result) if result else None
 
     def log_pr_curves(
         self, experiment, y_true, y_predicted, labels=None, overwrite=False, step=None
