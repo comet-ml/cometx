@@ -31,6 +31,7 @@ COMET_URL_OVERRIDE, ~/.comet.config), or --api-key / --url-override.
 import argparse
 import atexit
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -144,6 +145,8 @@ def panel_studio(parsed_args, remaining=None):
 
     # Private to this user: panel pages hold the API key, as on Comet's server.
     work_dir = tempfile.mkdtemp(prefix="cometx-panel-studio-")
+    # Removed on exit, after the panel server stops (atexit runs in reverse).
+    atexit.register(shutil.rmtree, work_dir, ignore_errors=True)
     _, pages_dir = start_panel_server(work_dir, parsed_args.panel_port)
 
     os.environ["COMETX_PANEL_STUDIO_PAGES"] = pages_dir

@@ -19,7 +19,8 @@ dashboard or to your workspace's Panel library.
 
 ## Starting the studio
 
-Install or upgrade cometx, which brings Streamlit with it:
+Install or upgrade cometx, which brings Streamlit (1.41 or later) and Plotly with
+it:
 
 ```bash
 pip install -U cometx
@@ -231,7 +232,8 @@ installed locally but not on Comet's panel server; add `%pip install` for it.
   script.
 * As on Comet's panel server, each panel page holds the API key in plain text. The
   studio writes those pages to a private temporary folder (readable only by you)
-  named `cometx-panel-studio-*` in your system's temp directory. It is not deleted
-  when the studio stops; delete it if you share the machine.
+  named `cometx-panel-studio-*` in your system's temp directory, and deletes it
+  when the studio stops. If the studio is killed rather than stopped with Ctrl-C,
+  the folder can be left behind; delete it if you share the machine.
 * Panel code runs on your machine with your permissions, so only run panel code you
   trust.

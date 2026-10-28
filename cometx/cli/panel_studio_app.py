@@ -410,7 +410,8 @@ def upload_dialog(context):
             "Panel library in Comet."
         )
 
-    if not st.button("Upload", type="primary", disabled=not name):
+    ready = bool(name.strip()) and (where != "dashboard" or bool(dashboard.strip()))
+    if not st.button("Upload", type="primary", disabled=not ready):
         return
     try:
         if where == "dashboard":

@@ -14,7 +14,8 @@
 #
 # Vendored into cometx from comet-ml/code-panels
 #   python-panel-engine/comet-pip-utils/comet_pip_utils/pip_utils.py
-#   at commit b57eab54, unchanged below this header.
+#   at commit b57eab54. One change, marked "cometx:": --trusted-host takes a
+#   value, so it is no longer treated as a flag without one.
 # Used by the `%pip install` magic in `cometx panel-studio`.
 # flake8: noqa -- kept as vendored.
 import io
@@ -241,7 +242,8 @@ def process_args(args: str) -> Tuple[List[str], bool, List[str]]:
         "--user",
         "--no-index",
         "--pre",
-        "--trusted-host",
+        # cometx: "--trusted-host" removed here; it takes a value, and is in
+        # value_flags below.
         "--disable-pip-version-check",
         "--no-warn-script-location",
         "--no-warn-conflicts",

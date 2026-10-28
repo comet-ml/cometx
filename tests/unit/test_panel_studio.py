@@ -5,6 +5,7 @@ from unittest import mock
 import pytest
 
 from cometx.panel_engine import process_magic_commands
+from cometx.panel_pip_utils import process_args
 from cometx.panel_studio import (
     STUDIO_SECTION,
     clientlib_url,
@@ -240,3 +241,18 @@ def test_default_selection__more_than_a_page__first_25():
 
     assert default_selection(keys) == keys[:25]
     assert default_selection(keys[:3]) == keys[:3]
+
+
+def test_process_args__trusted_host__value_kept_with_flag():
+    packages, debug, flags = process_args(
+        "--trusted-host host.example --index-url http://host.example/simple mypkg"
+    )
+
+    assert packages == ["mypkg"]
+    assert flags == [
+        "--trusted-host",
+        "host.example",
+        "--index-url",
+        "http://host.example/simple",
+    ]
+    assert debug is False

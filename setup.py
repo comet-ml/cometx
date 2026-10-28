@@ -54,7 +54,10 @@ setup_args = dict(
         "requests",
         "tqdm",
         "matplotlib",
-        "streamlit",
+        # panel-studio: st.dialog, st.context and tertiary buttons (1.41)
+        "streamlit>=1.41.0",
+        # panel-studio: Comet's default Python panel template uses Plotly
+        "plotly",
         "boto3",
     ],
     extras_require={
