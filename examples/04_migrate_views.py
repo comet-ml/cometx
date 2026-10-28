@@ -169,7 +169,17 @@ def main():
                 if view.name in present:
                     print("  [SKIPPED] %r already exists" % view.name)
                     continue
-                created = destination.create_experiment_view(target, view)
+                try:
+                    created = destination.create_experiment_view(target, view)
+                except ValueError as error:
+                    if "already exists" not in str(error):
+                        raise
+                    # Both names are taken elsewhere; leave this view and go on.
+                    print(
+                        "  [SKIPPED] %r and %r are both taken in other projects"
+                        % (name, view.name)
+                    )
+                    continue
             print(
                 "  [%s] %r%s"
                 % (
