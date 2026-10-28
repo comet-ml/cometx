@@ -5,12 +5,18 @@ your own machine. You write the panel's code, run it against your real experimen
 and see it exactly as a Comet dashboard would show it. When it works, upload it to a
 dashboard or to your workspace's Panel library.
 
+Prefer your own editor, such as VS Code or vim? The studio can follow a file you
+edit elsewhere, and three more commands cover that way of working without the
+studio: `cometx panel-preview`, `cometx panel-upload` and `cometx panel-download`.
+See [Using your own editor](#using-your-own-editor).
+
 * [Starting the studio](#starting-the-studio)
 * [The studio at a glance](#the-studio-at-a-glance)
 * [Choosing what the panel sees](#choosing-what-the-panel-sees)
 * [Editing and files](#editing-and-files)
 * [Running a panel](#running-a-panel)
 * [Uploading a panel](#uploading-a-panel)
+* [Using your own editor](#using-your-own-editor)
 * [Writing panels](#writing-panels)
 * [How it matches comet.com](#how-it-matches-cometcom)
 * [Command-line options](#command-line-options)
@@ -93,6 +99,8 @@ key and project.
   stays empty until you save.
 * **Save** writes the editor's code to that file, creating it if needed.
 * **Load** reads the file again, for example after editing it elsewhere.
+* **Follow file** reloads the file and runs the panel each time it's saved; see
+  [Following a file](#following-a-file).
 
 Keeping panels in files means they can live in version control next to your
 training code.
@@ -124,6 +132,93 @@ Press **Upload...** and choose where it goes:
   dashboard from the API.
 
 The **Panel name** starts as the file's name.
+
+## Using your own editor
+
+### Following a file
+
+Open the file in the studio (with `FILE`, **Browse...**, or the **File** box) and
+turn on **Follow file**. Each time you save the file in your own editor, the studio
+loads the new code and runs the panel again, within about a second. While
+following, the code in the studio is read-only and **Save** is off, so the studio
+never overwrites what you wrote; turn **Follow file** off to edit in the studio
+again. Experiments, the project and **Upload...** work as usual.
+
+### Previewing without the studio: `cometx panel-preview`
+
+For the lightest loop, `panel-preview` shows just the panel, in your browser, and
+runs it again each time you save the file:
+
+```bash
+cometx panel-preview loss_curves.py --project my-project
+```
+
+It prints the panel's address (and opens it) and keeps running until Ctrl-C. Keep
+that browser tab, or VS Code's Simple Browser, beside your editor.
+
+| Option | Meaning |
+|---|---|
+| `FILE` | The panel file. |
+| `--project` | The project to run the panel in. Required. |
+| `--workspace` | Defaults to your configured workspace, then your account's default. |
+| `--experiments` | Which experiments the panel sees: a number (the first N, like a dashboard; default 25), `all`, or names, keys or key prefixes separated by commas. |
+| `--sort` | `updated` (default) or `name`: the order used before taking the first N. |
+| `--port` | The panel's port. Default 8502; the next free port if taken. |
+| `--no-browser` | Don't open the panel in a browser. |
+| `--api-key`, `--url-override` | As for `panel-studio`. |
+
+### Uploading from the command line: `cometx panel-upload`
+
+```bash
+# To a dashboard (created if needed); the panel is named after the file
+cometx panel-upload loss_curves.py --project my-project --dashboard "Training"
+
+# With another name
+cometx panel-upload loss_curves.py --project my-project --dashboard "Training" \
+    --name "Loss curves"
+
+# To the workspace's Panel library
+cometx panel-upload loss_curves.py --library
+```
+
+It follows the same rules as the studio's **Upload...**: on a dashboard, a Python
+panel with the same name is replaced, otherwise the panel goes in the **Panel
+Studio** section; in the library, a panel with the same name is replaced. It prints
+the dashboard's address. `--workspace`, `--api-key` and `--url-override` work as
+above. Because it's a plain command, it also fits in scripts and CI, for example to
+publish a repository's panels to a team dashboard.
+
+### Downloading a panel: `cometx panel-download`
+
+To edit a panel that's already on a dashboard or in the library:
+
+```bash
+cometx panel-download --project my-project --dashboard "Training" -o loss_curves.py
+cometx panel-download --project my-project --dashboard "Training" \
+    --name "Loss curves" -o loss_curves.py
+cometx panel-download --library --name "Loss curves" -o loss_curves.py
+```
+
+On a dashboard, `--name` can be left out when it has a single Python panel; with
+several, the command lists their names. Without `-o` the code is printed. An
+existing `-o` file is only overwritten with `--force`. Python panels added through
+Comet's own editor keep their code where only the Comet UI can read it; copy their
+code from the panel's editor in Comet instead.
+
+### A typical round trip
+
+```bash
+cometx panel-download --project my-project --dashboard "Training" \
+    --name "Loss curves" -o loss_curves.py
+cometx panel-preview loss_curves.py --project my-project    # edit, save, look
+cometx panel-upload loss_curves.py --project my-project --dashboard "Training" \
+    --name "Loss curves"
+```
+
+**VS Code:** run `panel-preview` in the integrated terminal and open its address
+with **Simple Browser: Show** from the command palette. **vim:** `:!cometx
+panel-upload % --project my-project --dashboard "Training"` uploads the file you're
+editing.
 
 ## Writing panels
 

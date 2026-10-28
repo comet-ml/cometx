@@ -29,10 +29,13 @@ from cometx.panel_studio import (
     dashboard_url,
     default_selection,
     display_path,
+    file_mtime,
+    file_signature,
     list_directory,
     new_page_name,
     panel_config,
     project_url,
+    read_settled,
     server_root,
     sort_entries,
     upload_to_dashboard,
@@ -92,6 +95,9 @@ NEW_DASHBOARD = "New dashboard"
 
 PAGES_DIR = os.environ["COMETX_PANEL_STUDIO_PAGES"]
 PANEL_PORT = os.environ["COMETX_PANEL_STUDIO_PANEL_PORT"]
+
+# How often, in seconds, a followed file is checked for changes.
+FOLLOW_INTERVAL = 1.0
 
 # The panel fills the editor's right-hand column, at this height.
 PANEL_HEIGHT = 720
@@ -475,9 +481,40 @@ def title_with_logo():
     )
 
 
+def follow_changed():
+    # Load and run the file as soon as following starts.
+    st.session_state.followed_signature = None
+
+
+@st.fragment(run_every=FOLLOW_INTERVAL)
+def watch_followed_file():
+    """While following, check the file for changes; on a change, rerun the app
+    with the new code so the editor shows it and the panel runs it."""
+    path = st.session_state.file_path
+    signature = file_signature(path)
+    if signature is None or signature == st.session_state.get("followed_signature"):
+        return
+    settled = read_settled(path)
+    if settled is None:  # still being written; look again next time
+        return
+    st.session_state.followed_signature, st.session_state.followed_code = settled
+    st.rerun()
+
+
+def take_followed_code():
+    """Put code read from a followed file in the editor, before the editor is
+    drawn. True when there was new code, which should then run."""
+    code = st.session_state.pop("followed_code", None)
+    if code is None:
+        return False
+    st.session_state.code = code
+    return True
+
+
 def main():
     init_state()
     apply_opened_file()
+    followed = take_followed_code()
     context = sidebar()
 
     title_with_logo()
@@ -490,7 +527,8 @@ def main():
             placeholder="Type a path, or Browse",
             on_change=file_chosen,
         )
-        browse_col, load_col, save_col = button_row(3)
+        following = bool(st.session_state.get("follow"))
+        browse_col, load_col, save_col, follow_col = button_row(4)
         if browse_col.button("Browse...", on_click=open_browser):
             browse_dialog()
         load_col.button(
@@ -501,20 +539,39 @@ def main():
         save_col.button(
             "Save",
             on_click=save_file,
-            disabled=not st.session_state.file_path,
+            # While following, the file is edited elsewhere; don't overwrite it.
+            disabled=not st.session_state.file_path or following,
         )
+        follow_col.toggle(
+            "Follow file",
+            key="follow",
+            on_change=follow_changed,
+            disabled=file_mtime(st.session_state.file_path) is None,
+            help=(
+                "Edit the file in your own editor: each time it's saved, the "
+                "code here is reloaded and the panel runs again."
+            ),
+        )
+        if following:
+            watch_followed_file()
         message = st.session_state.pop("file_message", None)
         if message:
             getattr(st, message[0])(message[1])
 
-        st.text_area("Code", key="code", height=380, label_visibility="collapsed")
+        st.text_area(
+            "Code",
+            key="code",
+            height=380,
+            label_visibility="collapsed",
+            disabled=following,
+        )
 
         run_col, upload_col = button_row(2)
         run = run_col.button("Run", type="primary", disabled=context is None)
         if upload_col.button("Upload...", disabled=context is None):
             upload_dialog(context)
 
-    if run and context is not None:
+    if (run or followed) and context is not None:
         cfg = panel_config(
             context["url_override"],
             context["api_key"],
