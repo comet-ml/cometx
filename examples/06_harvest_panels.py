@@ -1,19 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-06 - Reuse custom and Python panels found on existing dashboards.
+06 - Reuse code panels found on existing dashboards.
 
-Built-in panels (line, bar, scatter, ...) can be written from nothing. Custom
-JavaScript panels and Python panels cannot: they reference a panel instance that
-already exists in the Panel gallery, identified by an ``instanceId`` (custom) or
-``templateId``/``revisionId`` (Python). Those ids are not invented -- they are
-harvested from a dashboard that already uses the panel.
+Code panels come in four kinds, and all four can be copied from one dashboard to
+another by reading the panel off a view and rebuilding it:
 
-So this script scans views with API.get_views() and Experiment.get_views(),
-collects every custom/Python panel it finds, and can rebuild them into a new
-"Panel gallery" view -- the pattern for "take that neat panel someone built and
-put it on my dashboards too".
+  * a JavaScript panel (``javascript_panel``), code kept in the view,
+  * a Python panel with its code kept in the view (``python_panel(code=...)``),
+  * a Python panel added in the UI, which points at a template by
+    ``templateId``/``revisionId``,
+  * a Panel library panel placed in the UI, which points at a panel instance by
+    ``instanceId`` (``custom_panel``).
 
-    # list every custom/Python panel visible in a workspace
+The last two can't be created with an API key -- only reused, which is why this
+script harvests them. It scans views with API.get_views(), collects every code
+panel it finds, and can rebuild them into a "Panel Gallery" view: the pattern for
+"take that neat panel someone built and put it on my dashboards too". Rerunning
+with --apply updates the gallery in place.
+
+    # list every code panel visible in a workspace
     python 06_harvest_panels.py --workspace WS
 
     # rebuild the harvested panels into one view in a target project
@@ -25,12 +30,20 @@ put it on my dashboards too".
 """
 
 import argparse
+import hashlib
 import json
 
 import comet_ml
 
-from cometx.utils import resolve_workspace
-from cometx.views import Section, build_view, custom_panel, describe_view, python_panel
+from cometx import API
+from cometx.views import (
+    Section,
+    build_view,
+    custom_panel,
+    describe_view,
+    javascript_panel,
+    python_panel,
+)
 
 
 def iter_panels(view):
@@ -50,6 +63,48 @@ def iter_panels(view):
                     yield panel
 
 
+def _digest(value):
+    return hashlib.sha1(json.dumps(value, sort_keys=True).encode()).hexdigest()[:10]
+
+
+def panel_key(panel):
+    """A key that identifies a code panel, or None for any other panel."""
+    kind = panel.get("chartType")
+    if kind == "custom" and panel.get("instanceId"):
+        return ("custom", panel["instanceId"])
+    if kind == "python" and panel.get("code"):
+        return ("python", _digest(panel["code"]))
+    if kind == "python" and panel.get("templateId"):
+        return ("python", panel["templateId"])
+    if kind == "javascript" and isinstance(panel.get("code"), dict):
+        return ("javascript", _digest(panel["code"]))
+    return None
+
+
+def rebuild(kind, identifier, panel):
+    """A fresh copy of a harvested panel, with a new chartId."""
+    name = panel.get("chartName", "")
+    if kind == "custom":
+        return custom_panel(
+            identifier,
+            instance_name=panel.get("instanceName", ""),
+            name=name,
+            default_config=panel.get("defaultConfig", ""),
+        )
+    if kind == "javascript":
+        code = panel["code"]
+        return javascript_panel(
+            code.get("code", ""),
+            html=code.get("html", ""),
+            css=code.get("css", ""),
+            resources=code.get("resources", []),
+            name=name or "JavaScript panel",
+        )
+    if panel.get("code"):
+        return python_panel(code=panel["code"], name=name)
+    return python_panel(identifier, revision_id=panel.get("revisionId", ""), name=name)
+
+
 def harvest(api, workspace, projects):
     """Return {key: panel} for every distinct custom/Python panel found."""
     found = {}
@@ -61,12 +116,8 @@ def harvest(api, workspace, projects):
             continue
         for view in views:
             for panel in iter_panels(view):
-                kind = panel.get("chartType")
-                if kind == "custom" and panel.get("instanceId"):
-                    key = ("custom", panel["instanceId"])
-                elif kind == "python" and panel.get("templateId"):
-                    key = ("python", panel["templateId"])
-                else:
+                key = panel_key(panel)
+                if key is None:
                     continue
                 if key not in found:
                     found[key] = (panel, project, view.name)
@@ -87,26 +138,25 @@ def main():
     args = parser.parse_args()
 
     comet_ml.login()
-    workspace = resolve_workspace(args.workspace)
-    api = comet_ml.API()
+    api = API()
+    workspace = args.workspace or api.get_default_workspace()
 
-    projects = args.projects or api.get_projects(workspace)[: args.limit]
+    projects = (args.projects or api.get_projects(workspace))[: args.limit]
     print(
-        "Scanning %d project(s) in %s for custom/Python panels...\n"
-        % (len(projects), workspace)
+        "Scanning %d project(s) in %s for code panels...\n" % (len(projects), workspace)
     )
     found = harvest(api, workspace, projects)
 
     if not found:
         print(
-            "No custom or Python panels found. Add one from the Panel gallery in the "
-            "UI, then re-run -- its ids become reusable from the SDK."
+            "No code panels found. Run 07_code_panels.py, or add a panel in the "
+            "UI, then re-run."
         )
         return
 
     for (kind, identifier), (panel, project, view_name) in sorted(found.items()):
         label = panel.get("instanceName") or panel.get("chartName") or "(unnamed)"
-        print("  %-7s %-40s %s" % (kind, label, identifier))
+        print("  %-10s %-40s %s" % (kind, label, identifier))
         print("          found in %s / view %r" % (project, view_name))
 
     if not args.into:
@@ -115,22 +165,7 @@ def main():
 
     section = Section("Harvested panels", columns=2, height=2)
     for (kind, identifier), (panel, _, _) in sorted(found.items()):
-        if kind == "custom":
-            section.add(
-                custom_panel(
-                    identifier,
-                    instance_name=panel.get("instanceName", ""),
-                    default_config=panel.get("defaultConfig", ""),
-                )
-            )
-        else:
-            section.add(
-                python_panel(
-                    identifier,
-                    revision_id=panel.get("revisionId", ""),
-                    name=panel.get("chartName", ""),
-                )
-            )
+        section.add(rebuild(kind, identifier, panel))
 
     view = build_view(args.name, sections=[section])
     print("\nComposed:")
@@ -141,11 +176,34 @@ def main():
         return
 
     target_workspace = args.into_workspace or workspace
-    created = api.create_view(target_workspace, args.into, view)
+    existing = [
+        v for v in api.get_views(target_workspace, args.into) if v.name == args.name
+    ]
+    if existing:
+        view.template_id = existing[0].template_id
+        created = api.update_view(target_workspace, args.into, view)
+    else:
+        created = api.create_view(target_workspace, args.into, view)
     print(
-        "\n[%s] %r in %s/%s"
-        % ("OK" if created else "FAILED", args.name, target_workspace, args.into)
+        "\n[%s] %s %r in %s/%s"
+        % (
+            "OK" if created else "FAILED",
+            "updated" if existing else "created",
+            args.name,
+            target_workspace,
+            args.into,
+        )
     )
+    if created:
+        print(
+            "Open: %s/%s/%s/view/%s/panels"
+            % (
+                api.server_url.rstrip("/"),
+                target_workspace,
+                args.into,
+                created.template_id,
+            )
+        )
     if created and target_workspace != workspace:
         print(
             "Note: a panel instance belongs to its own workspace. Copying one "

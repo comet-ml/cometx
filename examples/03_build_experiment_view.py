@@ -11,10 +11,12 @@ the difference.
 ``APIExperiment.create_view()`` stamps the experiment key on for you, so you
 never set ``experiment_key`` yourself.
 
-The payoff is in --all: one layout, applied to every run in the project.
+One experiment view serves every run in its project: create it from any run,
+and it shows up in the view selector on all of them. Rerunning updates it in
+place. Experiment view names must be unique across all your projects, so a name
+already used in another project is refused; pass --name to pick another.
 
     python 03_build_experiment_view.py --workspace WS [--project view-api-demo]
-    python 03_build_experiment_view.py --workspace WS --all
     python 03_build_experiment_view.py --dry-run
 """
 
@@ -23,7 +25,7 @@ import json
 
 import comet_ml
 
-from cometx.utils import get_first_experiment, resolve_workspace
+from cometx import API
 from cometx.views import (
     Section,
     build_experiment_view,
@@ -60,7 +62,8 @@ def build(name):
             line_panel(["accuracy", "val_accuracy"], name="Accuracy", smoothing=0.5),
             # Overfitting check, held at its own settings by locked=True.
             line_panel("val_loss", name="Validation loss (unsmoothed)", locked=True),
-            line_panel("loss", name="Loss, log scale", transform_y="log"),
+            # Locked too, or the page-wide transform setting resets transform_y.
+            line_panel("loss", name="Loss, log scale", transform_y="log", locked=True),
         ],
     )
 
@@ -88,10 +91,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace")
     parser.add_argument("--project", default="view-api-demo")
-    parser.add_argument("--name", default="Single-run Deep Dive")
-    parser.add_argument(
-        "--all", action="store_true", help="apply to every experiment in the project"
-    )
+    parser.add_argument("--name", default="SDK Run Layout")
     parser.add_argument(
         "--dry-run", action="store_true", help="print the view instead of creating it"
     )
@@ -105,35 +105,43 @@ def main():
         return
 
     comet_ml.login()
-    workspace = resolve_workspace(args.workspace)
-    api = comet_ml.API()
+    api = API()
+    workspace = args.workspace or api.get_default_workspace()
 
-    if args.all:
-        targets = api.get_experiments(workspace, args.project)
-        if not targets:
-            raise SystemExit("No experiments in %s/%s." % (workspace, args.project))
-    else:
-        experiment = get_first_experiment(api, workspace, args.project)
-        if experiment is None:
-            raise SystemExit(
-                "No experiments in %s/%s -- run 00_seed_demo_project.py first."
-                % (workspace, args.project)
-            )
-        targets = [experiment]
-
-    print("Applying %r to %d experiment(s)" % (args.name, len(targets)))
-    for experiment in targets:
-        # Build a fresh view per experiment so panel ids stay unique.
-        created = experiment.create_view(build(args.name))
-        print(
-            "  [%s] %s  %s"
-            % ("OK" if created else "FAILED", experiment.id, experiment.name or "")
+    experiments = api.get_experiments(workspace, args.project)
+    if not experiments:
+        raise SystemExit(
+            "No experiments in %s/%s -- run 00_seed_demo_project.py first."
+            % (workspace, args.project)
         )
+    experiment = experiments[0]
 
-    print("\nReading back with Experiment.get_views():")
-    for view in targets[0].get_views():
-        print(describe_view(view, indent="  "))
-    print("\nOpen an experiment's page and pick the view from its selector.")
+    view = build(args.name)
+    existing = [v for v in experiment.get_views() if v.name == args.name]
+    if existing:
+        view.template_id = existing[0].template_id
+        saved = api.update_experiment_view(experiment, view)
+    else:
+        try:
+            saved = api.create_experiment_view(experiment, view)
+        except ValueError as error:
+            raise SystemExit(str(error))
+    if not saved:
+        raise SystemExit("The backend rejected the view.")
+
+    print("%s %r" % ("Updated" if existing else "Created", saved.name))
+    print(describe_view(saved, indent="  "))
+    print(
+        "\nOpen: %s/%s/%s/%s?experiment-tab=panels&viewId=%s"
+        % (
+            api.server_url.rstrip("/"),
+            workspace,
+            args.project,
+            experiment.id,
+            saved.template_id,
+        )
+    )
+    print("Every run in %s shows it in its view selector." % args.project)
 
 
 if __name__ == "__main__":

@@ -3,8 +3,10 @@
 02 - Build a project dashboard from scratch with API.create_view().
 
 This is the widest demonstration: one script that creates a multi-section
-dashboard containing every panel type the SDK can express, plus a saved filter,
-a configured experiment table, and dashboard-wide axis/smoothing settings.
+dashboard containing every built-in panel type the SDK can express, plus a saved
+filter, a configured experiment table, and dashboard-wide axis/smoothing
+settings. Rerunning replaces the dashboard with API.update_view() instead of
+adding another (a project can't have two views with the same name).
 
     python 02_build_project_dashboard.py --workspace WS [--project view-api-demo]
     python 02_build_project_dashboard.py --workspace WS --dry-run   # print JSON
@@ -17,7 +19,7 @@ import json
 
 import comet_ml
 
-from cometx.utils import get_project_url, resolve_workspace
+from cometx import API
 from cometx.views import (
     Section,
     all_of,
@@ -80,6 +82,8 @@ def build(name):
                 name="Loss (log scale), colored by optimizer",
                 transform_y="log",
                 legend=[legend_key("Name"), legend_key("optimizer", source="params")],
+                # locked, or the dashboard-wide config below resets transform_y.
+                locked=True,
             ),
             # x-axis other than step; locked so the dashboard-wide x-axis
             # setting below does not override it.
@@ -100,7 +104,7 @@ def build(name):
                 name="Validation accuracy spread by optimizer",
                 aggregation="last",
                 plot_type="BOX",
-                group_by_aggregation="mean",
+                group_by="optimizer",
             ),
             scatter_panel(
                 "learning_rate",
@@ -185,18 +189,28 @@ def main():
         return
 
     comet_ml.login()
-    workspace = resolve_workspace(args.workspace)
-    api = comet_ml.API()
+    api = API()
+    workspace = args.workspace or api.get_default_workspace()
 
-    created = api.create_view(workspace, args.project, view)
+    existing = [
+        v for v in api.get_views(workspace, args.project) if v.name == args.name
+    ]
+    if existing:
+        view.template_id = existing[0].template_id
+        created = api.update_view(workspace, args.project, view)
+    else:
+        created = api.create_view(workspace, args.project, view)
     if not created:
-        raise SystemExit(
-            "create_view returned nothing -- the backend rejected the view."
-        )
+        raise SystemExit("The backend rejected the view.")
 
-    print("\nCreated %r (template_id=%s)" % (created.name, created.template_id))
-    print("Open: %s" % get_project_url(workspace, args.project))
-    print("(Pick the view from the view selector at the top of the project page.)")
+    print(
+        "\n%s %r (template_id=%s)"
+        % ("Updated" if existing else "Created", created.name, created.template_id)
+    )
+    print(
+        "Open: %s/%s/%s/view/%s/panels"
+        % (api.server_url.rstrip("/"), workspace, args.project, created.template_id)
+    )
 
 
 if __name__ == "__main__":

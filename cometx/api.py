@@ -19,8 +19,37 @@ from urllib.parse import urlparse
 import requests
 from comet_ml import API
 from comet_ml.api_objects.view import View
+from comet_ml.exceptions import CometRestApiException
 
 from .panel_utils import create_panel_zip
+
+_BUILDERS = {
+    "project": "cometx.views.build_view",
+    "experiment": "cometx.views.build_experiment_view",
+}
+
+
+def _layout_scope(view: View) -> Any:
+    """Which scope's envelope holds the view's sections: "project" (v3),
+    "experiment" (v2["panels"]), or None when it has no sections."""
+    if isinstance(view.v3, dict) and view.v3.get("sections"):
+        return "project"
+    panels = view.v2.get("panels") if isinstance(view.v2, dict) else None
+    if isinstance(panels, dict) and panels.get("sections"):
+        return "experiment"
+    return None
+
+
+def _check_scope(view: View, expected: str) -> None:
+    """Raise if the view's sections are in the other scope's envelope, which
+    Comet would save but show with no panels."""
+    actual = _layout_scope(view)
+    if actual is not None and actual != expected:
+        raise ValueError(
+            "view %r has %s-scope sections, which show no panels in %s scope;"
+            " build it with %s() instead"
+            % (view.name, actual, expected, _BUILDERS[expected])
+        )
 
 
 class API(API):
@@ -355,6 +384,33 @@ class API(API):
         )
         return results.json()
 
+    def create_view(self, workspace: str, project_name: str, view: View) -> Any:
+        """
+        Create a project-level view (dashboard).
+
+        Like comet_ml's `create_view`, on any comet_ml version: a view built
+        with `build_experiment_view` raises a ValueError (it would show no
+        panels), as does a name the project already uses.
+
+        Args:
+            workspace (str): the workspace name
+            project_name (str): the project name
+            view (View): from `cometx.views.build_view`
+
+        Returns: the created View, or None on failure
+        """
+        _check_scope(view, "project")
+        try:
+            return super().create_view(workspace, project_name, view)
+        except CometRestApiException as error:
+            if "View name already used" not in str(error):
+                raise
+            raise ValueError(
+                "Project %s/%s already has a view named %r. Use another name, "
+                "or set that view's template_id on this one and call "
+                "update_view() to replace it." % (workspace, project_name, view.name)
+            ) from error
+
     def update_view(self, workspace: str, project_name: str, view: View) -> Any:
         """
         Overwrite an existing project-level view in place.
@@ -371,6 +427,7 @@ class API(API):
 
         Returns: the updated View, or None on failure
         """
+        _check_scope(view, "project")
         base_update = getattr(super(), "update_view", None)
         if base_update is not None:
             return base_update(workspace, project_name, view)
@@ -384,6 +441,60 @@ class API(API):
         if not project:
             raise ValueError("unknown project %s/%s" % (workspace, project_name))
         result = self._client.upsert_view(project["projectId"], view)
+        return View.from_payload_dict(result) if result else None
+
+    def create_experiment_view(self, experiment, view: View) -> Any:
+        """
+        Create an experiment view, shared by every experiment in its project.
+
+        Like `APIExperiment.create_view`, with one difference on any comet_ml
+        version: a name already taken raises a ValueError that says why.
+        Experiment view names must be unique across all your projects, though
+        `get_views()` lists only the experiment's own project.
+
+        Args:
+            experiment (APIExperiment): any experiment in the project
+            view (View): from `cometx.views.build_experiment_view`
+
+        Returns: the created View, or None on failure
+        """
+        _check_scope(view, "experiment")
+        try:
+            return experiment.create_view(view)
+        except CometRestApiException as error:
+            if "View name already used" not in str(error):
+                raise
+            raise ValueError(
+                "An experiment view named %r already exists. Experiment view "
+                "names must be unique across all your projects, so it may be "
+                "in another project: get_views(include_workspace_project_views="
+                "True) lists it. Use another name, or update_experiment_view() "
+                "to replace one in this project." % view.name
+            ) from error
+
+    def update_experiment_view(self, experiment, view: View) -> Any:
+        """
+        Overwrite an existing experiment view in place, keeping its
+        `template_id`. Uses comet_ml's own `APIExperiment.update_view` where the
+        installed version has one.
+
+        Args:
+            experiment (APIExperiment): any experiment in the view's project
+            view (View): a View with `template_id` set, typically from
+                `experiment.get_views()`, with a new layout
+
+        Returns: the updated View, or None on failure
+        """
+        _check_scope(view, "experiment")
+        base_update = getattr(experiment, "update_view", None)
+        if base_update is not None:
+            return base_update(view)
+        if not view.template_id:
+            raise ValueError(
+                "update_experiment_view requires a view with template_id set; "
+                "use create_experiment_view to add a new view"
+            )
+        result = self._client.upsert_chart_template_view(experiment.project_id, view)
         return View.from_payload_dict(result) if result else None
 
     def log_pr_curves(
