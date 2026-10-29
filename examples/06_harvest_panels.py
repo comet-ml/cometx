@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-06 - Reuse code panels found on existing dashboards.
+06 - Reuse code panels found on existing views.
 
-Code panels come in four kinds, and all four can be copied from one dashboard to
+Code panels come in four kinds, and all four can be copied from one view to
 another by reading the panel off a view and rebuilding it:
 
   * a JavaScript panel (``javascript_panel``), code kept in the view,
@@ -15,7 +15,7 @@ another by reading the panel off a view and rebuilding it:
 The last two can't be created with an API key -- only reused, which is why this
 script harvests them. It scans views with API.get_views(), collects every code
 panel it finds, and can rebuild them into a "Panel Gallery" view: the pattern for
-"take that neat panel someone built and put it on my dashboards too". Rerunning
+"take that neat panel someone built and put it on my views too". Rerunning
 with --apply updates the gallery in place.
 
     # list every code panel visible in a workspace

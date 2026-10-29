@@ -2,8 +2,8 @@
 
 `cometx panel-studio` is an editor for writing and testing Comet **Python panels** on
 your own machine. You write the panel's code, run it against your real experiments,
-and see it exactly as a Comet dashboard would show it. When it works, upload it to a
-dashboard or to your workspace's Panel library.
+and see it exactly as a Comet view would show it. When it works, upload it to a
+view or to your workspace's Panel library.
 
 Prefer your own editor, such as VS Code or vim? The studio can follow a file you
 edit elsewhere, and three more commands cover that way of working without the
@@ -77,7 +77,7 @@ be sorted by **Recently updated** (the default, so the newest project is chosen
 when you don't pass `--project`) or by **Name**.
 
 **Experiments.** These are the experiments the panel sees through
-`api.get_panel_experiment_keys()`. As on a Comet dashboard, which hands a panel the
+`api.get_panel_experiment_keys()`. As on a Comet view, which hands a panel the
 first page of its experiments table, the **first 25** are selected to start, in the
 current sort order. Every experiment in the project is listed, so you can add or
 remove any of them. Sort by **Recently updated** (the later of an experiment's start
@@ -109,7 +109,7 @@ training code.
 
 Press **Run**. The panel appears on the right, running your current code against
 the experiments selected in the sidebar. Press **Run** again after each change.
-Widgets in the panel, such as a dropdown, work as they do on a dashboard.
+Widgets in the panel, such as a dropdown, work as they do on a view.
 
 Errors in your code show in the panel as a Streamlit error with its traceback, the
 way they would in Comet.
@@ -118,18 +118,18 @@ way they would in Comet.
 
 Press **Upload...** and choose where it goes:
 
-* **A dashboard in the project.** Pick an existing dashboard or **New dashboard**
+* **A view in the project.** Pick an existing view or **New view**
   and give it a name.
-  * If that dashboard already has a Python panel with the same **Panel name**, its
+  * If that view already has a Python panel with the same **Panel name**, its
     code is replaced in place; nothing else changes.
   * Otherwise the panel is added at the bottom of a **Panel Studio** section, which
-    is created if needed. The rest of the dashboard is left as it was.
-  * The panel's code is stored in the dashboard itself. When it's done, the dialog
-    links to the dashboard.
+    is created if needed. The rest of the view is left as it was.
+  * The panel's code is stored in the view itself. When it's done, the dialog
+    links to the view.
 * **The Panel library of the workspace.** Saves the panel as a library panel,
   replacing a library panel with the same name. Library panels are placed on
-  dashboards from **Add panel > Panel library** in Comet; they can't be placed on a
-  dashboard from the API.
+  views from **Add panel > Panel library** in Comet; they can't be placed on a
+  view from the API.
 
 The **Panel name** starts as the file's name.
 
@@ -161,7 +161,7 @@ that browser tab, or VS Code's Simple Browser, beside your editor.
 | `FILE` | The panel file. |
 | `--project` | The project to run the panel in. Required. |
 | `--workspace` | Defaults to your configured workspace, then your account's default. |
-| `--experiments` | Which experiments the panel sees: a number (the first N, like a dashboard; default 25), `all`, or names, keys or key prefixes separated by commas. |
+| `--experiments` | Which experiments the panel sees: a number (the first N, like a view; default 25), `all`, or names, keys or key prefixes separated by commas. |
 | `--sort` | `updated` (default) or `name`: the order used before taking the first N. |
 | `--port` | The panel's port. Default 8502; the next free port if taken. |
 | `--no-browser` | Don't open the panel in a browser. |
@@ -170,36 +170,36 @@ that browser tab, or VS Code's Simple Browser, beside your editor.
 ### Uploading from the command line: `cometx panel-upload`
 
 ```bash
-# To a dashboard (created if needed); the panel is named after the file
-cometx panel-upload loss_curves.py --project my-project --dashboard "Training"
+# To a view (created if needed); the panel is named after the file
+cometx panel-upload loss_curves.py --project my-project --view "Training"
 
 # With another name
-cometx panel-upload loss_curves.py --project my-project --dashboard "Training" \
+cometx panel-upload loss_curves.py --project my-project --view "Training" \
     --name "Loss curves"
 
 # To the workspace's Panel library
 cometx panel-upload loss_curves.py --library
 ```
 
-It follows the same rules as the studio's **Upload...**: on a dashboard, a Python
+It follows the same rules as the studio's **Upload...**: on a view, a Python
 panel with the same name is replaced, otherwise the panel goes in the **Panel
 Studio** section; in the library, a panel with the same name is replaced. It prints
-the dashboard's address. `--workspace`, `--api-key` and `--url-override` work as
+the view's address. `--workspace`, `--api-key` and `--url-override` work as
 above. Because it's a plain command, it also fits in scripts and CI, for example to
-publish a repository's panels to a team dashboard.
+publish a repository's panels to a team view.
 
 ### Downloading a panel: `cometx panel-download`
 
-To edit a panel that's already on a dashboard or in the library:
+To edit a panel that's already on a view or in the library:
 
 ```bash
-cometx panel-download --project my-project --dashboard "Training" -o loss_curves.py
-cometx panel-download --project my-project --dashboard "Training" \
+cometx panel-download --project my-project --view "Training" -o loss_curves.py
+cometx panel-download --project my-project --view "Training" \
     --name "Loss curves" -o loss_curves.py
 cometx panel-download --library --name "Loss curves" -o loss_curves.py
 ```
 
-On a dashboard, `--name` can be left out when it has a single Python panel; with
+On a view, `--name` can be left out when it has a single Python panel; with
 several, the command lists their names. Without `-o` the code is printed. An
 existing `-o` file is only overwritten with `--force`. Python panels added through
 Comet's own editor keep their code where only the Comet UI can read it; copy their
@@ -208,16 +208,16 @@ code from the panel's editor in Comet instead.
 ### A typical round trip
 
 ```bash
-cometx panel-download --project my-project --dashboard "Training" \
+cometx panel-download --project my-project --view "Training" \
     --name "Loss curves" -o loss_curves.py
 cometx panel-preview loss_curves.py --project my-project    # edit, save, look
-cometx panel-upload loss_curves.py --project my-project --dashboard "Training" \
+cometx panel-upload loss_curves.py --project my-project --view "Training" \
     --name "Loss curves"
 ```
 
 **VS Code:** run `panel-preview` in the integrated terminal and open its address
 with **Simple Browser: Show** from the command palette. **vim:** `:!cometx
-panel-upload % --project my-project --dashboard "Training"` uploads the file you're
+panel-upload % --project my-project --view "Training"` uploads the file you're
 editing.
 
 ## Writing panels
@@ -242,7 +242,7 @@ ui.display(fig)
 Other panel helpers include `api.get_panel_workspace()`,
 `api.get_panel_project_name()`, `api.get_panel_project_id()` and
 `api.get_panel_experiments()`. Use `colors[key]["primary"]` for each experiment so
-the panel's lines match the dashboard's colors.
+the panel's lines match the view's colors.
 
 Inside a panel, `print()` writes to the panel, as it does on Comet.
 
@@ -264,10 +264,10 @@ Streamlit page whose first lines hand `comet_ml` the panel's context; the studio
 writes the same pages and serves them from a second Streamlit server, which the
 editor shows on the right. So the same panel code behaves the same in both places:
 
-| | Comet dashboard | Panel studio |
+| | Comet view | Panel studio |
 |---|---|---|
 | Experiments | the first page of the experiments table (25 by default) | the first 25, or the ones you choose |
-| Experiment colors | the dashboard's colors | the same color rule as the dashboard |
+| Experiment colors | the view's colors | the same color rule as the view |
 | Panel options | none (`get_panel_options()` returns `{}`) | none |
 | `print()`, `%pip`, `%include` | supported | supported |
 

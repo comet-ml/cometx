@@ -12,25 +12,26 @@
 #      Team. All rights reserved.
 # ****************************************
 """
-Download a Python panel's code from a Comet dashboard or the Panel library,
+Download a Python panel's code from a Comet view or the Panel library,
 to edit it in your own editor and upload it again with `cometx panel-upload`.
 
-From a dashboard, --name may be left out when the dashboard has a single Python
-panel. The code is written to --output, or printed when there is none.
+From a view, --name may be left out when the view has a single Python panel.
+The code is written to --output, or printed when there is none.
 
 Examples:
 
-    cometx panel-download --project PROJECT --dashboard "Training" -o loss.py
-    cometx panel-download --project PROJECT --dashboard "Training" \\
+    cometx panel-download --project PROJECT --view "Training" -o loss.py
+    cometx panel-download --project PROJECT --view "Training" \\
         --name "Loss curves" -o loss.py
     cometx panel-download --library --name "Loss curves" -o loss.py
 """
+
 import argparse
 import os
 import sys
 
 from ..api import API
-from ..panel_studio import dashboard_panel_code, library_panel_code, resolve_workspace
+from ..panel_studio import library_panel_code, resolve_workspace, view_panel_code
 from .panel_studio import add_credential_arguments, apply_credentials
 
 ADDITIONAL_ARGS = False
@@ -38,7 +39,9 @@ ADDITIONAL_ARGS = False
 
 def get_parser_arguments(parser):
     source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--dashboard", help="the project dashboard the panel is on")
+    source.add_argument("--view", help="the project view the panel is on")
+    # The option's name in cometx 3.6.12.
+    source.add_argument("--dashboard", dest="view", help=argparse.SUPPRESS)
     source.add_argument(
         "--library",
         action="store_true",
@@ -47,7 +50,7 @@ def get_parser_arguments(parser):
     parser.add_argument(
         "--workspace", help="defaults to your configured or default workspace"
     )
-    parser.add_argument("--project", help="the dashboard's project")
+    parser.add_argument("--project", help="the view's project")
     parser.add_argument("--name", help="the panel's name")
     parser.add_argument(
         "-o", "--output", help="the file to write; the code is printed otherwise"
@@ -60,8 +63,8 @@ def get_parser_arguments(parser):
 
 def panel_download(parsed_args, remaining=None):
     apply_credentials(parsed_args)
-    if parsed_args.dashboard is not None and not parsed_args.project:
-        sys.exit("--project is required with --dashboard.")
+    if parsed_args.view is not None and not parsed_args.project:
+        sys.exit("--project is required with --view.")
     if parsed_args.library and not parsed_args.name:
         sys.exit("--name is required with --library.")
     output = parsed_args.output
@@ -75,11 +78,11 @@ def panel_download(parsed_args, remaining=None):
             name = parsed_args.name
             code = library_panel_code(api, workspace, name)
         else:
-            name, code = dashboard_panel_code(
+            name, code = view_panel_code(
                 api,
                 workspace,
                 parsed_args.project,
-                parsed_args.dashboard,
+                parsed_args.view,
                 parsed_args.name,
             )
     except ValueError as error:

@@ -16,6 +16,7 @@ The Streamlit app behind `cometx panel-studio`.
 Run it with `cometx panel-studio`, which also starts the server the panel is
 shown from.
 """
+
 import base64
 import os
 
@@ -26,7 +27,6 @@ from comet_ml.config import get_config
 from cometx.api import API
 from cometx.panel_studio import (
     clientlib_url,
-    dashboard_url,
     default_selection,
     display_path,
     file_mtime,
@@ -38,8 +38,9 @@ from cometx.panel_studio import (
     read_settled,
     server_root,
     sort_entries,
-    upload_to_dashboard,
     upload_to_library,
+    upload_to_view,
+    view_url,
     write_panel_page,
 )
 
@@ -91,7 +92,7 @@ else:
     ui.display("No data to plot. Make sure your metric data is logged by step.")
 """
 
-NEW_DASHBOARD = "New dashboard"
+NEW_VIEW = "New view"
 
 PAGES_DIR = os.environ["COMETX_PANEL_STUDIO_PAGES"]
 PANEL_PORT = os.environ["COMETX_PANEL_STUDIO_PANEL_PORT"]
@@ -137,7 +138,7 @@ st.markdown(
 @st.cache_resource(show_spinner=False)
 def get_api(url_override, api_key, cache=True):
     """An API for this server and key. Uploads pass cache=False: they read a
-    dashboard or the Panel library and write it back, so they need current
+    view or the Panel library and write it back, so they need current
     data, and some comet_ml versions cache those reads."""
     # comet_ml reads the server from the environment when an API is created.
     os.environ["COMET_URL_OVERRIDE"] = url_override
@@ -305,7 +306,7 @@ def pick_index(options, wanted):
 
 
 def sidebar():
-    """The panel's context: what Comet would hand it on a dashboard."""
+    """The panel's context: what Comet would hand it on a view."""
     st.sidebar.header("Comet")
     server = st.sidebar.text_input(
         "Server",
@@ -365,7 +366,7 @@ def sidebar():
         format_func=lambda key: names[key],
         key="experiments:%s/%s" % (workspace, project),
         help=(
-            "The experiments the panel sees. Like a Comet dashboard, which "
+            "The experiments the panel sees. Like a Comet view, which "
             "shows a panel the first page of its experiments table, the first "
             "25 are selected to start."
         ),
@@ -389,44 +390,44 @@ def upload_dialog(context):
     name = st.text_input("Panel name", key="panel_name")
     where = st.radio(
         "Upload to",
-        ["dashboard", "library"],
+        ["view", "library"],
         format_func=lambda choice: {
-            "dashboard": "A dashboard in %s" % project,
+            "view": "A view in %s" % project,
             "library": "The Panel library of %s" % workspace,
         }[choice],
     )
-    if where == "dashboard":
-        dashboards = sorted(
+    if where == "view":
+        view_names = sorted(
             v.name
             for v in api.get_views(workspace, project)
             if v.name and v.name != "Unsaved Changes"
         )
-        choice = st.selectbox("Dashboard", [NEW_DASHBOARD] + dashboards)
-        if choice == NEW_DASHBOARD:
-            dashboard = st.text_input("New dashboard name", value="Panel Studio")
+        choice = st.selectbox("View", [NEW_VIEW] + view_names)
+        if choice == NEW_VIEW:
+            view_name = st.text_input("New view name", value="Panel Studio")
         else:
-            dashboard = choice
+            view_name = choice
         st.caption(
-            "A panel with the same name on that dashboard is replaced; "
+            "A panel with the same name on that view is replaced; "
             "otherwise the panel is added to its Panel Studio section."
         )
     else:
         st.caption(
-            "Library panels can be added to dashboards from Add panel > "
+            "Library panels can be added to views from Add panel > "
             "Panel library in Comet."
         )
 
-    ready = bool(name.strip()) and (where != "dashboard" or bool(dashboard.strip()))
+    ready = bool(name.strip()) and (where != "view" or bool(view_name.strip()))
     if not st.button("Upload", type="primary", disabled=not ready):
         return
     try:
-        if where == "dashboard":
-            view, created = upload_to_dashboard(
-                api, workspace, project, dashboard, name, code
+        if where == "view":
+            view, created = upload_to_view(
+                api, workspace, project, view_name, name, code
             )
-            url = dashboard_url(api.server_url, workspace, project, view.template_id)
+            url = view_url(api.server_url, workspace, project, view.template_id)
             st.success(
-                "%s [%s](%s)." % ("Created" if created else "Updated", dashboard, url)
+                "%s [%s](%s)." % ("Created" if created else "Updated", view_name, url)
             )
         else:
             template_id, created = upload_to_library(api, workspace, name, code)
@@ -578,7 +579,7 @@ def main():
             context["workspace"],
             context["project"],
             context["experiment_keys"],
-            # Comet always gives a dashboard's Python panel no options.
+            # Comet always gives a view's Python panel no options.
             {},
             None,
             None,

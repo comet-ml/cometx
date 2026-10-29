@@ -14,7 +14,7 @@
 """
 Preview a Python panel file while you edit it in your own editor.
 
-Runs the panel the way a Comet dashboard does, against your real experiments,
+Runs the panel the way a Comet view does, against your real experiments,
 and opens it in your browser. Each time you save the file, the panel runs
 again with the new code. Stop with Ctrl-C.
 
@@ -26,10 +26,11 @@ Examples:
     cometx panel-preview loss_curves.py --project PROJECT \\
         --experiments run-01-sgd,run-02-adam
 
---experiments is a number (the first N, as a dashboard shows its first page;
+--experiments is a number (the first N, as a view shows its first page;
 25 by default), "all", or experiment names, keys or key prefixes separated by
 commas. --sort orders experiments before taking the first N.
 """
+
 import argparse
 import os
 import signal
@@ -140,7 +141,7 @@ def panel_preview(parsed_args, remaining=None):
         workspace,
         parsed_args.project,
         experiment_keys,
-        # A dashboard's Python panel gets no options.
+        # A view's Python panel gets no options.
         {},
         None,
         None,

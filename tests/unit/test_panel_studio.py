@@ -18,8 +18,8 @@ from cometx.panel_studio import (
     project_url,
     put_panel_in_layout,
     sort_entries,
-    upload_to_dashboard,
     upload_to_library,
+    upload_to_view,
     write_panel_page,
 )
 from cometx.views import Section, build_view, python_panel, scalar_panel
@@ -142,24 +142,24 @@ def test_put_panel_in_layout__same_name__code_replaced_in_place():
     assert panels[0]["code"] == "new"
 
 
-def test_upload_to_dashboard__no_such_dashboard__created():
+def test_upload_to_view__no_such_view__created():
     api = mock.MagicMock()
     api.get_views.return_value = []
 
-    _, created = upload_to_dashboard(api, "ws", "proj", "D", "P", "code")
+    _, created = upload_to_view(api, "ws", "proj", "D", "P", "code")
 
     assert created is True
     view = api.create_view.call_args[0][2]
     assert view.v3["sections"][0]["panels"][0]["code"] == "code"
 
 
-def test_upload_to_dashboard__existing__updated_with_its_template_id():
+def test_upload_to_view__existing__updated_with_its_template_id():
     existing = build_view("D", sections=[Section("S", [scalar_panel("loss")])])
     existing.template_id = "tmpl"
     api = mock.MagicMock()
     api.get_views.return_value = [existing]
 
-    _, created = upload_to_dashboard(api, "ws", "proj", "D", "P", "code")
+    _, created = upload_to_view(api, "ws", "proj", "D", "P", "code")
 
     assert created is False
     view = api.update_view.call_args[0][2]
@@ -167,12 +167,12 @@ def test_upload_to_dashboard__existing__updated_with_its_template_id():
     assert len(view.v3["sections"]) == 2
 
 
-def test_upload_to_dashboard__old_format__raises_value_error():
+def test_upload_to_view__old_format__raises_value_error():
     api = mock.MagicMock()
     api.get_views.return_value = [SimpleNamespace(name="D", v3=None)]
 
     with pytest.raises(ValueError, match="older format"):
-        upload_to_dashboard(api, "ws", "proj", "D", "P", "code")
+        upload_to_view(api, "ws", "proj", "D", "P", "code")
 
 
 def test_upload_to_library__existing_name__overwritten():
@@ -256,3 +256,20 @@ def test_process_args__trusted_host__value_kept_with_flag():
         "http://host.example/simple",
     ]
     assert debug is False
+
+
+def test_older_names__still_work():
+    from cometx import panel_studio
+
+    api = mock.MagicMock()
+    api.get_views.return_value = []
+
+    _, created = panel_studio.upload_to_dashboard(
+        api, "ws", "proj", dashboard="D", name="P", code="code"
+    )
+
+    assert created is True
+    assert panel_studio.dashboard_url("https://c.com/", "ws", "p", "v") == (
+        panel_studio.view_url("https://c.com/", "ws", "p", "v")
+    )
+    assert panel_studio.DASHBOARD_PAGE_SIZE == panel_studio.EXPERIMENTS_PAGE_SIZE

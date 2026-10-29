@@ -112,7 +112,7 @@ def main():
         key = log_one(workspace, args.project, index)
         print("  logged %s" % key)
     print(
-        "\nDone. Now run: python 02_build_project_dashboard.py --workspace %s --project %s"
+        "\nDone. Now run: python 02_build_project_view.py --workspace %s --project %s"
         % (workspace, args.project)
     )
 

@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-05 - Push one standard dashboard into every project in a workspace.
+05 - Push one standard view into every project in a workspace.
 
-The scaling demo: a team agrees on a house dashboard, and this script applies it
+The scaling demo: a team agrees on a house view, and this script applies it
 across a whole workspace -- adapting each project's panels to the metrics that
-project actually logs, so no dashboard arrives full of empty charts.
+project actually logs, so no view arrives full of empty charts.
 
 Per project it:
   1. reads the project's metric names,

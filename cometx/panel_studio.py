@@ -13,7 +13,7 @@
 """
 The parts of `cometx panel-studio` that don't need Streamlit: the panel
 context Comet hands a Python panel, writing a panel as a page the way Comet's
-panel server does, and putting a panel's code on a dashboard.
+panel server does, and putting a panel's code on a view.
 """
 
 import copy
@@ -45,11 +45,11 @@ CHART_COLORS = [
     "#2e6497",
 ]
 
-# A dashboard's experiments table shows this many per page, and a panel sees
+# A view's experiments table shows this many per page, and a panel sees
 # that page (frontend DEFAULT_EXPERIMENTS_PER_PAGE).
-DASHBOARD_PAGE_SIZE = 25
+EXPERIMENTS_PAGE_SIZE = 25
 
-# Where panels added from the studio go on an existing dashboard.
+# Where panels added from the studio go on an existing view.
 STUDIO_SECTION = "Panel Studio"
 
 PANEL_ROW_HEIGHT = 2
@@ -144,7 +144,7 @@ def project_url(url: str, workspace: str, project: str) -> str:
     return "%s/%s/%s" % (server_root(url), workspace, project)
 
 
-def dashboard_url(server_url: str, workspace: str, project: str, view_id: str) -> str:
+def view_url(server_url: str, workspace: str, project: str, view_id: str) -> str:
     return "%s/%s/%s/view/%s/panels" % (
         server_url.rstrip("/"),
         workspace,
@@ -164,17 +164,17 @@ def _find_python_panel(v3: Dict[str, Any], name: str) -> Optional[Dict[str, Any]
 def put_panel_in_layout(
     v3: Dict[str, Any], name: str, code: str, columns: int = 1
 ) -> Dict[str, Any]:
-    """Return a copy of a dashboard's v3 layout with this Python panel in it.
+    """Return a copy of a view's v3 layout with this Python panel in it.
 
     A Python panel with the same name has its code replaced, wherever it is.
     Otherwise the panel is added at the bottom of a "Panel Studio" section,
-    which is created if needed. Nothing else on the dashboard changes.
+    which is created if needed. Nothing else on the view changes.
 
     Args:
-        v3: the dashboard's ``view.v3``.
+        v3: the view's ``view.v3``.
         name: the panel's title, which identifies it on later uploads.
         code: the panel's Python source.
-        columns: how many such panels fit across the dashboard (1, 2, 3 or 6).
+        columns: how many such panels fit across the view (1, 2, 3 or 6).
     """
     v3 = copy.deepcopy(v3)
     existing = _find_python_panel(v3, name)
@@ -209,17 +209,17 @@ def put_panel_in_layout(
     return v3
 
 
-def upload_to_dashboard(
-    api, workspace: str, project: str, dashboard: str, name: str, code: str
+def upload_to_view(
+    api, workspace: str, project: str, view_name: str, name: str, code: str
 ):
-    """Put the panel on a project dashboard, creating the dashboard if needed.
+    """Put the panel on a project view, creating the view if needed.
 
-    Returns (view, created) where created is True for a new dashboard.
+    Returns (view, created) where created is True for a new view.
     """
-    existing = [v for v in api.get_views(workspace, project) if v.name == dashboard]
+    existing = [v for v in api.get_views(workspace, project) if v.name == view_name]
     if not existing:
         view = build_view(
-            dashboard,
+            view_name,
             sections=[
                 Section(
                     STUDIO_SECTION,
@@ -234,9 +234,8 @@ def upload_to_dashboard(
     view = existing[0]
     if not isinstance(view.v3, dict):
         raise ValueError(
-            "Dashboard %r is saved in an older format this tool can't edit. "
-            "Open it in Comet once to update it, or choose another dashboard."
-            % dashboard
+            "View %r is saved in an older format this tool can't edit. "
+            "Open it in Comet once to update it, or choose another view." % view_name
         )
     view.v3 = put_panel_in_layout(view.v3, name, code)
     return api.update_view(workspace, project, view), False
@@ -267,9 +266,9 @@ def sort_entries(
 
 
 def default_selection(experiment_keys: List[str]) -> List[str]:
-    """The experiments a dashboard's panel sees when it opens: the first page
+    """The experiments a view's panel sees when it opens: the first page
     of its experiments table."""
-    return experiment_keys[:DASHBOARD_PAGE_SIZE]
+    return experiment_keys[:EXPERIMENTS_PAGE_SIZE]
 
 
 def list_directory(path: str) -> Tuple[List[str], List[str]]:
@@ -376,11 +375,11 @@ def list_experiments(api, workspace: str, project: str) -> List[Tuple[str, str, 
 
 
 def choose_experiments(
-    entries: List[Tuple[str, str, int]], spec: str = str(DASHBOARD_PAGE_SIZE)
+    entries: List[Tuple[str, str, int]], spec: str = str(EXPERIMENTS_PAGE_SIZE)
 ) -> List[str]:
     """Pick experiment keys from sorted (key, name, updated) entries.
 
-    spec: "all"; a number N for the first N, as a dashboard shows its first
+    spec: "all"; a number N for the first N, as a view shows its first
     page; or comma-separated experiment keys, key prefixes or names.
     """
     spec = spec.strip()
@@ -408,8 +407,8 @@ def choose_experiments(
     return chosen
 
 
-def _dashboard(api, workspace: str, project: str, dashboard: str):
-    views = [v for v in api.get_views(workspace, project) if v.name == dashboard]
+def _find_view(api, workspace: str, project: str, view_name: str):
+    views = [v for v in api.get_views(workspace, project) if v.name == view_name]
     if not views:
         names = sorted(
             v.name
@@ -417,20 +416,20 @@ def _dashboard(api, workspace: str, project: str, dashboard: str):
             if v.name and v.name != "Unsaved Changes"
         )
         raise ValueError(
-            "No dashboard %r in %s/%s. Dashboards: %s"
-            % (dashboard, workspace, project, ", ".join(names) or "none")
+            "No view %r in %s/%s. Views: %s"
+            % (view_name, workspace, project, ", ".join(names) or "none")
         )
     return views[0]
 
 
-def dashboard_panel_code(
-    api, workspace: str, project: str, dashboard: str, name: Optional[str] = None
+def view_panel_code(
+    api, workspace: str, project: str, view_name: str, name: Optional[str] = None
 ) -> Tuple[str, str]:
-    """The (name, code) of a Python panel on a dashboard.
+    """The (name, code) of a Python panel on a view.
 
-    name may be left out when the dashboard has a single Python panel.
+    name may be left out when the view has a single Python panel.
     """
-    view = _dashboard(api, workspace, project, dashboard)
+    view = _find_view(api, workspace, project, view_name)
     panels = [
         panel
         for section in (view.v3 or {}).get("sections") or []
@@ -439,20 +438,20 @@ def dashboard_panel_code(
     ]
     names = [p.get("chartName") or "(untitled)" for p in panels]
     if not panels:
-        raise ValueError("Dashboard %r has no Python panels." % dashboard)
+        raise ValueError("View %r has no Python panels." % view_name)
     if name is None:
         if len(panels) > 1:
             raise ValueError(
-                "Dashboard %r has %d Python panels; pick one with --name: %s"
-                % (dashboard, len(panels), ", ".join(names))
+                "View %r has %d Python panels; pick one with --name: %s"
+                % (view_name, len(panels), ", ".join(names))
             )
         panel = panels[0]
     else:
         found = [p for p in panels if p.get("chartName") == name]
         if not found:
             raise ValueError(
-                "Dashboard %r has no Python panel %r. Its Python panels: %s"
-                % (dashboard, name, ", ".join(names))
+                "View %r has no Python panel %r. Its Python panels: %s"
+                % (view_name, name, ", ".join(names))
             )
         panel = found[0]
     if not panel.get("code"):
@@ -470,3 +469,26 @@ def library_panel_code(api, workspace: str, name: str) -> str:
     if not found:
         raise ValueError("No panel %r in the Panel library of %s." % (name, workspace))
     return api.get_panel_code(found[0]["templateId"])
+
+
+# Names from cometx 3.6.12, kept so existing code keeps working.
+DASHBOARD_PAGE_SIZE = EXPERIMENTS_PAGE_SIZE
+
+
+def dashboard_url(server_url: str, workspace: str, project: str, view_id: str) -> str:
+    """Older name for `view_url`."""
+    return view_url(server_url, workspace, project, view_id)
+
+
+def upload_to_dashboard(
+    api, workspace: str, project: str, dashboard: str, name: str, code: str
+):
+    """Older name for `upload_to_view`."""
+    return upload_to_view(api, workspace, project, dashboard, name, code)
+
+
+def dashboard_panel_code(
+    api, workspace: str, project: str, dashboard: str, name: Optional[str] = None
+) -> Tuple[str, str]:
+    """Older name for `view_panel_code`."""
+    return view_panel_code(api, workspace, project, dashboard, name)

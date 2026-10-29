@@ -17,7 +17,7 @@ Write and test a Comet Python panel locally, then upload it.
 Opens an editor in your browser. Pick a workspace, project and experiments in
 the sidebar, edit the panel's code, and press Run: the panel runs the same way
 it does on comet.com, against your real experiments. Upload puts it on a project
-dashboard or in your workspace's Panel library.
+view or in your workspace's Panel library.
 
 Examples:
 
@@ -28,6 +28,7 @@ Examples:
 The API key and server come from your Comet config (COMET_API_KEY,
 COMET_URL_OVERRIDE, ~/.comet.config), or --api-key / --url-override.
 """
+
 import argparse
 import atexit
 import os

@@ -10,12 +10,12 @@ from cometx.cli import panel_download, panel_preview, panel_upload
 from cometx.cli.panel_studio import apply_credentials, port_number
 from cometx.panel_studio import (
     choose_experiments,
-    dashboard_panel_code,
     file_signature,
     library_panel_code,
     page_name_for,
     read_settled,
     resolve_workspace,
+    view_panel_code,
 )
 from cometx.views import Section, build_view, python_panel, scalar_panel
 
@@ -86,43 +86,41 @@ def test_resolve_workspace__order__given_then_config_then_default():
         assert resolve_workspace(api) == "default-ws"
 
 
-def _api_with_dashboard(*panels):
+def _api_with_view(*panels):
     view = build_view("D", sections=[Section("S", list(panels))])
     api = mock.MagicMock()
     api.get_views.return_value = [view]
     return api
 
 
-def test_dashboard_panel_code__single_python_panel__name_optional():
-    api = _api_with_dashboard(
-        scalar_panel("loss"), python_panel(code="a = 1", name="P")
-    )
+def test_view_panel_code__single_python_panel__name_optional():
+    api = _api_with_view(scalar_panel("loss"), python_panel(code="a = 1", name="P"))
 
-    assert dashboard_panel_code(api, "ws", "proj", "D") == ("P", "a = 1")
+    assert view_panel_code(api, "ws", "proj", "D") == ("P", "a = 1")
 
 
-def test_dashboard_panel_code__several_panels__needs_name():
-    api = _api_with_dashboard(
+def test_view_panel_code__several_panels__needs_name():
+    api = _api_with_view(
         python_panel(code="a = 1", name="P"), python_panel(code="b = 2", name="Q")
     )
 
     with pytest.raises(ValueError, match="pick one with --name: P, Q"):
-        dashboard_panel_code(api, "ws", "proj", "D")
-    assert dashboard_panel_code(api, "ws", "proj", "D", "Q") == ("Q", "b = 2")
+        view_panel_code(api, "ws", "proj", "D")
+    assert view_panel_code(api, "ws", "proj", "D", "Q") == ("Q", "b = 2")
 
 
-def test_dashboard_panel_code__panel_added_in_ui__explains():
-    api = _api_with_dashboard(python_panel("tmpl", revision_id="rev", name="P"))
+def test_view_panel_code__panel_added_in_ui__explains():
+    api = _api_with_view(python_panel("tmpl", revision_id="rev", name="P"))
 
     with pytest.raises(ValueError, match="added in the Comet UI"):
-        dashboard_panel_code(api, "ws", "proj", "D")
+        view_panel_code(api, "ws", "proj", "D")
 
 
-def test_dashboard_panel_code__no_such_dashboard__lists_dashboards():
-    api = _api_with_dashboard(python_panel(code="a = 1", name="P"))
+def test_view_panel_code__no_such_view__lists_views():
+    api = _api_with_view(python_panel(code="a = 1", name="P"))
 
-    with pytest.raises(ValueError, match="Dashboards: D"):
-        dashboard_panel_code(api, "ws", "proj", "Other")
+    with pytest.raises(ValueError, match="Views: D"):
+        view_panel_code(api, "ws", "proj", "Other")
 
 
 def test_library_panel_code__by_name__code():
@@ -142,18 +140,18 @@ def _parse(module, args):
     return parser.parse_args(args)
 
 
-def test_panel_upload__dashboard__uploads_file_named_after_it(tmp_path, capsys):
+def test_panel_upload__view__uploads_file_named_after_it(tmp_path, capsys):
     path = tmp_path / "loss_curves.py"
     path.write_text("a = 1\n")
     api = mock.MagicMock(server_url="https://comet.example.com")
     view = SimpleNamespace(template_id="v1")
     args = _parse(
         panel_upload,
-        [str(path), "--workspace", "ws", "--project", "proj", "--dashboard", "D"],
+        [str(path), "--workspace", "ws", "--project", "proj", "--view", "D"],
     )
 
     with mock.patch.object(panel_upload, "API", return_value=api), mock.patch.object(
-        panel_upload, "upload_to_dashboard", return_value=(view, True)
+        panel_upload, "upload_to_view", return_value=(view, True)
     ) as upload:
         panel_upload.panel_upload(args)
 
@@ -161,10 +159,10 @@ def test_panel_upload__dashboard__uploads_file_named_after_it(tmp_path, capsys):
     assert "https://comet.example.com/ws/proj/view/v1/panels" in capsys.readouterr().out
 
 
-def test_panel_upload__dashboard_without_project__exits(tmp_path):
+def test_panel_upload__view_without_project__exits(tmp_path):
     path = tmp_path / "p.py"
     path.write_text("")
-    args = _parse(panel_upload, [str(path), "--dashboard", "D"])
+    args = _parse(panel_upload, [str(path), "--view", "D"])
 
     with pytest.raises(SystemExit, match="--project is required"):
         panel_upload.panel_upload(args)
@@ -245,3 +243,22 @@ def test_credentials__given_after_command__used(monkeypatch):
 def test_read_first__folder_or_missing__none(tmp_path):
     assert panel_preview.read_first(str(tmp_path)) is None
     assert panel_preview.read_first(str(tmp_path / "missing.py")) is None
+
+
+@pytest.mark.parametrize("module", [panel_upload, panel_download])
+def test_panel_commands__older_dashboard_option__same_as_view(module):
+    head = ["p.py"] if module is panel_upload else []
+    parser = argparse.ArgumentParser()
+    module.get_parser_arguments(parser)
+
+    assert parser.parse_args(head + ["--dashboard", "D"]).view == "D"
+    assert "--dashboard" not in parser.format_help()
+
+
+def test_dashboard_panel_code__older_name__same_as_view_panel_code():
+    api = _api_with_view(python_panel(code="a = 1", name="P"))
+
+    assert panel_studio.dashboard_panel_code(api, "ws", "proj", dashboard="D") == (
+        "P",
+        "a = 1",
+    )

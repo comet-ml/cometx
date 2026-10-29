@@ -4,7 +4,7 @@
 
 Shows what each getter returns and how the two scopes differ:
 
-  API.get_views(workspace, project)      project-level dashboards (the entries
+  API.get_views(workspace, project)      project-level views (the entries
                                          in the project's view selector)
   APIExperiment.get_views()              views scoped to a single experiment,
                                          from both the dashboard-template and
@@ -84,7 +84,7 @@ def main():
         print()
 
     # The same call, widened to the whole workspace. Useful for finding a
-    # dashboard you built in another project and want to reuse here.
+    # view you built in another project and want to reuse here.
     workspace_views = api.get_views(
         workspace, args.project, include_workspace_views=True
     )
@@ -113,7 +113,7 @@ def main():
     print("%d experiment-level view(s)\n" % len(experiment_views))
     for view in experiment_views:
         # view_source tells you which table the view came from:
-        #   "dashboard_template" -> the project dashboard tables
+        #   "dashboard_template" -> the project view tables
         #   "chart_template"     -> the single-experiment chart tables
         print(describe_view(view, indent="  "))
         if args.json:
