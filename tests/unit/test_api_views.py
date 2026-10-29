@@ -99,3 +99,28 @@ def test_update_experiment_view__no_template_id__raises():
         _api().update_experiment_view(
             SimpleNamespace(project_id="p"), _experiment_view()
         )
+
+
+def test_create_dashboard__deprecated__warns_and_still_creates():
+    api = _api()
+    api._get_project_id = mock.MagicMock(return_value="proj-1")
+
+    with pytest.warns(DeprecationWarning, match="create_view"):
+        api.create_dashboard("ws", "proj", "Dash", panels=["t1"])
+
+    endpoint = api._client.post_from_endpoint.call_args[0][0]
+    payload = api._client.post_from_endpoint.call_args[1]["payload"]
+    assert endpoint == "write/dashboard-template/create"
+    assert payload["codePanelTemplateIds"] == ["t1"]
+
+
+def test_update_dashboard__deprecated__warns_and_still_posts():
+    api = _api()
+    api._get_project_id = mock.MagicMock(return_value="proj-1")
+
+    with pytest.warns(DeprecationWarning, match="update_view"):
+        api.update_dashboard("ws", "proj", "tmpl", template_name="New")
+
+    payload = api._client.post_from_endpoint.call_args[1]["payload"]
+    assert payload["template_id"] == "tmpl"
+    assert payload["template_name"] == "New"

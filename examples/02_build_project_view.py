@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-02 - Build a project dashboard from scratch with API.create_view().
+02 - Build a project view from scratch with API.create_view().
 
 This is the widest demonstration: one script that creates a multi-section
-dashboard containing every built-in panel type the SDK can express, plus a saved
-filter, a configured experiment table, and dashboard-wide axis/smoothing
-settings. Rerunning replaces the dashboard with API.update_view() instead of
+view containing every built-in panel type the SDK can express, plus a saved
+filter, a configured experiment table, and view-wide axis/smoothing
+settings. Rerunning replaces the view with API.update_view() instead of
 adding another (a project can't have two views with the same name).
 
-    python 02_build_project_dashboard.py --workspace WS [--project view-api-demo]
-    python 02_build_project_dashboard.py --workspace WS --dry-run   # print JSON
+    python 02_build_project_view.py --workspace WS [--project view-api-demo]
+    python 02_build_project_view.py --workspace WS --dry-run   # print JSON
 
 Run 00_seed_demo_project.py first so the panels have data to draw.
 """
@@ -42,7 +42,7 @@ from cometx.views import (
 
 
 def build(name):
-    """Compose the dashboard. Returns a View; makes no network calls."""
+    """Compose the view. Returns a View; makes no network calls."""
 
     # --- Section 1: headline numbers -------------------------------------
     headline = Section(
@@ -82,10 +82,10 @@ def build(name):
                 name="Loss (log scale), colored by optimizer",
                 transform_y="log",
                 legend=[legend_key("Name"), legend_key("optimizer", source="params")],
-                # locked, or the dashboard-wide config below resets transform_y.
+                # locked, or the view-wide config below resets transform_y.
                 locked=True,
             ),
-            # x-axis other than step; locked so the dashboard-wide x-axis
+            # x-axis other than step; locked so the view-wide x-axis
             # setting below does not override it.
             line_panel(
                 "accuracy", x="duration", name="Accuracy over wall-clock", locked=True
@@ -172,7 +172,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace")
     parser.add_argument("--project", default="view-api-demo")
-    parser.add_argument("--name", default="SDK Full Dashboard")
+    parser.add_argument("--name", default="SDK Full View")
     parser.add_argument(
         "--dry-run", action="store_true", help="print the view instead of creating it"
     )

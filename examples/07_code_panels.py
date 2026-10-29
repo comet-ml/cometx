@@ -8,21 +8,21 @@ own code: a Python panel runs on a Comet server and shows what it passes to
 figure to ``this.plot()``. Both keep their code in the view itself, so neither
 needs anything created in the UI first.
 
-This builds one dashboard with three code panels:
+This builds one view with three code panels:
 
   * a Python panel whose code is written here,
   * a Python panel whose code comes from a panel uploaded to the Panel library
     with ``API.upload_panel_code`` (a library panel can't be placed on a
-    dashboard with an API key, so its code is copied in with ``get_panel_code``),
+    view with an API key, so its code is copied in with ``get_panel_code``),
   * a JavaScript panel.
 
-Rerunning updates the dashboard in place instead of adding another.
+Rerunning updates the view in place instead of adding another.
 
     python 07_code_panels.py --workspace WS
     python 07_code_panels.py --workspace WS --no-javascript
 
 JavaScript panels need a Comet version with JavaScript panel support; on one
-without it, the panel is left out of the dashboard. Pass ``--no-javascript``
+without it, the panel is left out of the view. Pass ``--no-javascript``
 there.
 """
 
@@ -39,8 +39,8 @@ from cometx.views import (
     python_panel,
 )
 
-# A Python panel: the experiments selected on the dashboard come from
-# get_panel_experiment_keys(), each line takes its experiment's dashboard color,
+# A Python panel: the experiments selected on the view come from
+# get_panel_experiment_keys(), each line takes its experiment's color,
 # and ui.display() shows a Plotly figure.
 PYTHON_CODE = """
 from comet_ml import API, ui
@@ -67,7 +67,7 @@ fig.update_layout(margin=dict(l=40, r=10, t=10, b=40), yaxis_title="val_accuracy
 ui.display(fig)
 """
 
-# Uploaded to the Panel library, then copied into the dashboard.
+# Uploaded to the Panel library, then copied into the view.
 LIBRARY_PANEL_NAME = "Best run (SDK example)"
 LIBRARY_CODE = """
 from comet_ml import API, ui

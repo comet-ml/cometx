@@ -65,7 +65,7 @@ def parse_args():
 
 
 def has_project_sections(view):
-    """True for a project dashboard's layout (sections in view.v3)."""
+    """True for a project view's layout (sections in view.v3)."""
     return isinstance(view.v3, dict) and bool(view.v3.get("sections"))
 
 
@@ -102,7 +102,7 @@ def main():
         experiments = source.get_experiments(args.src_workspace, args.src_project)
         if experiments:
             print("\n=== Experiment-level views on %s ===" % experiments[0].id)
-            # get_views() on an experiment can also return project dashboards;
+            # get_views() on an experiment can also return project views;
             # those are copied above with the project views.
             experiment_views = [
                 v

@@ -13,6 +13,7 @@
 
 import os
 import tempfile
+import warnings
 from typing import Any, Dict, List
 from urllib.parse import urlparse
 
@@ -294,33 +295,29 @@ class API(API):
         **kwargs,
     ) -> Dict[str, Any]:
         """
-        Create a new dashboard in a project.
+        Deprecated: use `create_view` with a layout from
+        `cometx.views.build_view`, which places panels in the view.
+
+        Creates a view in a project. Panels listed in `panels` are not shown
+        on it: the new view opens with no panels.
 
         Args:
             workspace (str): the workspace name the project belongs to
-            project_name (str): the project name to create the dashboard in
-            template_name (str): name for the new dashboard
-            template_id (str, optional): source template ID to clone code
-                panel associations from an existing dashboard
-            panels (list, optional): list of panel template IDs to include
-                in the new dashboard
-            **kwargs: additional DashboardTemplate fields
+            project_name (str): the project name to create the view in
+            template_name (str): name for the new view
+            template_id (str, optional): source view ID to clone code
+                panel associations from
+            panels (list, optional): panel template IDs
+            **kwargs: additional fields for the view
 
-        Returns: dictionary representing the created DashboardTemplate
-
-        Example:
-        ```python linenums="1"
-        from cometx import API
-
-        api = API()
-        dashboard = api.create_dashboard(
-            workspace="my-workspace",
-            project_name="my-project",
-            template_name="My Dashboard",
-            panels=["panel-template-id-1", "panel-template-id-2"],
-        )
-        ```
+        Returns: dictionary representing the created view
         """
+        warnings.warn(
+            "create_dashboard() is deprecated; use create_view() with "
+            "cometx.views.build_view()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         project_id = self._get_project_id(workspace, project_name)
 
         body = {"project_id": project_id, "template_name": template_name, **kwargs}
@@ -344,33 +341,26 @@ class API(API):
         **kwargs,
     ) -> Dict[str, Any]:
         """
-        Update an existing dashboard in a project.
+        Deprecated: use `update_view`, which saves a view's layout.
+
+        Calls an endpoint that only Comet's web app can use; with an API key
+        the server answers 404.
 
         Args:
             workspace (str): the workspace name the project belongs to
-            project_name (str): the project name the dashboard belongs to
-            template_id (str): the ID of the dashboard to update
-            template_name (str, optional): new name for the dashboard
-            panels (list, optional): list of panel template IDs to set on
-                the dashboard
-            **kwargs: additional DashboardTemplate fields
+            project_name (str): the project name the view belongs to
+            template_id (str): the ID of the view to update
+            template_name (str, optional): new name for the view
+            panels (list, optional): panel template IDs
+            **kwargs: additional fields for the view
 
-        Returns: dictionary representing the updated DashboardTemplate
-
-        Example:
-        ```python linenums="1"
-        from cometx import API
-
-        api = API()
-        dashboard = api.update_dashboard(
-            workspace="my-workspace",
-            project_name="my-project",
-            template_id="existing-dashboard-id",
-            template_name="Renamed Dashboard",
-            panels=["panel-template-id-1", "panel-template-id-2"],
-        )
-        ```
+        Returns: dictionary representing the updated view
         """
+        warnings.warn(
+            "update_dashboard() is deprecated; use update_view()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         project_id = self._get_project_id(workspace, project_name)
 
         body = {"project_id": project_id, "template_id": template_id, **kwargs}
@@ -386,7 +376,7 @@ class API(API):
 
     def create_view(self, workspace: str, project_name: str, view: View) -> Any:
         """
-        Create a project-level view (dashboard).
+        Create a project-level view.
 
         Like comet_ml's `create_view`, on any comet_ml version: a view built
         with `build_experiment_view` raises a ValueError (it would show no
